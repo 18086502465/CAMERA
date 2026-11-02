@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wms.mapper.SysHolidayConfigMapper">
+
+    <!--
+      【2026-10-28 修复】两处改动：
+
+      1) 删除了 <select id="selectByDate">。
+         它与 Mapper 接口里的 @Select("...selectByDate...") **重名**，
+         两者都会注册 —— MyBatis-Plus 启动日志会打印
+         "Has been loaded by XML or SqlProvider or Mybatis's Annotation,
+          so ignoring this injection"，XML 版本生效、注解版本被忽略。
+         两者 SQL 相同，功能不受影响，但保留两份定义容易误导后续维护。
+         现在只保留接口上的 @Select 注解。
+
+      2) 删除了 <select id="selectList">。
+         它**劫持了 BaseMapper 的通用方法** selectList(Wrapper)：
+           - BaseMapper 只传 ew/param1；
+           - 而这个 XML 引用 #{startDate}/#{endDate}；
+         结果 /api/holiday/range 报
+           "Parameter 'startDate' not found. Available parameters are [ew, param1]"
+         → 500。Service 层用的是 list(wrapper)，本就该走 MP 原生实现。
+
+      将来若确实需要自定义查询，请在 Mapper 接口声明**不与 BaseMapper 方法重名**的方法，
+      并在这里用同名 id 实现。
+    -->
+
+</mapper>

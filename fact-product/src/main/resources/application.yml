@@ -1,0 +1,83 @@
+﻿server:
+  port: 8091
+  servlet:
+    context-path: /
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/wms-new?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    username: root
+    password: CCshenda889
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      initial-size: 10
+      min-idle: 10
+      max-active: 200
+      max-wait: 60000
+      time-between-eviction-runs-millis: 60000
+      min-evictable-idle-time-millis: 300000
+      validation-query: SELECT 1 FROM DUAL
+      test-while-idle: true
+      test-on-borrow: false
+      test-on-return: false
+      pool-prepared-statements: true
+      max-pool-prepared-statement-per-connection-size: 20
+      filters: stat,wall
+
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 1024MB
+
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher
+
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    auto-mapping-unknown-column-behavior: NONE
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: isDeleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+jwt:
+  secret: mySecretKey123456789012345678901234567890
+  expiration: 86400000
+
+app:
+  # 服务安装根目录。Windows 服务启动时会通过 -Dapp.home 指向安装目录；
+  # 本地开发未指定时默认写入项目工作目录下 runtime，避免写入 jar 内部。
+  home: ${APP_HOME:./runtime}
+  upload:
+    image-dir: ${app.home}/data/uploads/images
+
+upload:
+  path: ${app.home}/data/uploads
+  max-file-size: 10MB
+  max-request-size: 1024MB
+
+logging:
+  level:
+    com.wms.mapper: DEBUG
+  file:
+    name: ${app.home}/logs/camera-detection-system.log
+
+
+defect-image:
+  # 单批缺陷图片最大数量。超过 100 张请拆分批次上报。
+  # 设备端建议同步传 Header: X-Image-Count，便于服务端在解析图片流前快速拒绝超量请求。
+  max-batch-images: 100
+  upload:
+    dir: ${app.home}/data/uploads/defect-images/
+

@@ -1,0 +1,334 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>批量检测上报与产线统计图表重构方案</title>
+  <style>
+    :root{
+      --bg:#f5f7fb;
+      --panel:#ffffff;
+      --panel-2:#f8fafc;
+      --primary:#2563eb;
+      --primary-2:#1d4ed8;
+      --cyan:#06b6d4;
+      --green:#16a34a;
+      --amber:#f59e0b;
+      --red:#ef4444;
+      --purple:#7c3aed;
+      --text:#111827;
+      --muted:#6b7280;
+      --line:#e5e7eb;
+      --line-strong:#cbd5e1;
+      --shadow:0 14px 35px rgba(15,23,42,.08);
+      --radius:18px;
+      --radius-sm:10px;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:linear-gradient(180deg,#eef4ff 0,#f5f7fb 280px,#f5f7fb 100%);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;color:var(--text);}
+    a{color:inherit;text-decoration:none}
+    .layout{display:flex;min-height:100vh;}
+    .side{position:sticky;top:0;height:100vh;width:260px;padding:22px;background:#0f172a;color:#e5e7eb;box-shadow:8px 0 30px rgba(15,23,42,.12);}
+    .brand{display:flex;align-items:center;gap:12px;margin-bottom:24px;}
+    .logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#38bdf8,#2563eb 50%,#7c3aed);box-shadow:0 10px 25px rgba(37,99,235,.35);}
+    .brand h1{font-size:16px;line-height:1.3;margin:0;}
+    .brand span{display:block;font-size:12px;color:#94a3b8;margin-top:3px;}
+    .nav{display:flex;flex-direction:column;gap:8px;margin-top:18px;}
+    .nav a{padding:11px 12px;border-radius:12px;color:#cbd5e1;font-size:14px;}
+    .nav a:hover,.nav a.active{background:rgba(148,163,184,.18);color:#fff;}
+    .main{flex:1;min-width:0;padding:26px 34px 56px;}
+    .hero{position:relative;overflow:hidden;border-radius:26px;padding:34px;background:linear-gradient(135deg,#0f172a,#1e40af 54%,#0891b2);color:#fff;box-shadow:var(--shadow);}
+    .hero:after{content:"";position:absolute;right:-120px;top:-140px;width:380px;height:380px;border-radius:50%;background:rgba(255,255,255,.14);}
+    .hero:before{content:"";position:absolute;right:90px;bottom:-90px;width:260px;height:260px;border-radius:50%;background:rgba(56,189,248,.18);}
+    .hero h2{position:relative;margin:0;font-size:30px;letter-spacing:.2px;}
+    .hero p{position:relative;max-width:850px;color:#dbeafe;font-size:15px;line-height:1.8;margin:14px 0 0;}
+    .hero .chips{position:relative;display:flex;flex-wrap:wrap;gap:10px;margin-top:22px;}
+    .chip{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.18);font-size:12px;color:#eff6ff;}
+    .section{margin-top:24px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;}
+    .section-hd{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:22px 24px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#fff,#fbfdff);}
+    .section-hd h3{margin:0;font-size:20px;}
+    .section-hd p{margin:8px 0 0;color:var(--muted);font-size:13px;line-height:1.7;}
+    .section-bd{padding:24px;}
+    .grid{display:grid;gap:16px;}
+    .grid.cols-4{grid-template-columns:repeat(4,minmax(0,1fr));}
+    .grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr));}
+    .grid.cols-2{grid-template-columns:repeat(2,minmax(0,1fr));}
+    .card{background:var(--panel-2);border:1px solid var(--line);border-radius:16px;padding:16px;}
+    .metric{display:flex;flex-direction:column;gap:10px;min-height:130px;}
+    .metric .icon{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;color:#fff;font-weight:800;}
+    .metric b{font-size:22px;}
+    .metric span{font-size:13px;color:var(--muted);line-height:1.6;}
+    .blue{background:linear-gradient(135deg,#60a5fa,#2563eb)}.green{background:linear-gradient(135deg,#4ade80,#16a34a)}.orange{background:linear-gradient(135deg,#fbbf24,#f97316)}.red{background:linear-gradient(135deg,#fb7185,#ef4444)}.purple{background:linear-gradient(135deg,#a78bfa,#7c3aed)}.cyan{background:linear-gradient(135deg,#67e8f9,#0891b2)}
+    .tag{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;font-size:12px;font-weight:600;}
+    .tag.blue{background:#dbeafe;color:#1d4ed8}.tag.green{background:#dcfce7;color:#15803d}.tag.red{background:#fee2e2;color:#dc2626}.tag.orange{background:#ffedd5;color:#c2410c}.tag.gray{background:#f1f5f9;color:#475569}.tag.purple{background:#ede9fe;color:#6d28d9}
+    .table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff;}
+    .table th,.table td{padding:12px 14px;text-align:left;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle;}
+    .table th{background:#f8fafc;color:#334155;font-weight:700;}
+    .table tr:last-child td{border-bottom:0;}
+    .table tbody tr:hover td{background:#f8fbff;}
+    .split{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:stretch;}
+    pre{margin:0;background:#0b1020;color:#d6e3ff;border-radius:16px;padding:18px;overflow:auto;font-size:12px;line-height:1.65;border:1px solid rgba(255,255,255,.08);}
+    code{font-family:Consolas,Monaco,"Courier New",monospace;}
+    .flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+    .flow .node{background:#fff;border:1px solid var(--line-strong);border-radius:14px;padding:12px 14px;min-width:126px;text-align:center;font-size:13px;box-shadow:0 8px 18px rgba(15,23,42,.04);}
+    .flow .arrow{color:#94a3b8;font-size:20px;}
+    .mock{background:#eef4ff;border:1px solid #dbeafe;border-radius:22px;padding:16px;}
+    .mock-window{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 40px rgba(15,23,42,.12);overflow:hidden;}
+    .mock-top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);background:#f8fafc;}
+    .mock-title{display:flex;align-items:center;gap:10px;font-weight:700;}
+    .dots{display:flex;gap:6px}.dots i{width:9px;height:9px;border-radius:50%;display:block}.dots i:nth-child(1){background:#ef4444}.dots i:nth-child(2){background:#f59e0b}.dots i:nth-child(3){background:#22c55e}
+    .filters{display:grid;grid-template-columns:1.3fr repeat(7,1fr) auto;gap:10px;padding:14px;border-bottom:1px solid var(--line);background:#fff;}
+    .field{height:36px;border:1px solid var(--line);border-radius:10px;background:#f8fafc;padding:8px 10px;font-size:12px;color:#475569;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+    .btn{border:0;border-radius:10px;background:var(--primary);color:#fff;padding:9px 13px;font-weight:700;font-size:12px;box-shadow:0 8px 18px rgba(37,99,235,.2);}
+    .workspace{display:grid;grid-template-columns:180px 1fr 280px;min-height:520px;}
+    .library{border-right:1px solid var(--line);background:#fbfdff;padding:14px;}
+    .lib-item{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);border-radius:12px;background:#fff;margin-bottom:10px;font-size:12px;color:#334155;}
+    .lib-icon{width:28px;height:28px;border-radius:9px;background:#dbeafe;color:#1d4ed8;display:grid;place-items:center;font-weight:800;}
+    .canvas{padding:14px;background:linear-gradient(90deg,rgba(226,232,240,.55) 1px,transparent 1px),linear-gradient(rgba(226,232,240,.55) 1px,transparent 1px);background-size:22px 22px;}
+    .widget-grid{display:grid;grid-template-columns:repeat(12,1fr);grid-auto-rows:78px;gap:12px;}
+    .widget{position:relative;background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 10px 25px rgba(15,23,42,.06);overflow:hidden;}
+    .widget h4{margin:0 0 8px;font-size:13px;display:flex;align-items:center;justify-content:space-between;}
+    .widget small{color:#94a3b8;font-weight:400;}
+    .w-kpi{grid-column:span 3;grid-row:span 1}.w-line{grid-column:span 6;grid-row:span 3}.w-bar{grid-column:span 6;grid-row:span 3}.w-rank{grid-column:span 4;grid-row:span 3}.w-pivot{grid-column:span 8;grid-row:span 3}
+    .kpi-num{font-size:24px;font-weight:800;color:#0f172a}.kpi-sub{font-size:12px;color:#64748b;margin-top:5px}.up{color:#16a34a}.down{color:#ef4444}
+    .chart-line{height:150px;margin-top:10px;position:relative;border-left:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;}
+    .chart-line svg{width:100%;height:100%;display:block;}
+    .bars{display:flex;align-items:flex-end;gap:12px;height:150px;margin-top:16px;border-bottom:1px solid #e2e8f0;padding:0 8px;}
+    .bar{flex:1;border-radius:8px 8px 0 0;background:linear-gradient(180deg,#60a5fa,#2563eb);min-width:18px;position:relative;}
+    .bar:nth-child(2){background:linear-gradient(180deg,#fbbf24,#f97316)}.bar:nth-child(3){background:linear-gradient(180deg,#4ade80,#16a34a)}.bar:nth-child(4){background:linear-gradient(180deg,#a78bfa,#7c3aed)}.bar:nth-child(5){background:linear-gradient(180deg,#67e8f9,#0891b2)}
+    .rank-row{display:grid;grid-template-columns:22px 1fr 48px;gap:8px;align-items:center;margin:11px 0;font-size:12px;}.rank-bar{height:8px;border-radius:999px;background:#e2e8f0;overflow:hidden}.rank-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#fb7185,#ef4444)}
+    .mini-table{width:100%;border-collapse:collapse;font-size:12px}.mini-table th,.mini-table td{padding:8px;border-bottom:1px solid #edf2f7;text-align:right}.mini-table th:first-child,.mini-table td:first-child{text-align:left}.mini-table th{color:#64748b;background:#f8fafc}
+    .config{border-left:1px solid var(--line);padding:14px;background:#fbfdff;}
+    .config h4{margin:0 0 12px;font-size:14px;}.config .group{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px}.config label{display:block;font-size:12px;color:#64748b;margin-bottom:7px}.config .input{height:34px;border:1px solid var(--line);border-radius:9px;background:#f8fafc;padding:8px 9px;font-size:12px;color:#334155;margin-bottom:9px;}
+    .modal{border:1px solid var(--line);border-radius:18px;background:#fff;box-shadow:var(--shadow);overflow:hidden;}
+    .modal-hd{padding:16px 18px;border-bottom:1px solid var(--line);font-weight:800;display:flex;justify-content:space-between;}.modal-bd{padding:18px;display:grid;grid-template-columns:1fr 1fr;gap:16px}.step{display:flex;gap:12px;padding:12px;border:1px solid var(--line);border-radius:14px;background:#fbfdff;margin-bottom:10px}.step-num{width:26px;height:26px;border-radius:9px;background:#dbeafe;color:#1d4ed8;display:grid;place-items:center;font-weight:800;font-size:12px}.step b{font-size:13px}.step p{margin:4px 0 0;font-size:12px;color:#64748b;line-height:1.5}
+    .timeline{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.phase{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px}.phase h4{margin:0 0 10px;color:#1e40af}.phase ul{padding-left:18px;margin:0;color:#475569;font-size:13px;line-height:1.8}
+    .note{border-left:4px solid var(--primary);background:#eff6ff;border-radius:12px;padding:14px;color:#1e3a8a;font-size:13px;line-height:1.8;}
+    @media (max-width:1200px){.side{display:none}.main{padding:18px}.grid.cols-4{grid-template-columns:repeat(2,1fr)}.workspace{grid-template-columns:1fr}.library,.config{border:0}.filters{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr}.widget-grid{grid-template-columns:repeat(6,1fr)}.w-kpi,.w-line,.w-bar,.w-rank,.w-pivot{grid-column:span 6}}
+    @media (max-width:760px){.grid.cols-4,.grid.cols-3,.grid.cols-2{grid-template-columns:1fr}.hero h2{font-size:23px}.section-hd{flex-direction:column}.main{padding:12px}.modal-bd{grid-template-columns:1fr}.timeline{grid-template-columns:1fr}.filters{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside class="side">
+    <div class="brand">
+      <div class="logo"></div>
+      <h1>产线缺陷在线AI检测系统<span>重构方案展示</span></h1>
+    </div>
+    <nav class="nav">
+      <a href="#overview" class="active">方案总览</a>
+      <a href="#protocol">批量检测上报协议</a>
+      <a href="#mapping">缺陷类型与映射</a>
+      <a href="#database">数据库与查询策略</a>
+      <a href="#analytics">产线统计图表工作台</a>
+      <a href="#api">API 与开发计划</a>
+    </nav>
+  </aside>
+  <main class="main">
+    <section class="hero" id="overview">
+      <h2>批量检测上报与产线统计图表重构方案</h2>
+      <p>围绕新版 <code>/api/v1/camera/inspection/batch-upload</code> 协议、p0/p1 缺陷映射配置、高效数据库保存与筛选策略、可配置产线统计图表工作台进行整体设计。目标是让相机协议稳定、现场配置灵活、统计查询高效、页面图表可自助搭建。</p>
+      <div class="chips">
+        <span class="chip">协议版本：2.0</span>
+        <span class="chip">缺陷映射：相机 sourceCode 1 对 1</span>
+        <span class="chip">查询策略：明细追溯 + 聚合查询</span>
+        <span class="chip">图表：可新增 / 可编辑 / 可拖拽缩放</span>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-hd"><div><h3>一、重构范围</h3><p>本轮从接口、配置、数据库、图表四层同步重构，避免只在旧字段上继续追加功能。</p></div></div>
+      <div class="section-bd grid cols-4">
+        <div class="card metric"><div class="icon blue">API</div><b>新版上报协议</b><span>废弃 dataList 与写死缺陷字段，改为批次级 summary + 动态 defects[]。</span></div>
+        <div class="card metric"><div class="icon purple">MAP</div><b>p0/p1 映射</b><span>相机统一上报 sourceCode，后台按现场配置匹配标准缺陷类型，强制 1 对 1。</span></div>
+        <div class="card metric"><div class="icon green">DB</div><b>高效存储查询</b><span>原始批次、缺陷计数、映射快照、30 分钟聚合分层保存。</span></div>
+        <div class="card metric"><div class="icon orange">BI</div><b>图表工作台</b><span>支持按筛选条件创建图表，调整大小布局，构建动态统计报表。</span></div>
+      </div>
+    </section>
+
+    <section class="section" id="protocol">
+      <div class="section-hd"><div><h3>二、新版相机批量检测数据接口</h3><p>相机协议固定，不再包含业务写死缺陷字段；现场变化通过后台映射配置解决。</p></div><span class="tag blue">POST /api/v1/camera/inspection/batch-upload</span></div>
+      <div class="section-bd split">
+        <div>
+          <table class="table">
+            <thead><tr><th>模块</th><th>设计要点</th></tr></thead>
+            <tbody>
+              <tr><td>鉴权</td><td><span class="tag red">必填</span> Bearer Token + X-Device-Id，设备独立 Token。</td></tr>
+              <tr><td>幂等</td><td><code>cameraCode + batchId</code> 唯一，重复上报返回幂等成功。</td></tr>
+              <tr><td>计数</td><td>P0 推荐 <code>INCREMENTAL</code> 增量计数；累计模式后续兼容。</td></tr>
+              <tr><td>缺陷</td><td><code>defects[].sourceCode</code> 如 p0/p1，由后台映射为标准缺陷类型。</td></tr>
+              <tr><td>校验</td><td>总数 = OK + NG；NG 与 defects 数量一致；映射必须唯一。</td></tr>
+              <tr><td>失败处理</td><td>未配置/多匹配返回 422，并给出配置建议，不静默归类。</td></tr>
+            </tbody>
+          </table>
+          <div class="note" style="margin-top:16px">推荐首期只启用增量模式，避免累计值因相机重启、计数器清零导致重复或漏计。</div>
+        </div>
+        <pre><code>{
+  "schemaVersion": "2.0",
+  "batchId": "CAM-001-20260608-103000-0001",
+  "deviceId": "DEV-001",
+  "cameraCode": "CAM-001",
+  "cameraName": "1号检测相机",
+  "productName": "纸尿裤L码",
+  "reportTime": "2026-06-08 10:30:00",
+  "timeRange": {
+    "startTime": "2026-06-08 10:29:00",
+    "endTime": "2026-06-08 10:30:00"
+  },
+  "counterMode": "INCREMENTAL",
+  "summary": {
+    "totalCount": 1200,
+    "okCount": 1160,
+    "ngCount": 40
+  },
+  "defects": [
+    { "sourceCode": "p0", "count": 12, "positionCode": "FRONT_WAIST", "severity": "HIGH" },
+    { "sourceCode": "p1", "count": 28, "positionCode": "INNER_LAYER", "severity": "MEDIUM" }
+  ]
+}</code></pre>
+      </div>
+    </section>
+
+    <section class="section" id="mapping">
+      <div class="section-hd"><div><h3>三、系统配置：缺陷类型与相机编码映射</h3><p>缺陷类型作为系统标准字典；相机上报编码作为现场协议字典，两者通过配置精确绑定。</p></div><span class="tag purple">强制 1 对 1</span></div>
+      <div class="section-bd">
+        <div class="mock">
+          <div class="mock-window">
+            <div class="mock-top"><div class="mock-title"><div class="dots"><i></i><i></i><i></i></div>系统配置 / 相机缺陷映射</div><button class="btn">导入映射</button></div>
+            <div class="filters" style="grid-template-columns:repeat(6,1fr) auto;">
+              <div class="field">工厂：杭州工厂</div><div class="field">产线：1号线</div><div class="field">工位：涂布工位</div><div class="field">相机：CAM-001</div><div class="field">上报编码：p0/p1</div><div class="field">状态：启用</div><button class="btn">查询</button>
+            </div>
+            <div style="padding:16px;overflow:auto">
+              <table class="table">
+                <thead><tr><th>相机编号</th><th>相机名称</th><th>上报编码</th><th>标准缺陷类型</th><th>缺陷位置</th><th>严重度</th><th>生效时间</th><th>校验结果</th><th>操作</th></tr></thead>
+                <tbody>
+                  <tr><td>CAM-001</td><td>1号检测相机</td><td><span class="tag blue">p0</span></td><td>前腰腹异物污点（3mm²以上）</td><td>前腰</td><td><span class="tag red">HIGH</span></td><td>2026-06-08 起</td><td><span class="tag green">唯一有效</span></td><td>编辑 / 停用</td></tr>
+                  <tr><td>CAM-001</td><td>1号检测相机</td><td><span class="tag blue">p1</span></td><td>内装胶滴（1-3mm²）</td><td>内装</td><td><span class="tag orange">MEDIUM</span></td><td>2026-06-08 起</td><td><span class="tag green">唯一有效</span></td><td>编辑 / 停用</td></tr>
+                  <tr><td>CAM-002</td><td>2号检测相机</td><td><span class="tag blue">p0</span></td><td>复合区域接头</td><td>复合区</td><td><span class="tag red">HIGH</span></td><td>2026-06-08 起</td><td><span class="tag green">唯一有效</span></td><td>编辑 / 停用</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="grid cols-3" style="margin-top:16px">
+          <div class="card"><b>保存校验</b><p style="color:#64748b;line-height:1.7;font-size:13px">同一相机、同一生效时间段内，sourceCode 不允许重复映射；标准缺陷类型也不允许被多个 sourceCode 绑定。</p></div>
+          <div class="card"><b>导入预检查</b><p style="color:#64748b;line-height:1.7;font-size:13px">Excel/CSV 导入前展示冲突、缺失、停用、时间重叠等问题，确认后才落库。</p></div>
+          <div class="card"><b>历史快照</b><p style="color:#64748b;line-height:1.7;font-size:13px">上报入库时保存映射快照，后续配置调整不影响历史统计口径。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="database">
+      <div class="section-hd"><div><h3>四、数据库保存与筛选策略</h3><p>采用“明细追溯 + 聚合查询 + 维度配置”的分层模型，确保图表查询效率。</p></div></div>
+      <div class="section-bd">
+        <div class="flow">
+          <div class="node">相机上报 JSON</div><div class="arrow">→</div>
+          <div class="node">批次幂等校验</div><div class="arrow">→</div>
+          <div class="node">相机归属补齐</div><div class="arrow">→</div>
+          <div class="node">p0/p1 映射</div><div class="arrow">→</div>
+          <div class="node">明细落库</div><div class="arrow">→</div>
+          <div class="node">30分钟聚合</div><div class="arrow">→</div>
+          <div class="node">图表查询</div>
+        </div>
+        <div class="grid cols-3" style="margin-top:18px">
+          <div class="card"><span class="tag blue">明细层</span><h4>inspection_batch</h4><p style="font-size:13px;color:#64748b;line-height:1.7">保存上报批次、相机、时间范围、产品、总数、OK、NG、原始 JSON。</p></div>
+          <div class="card"><span class="tag purple">缺陷层</span><h4>inspection_defect_count</h4><p style="font-size:13px;color:#64748b;line-height:1.7">按 sourceCode 映射后的标准缺陷类型保存计数、位置、严重度、映射快照。</p></div>
+          <div class="card"><span class="tag green">聚合层</span><h4>agg_*_30m</h4><p style="font-size:13px;color:#64748b;line-height:1.7">按时间桶、产线、工位、相机、产品、班次、缺陷类型预聚合。</p></div>
+        </div>
+        <table class="table" style="margin-top:18px">
+          <thead><tr><th>筛选维度</th><th>关键字段</th><th>推荐索引/策略</th><th>适用图表</th></tr></thead>
+          <tbody>
+            <tr><td>时间</td><td>report_time / time_bucket</td><td>时间桶索引，必要时按月分区</td><td>趋势图、热力图</td></tr>
+            <tr><td>产线/工位/相机</td><td>line_id / workstation_id / camera_code</td><td>与 time_bucket 组成联合索引</td><td>排行、对比、定位</td></tr>
+            <tr><td>缺陷类型/位置</td><td>defect_type_id / position_id</td><td>缺陷维度与时间联合索引</td><td>TopN、透视表、构成图</td></tr>
+            <tr><td>产品/班次</td><td>product_id/product_name / shift_id</td><td>产品班次与时间联合索引</td><td>产品质量、班次差异</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" id="analytics">
+      <div class="section-hd"><div><h3>五、产线统计图表工作台原型</h3><p>每个图表都从页面新建；大小、布局、图表类型、指标、维度、筛选继承均可配置。</p></div><span class="tag green">可拖拽 / 可缩放 / 可保存</span></div>
+      <div class="section-bd">
+        <div class="mock">
+          <div class="mock-window">
+            <div class="mock-top"><div class="mock-title"><div class="dots"><i></i><i></i><i></i></div>产线统计工作台</div><div><button class="btn">新增图表</button> <button class="btn" style="background:#0f172a">保存布局</button></div></div>
+            <div class="filters">
+              <div class="field">时间：今天 00:00 - 现在</div><div class="field">工厂：杭州工厂</div><div class="field">产线：全部</div><div class="field">工位：全部</div><div class="field">相机：全部</div><div class="field">产品：全部</div><div class="field">班次：全部</div><div class="field">缺陷：全部</div><button class="btn">刷新</button>
+            </div>
+            <div class="workspace">
+              <div class="library">
+                <div class="lib-item"><div class="lib-icon">K</div>KPI 卡</div>
+                <div class="lib-item"><div class="lib-icon">L</div>趋势折线</div>
+                <div class="lib-item"><div class="lib-icon">B</div>柱状对比</div>
+                <div class="lib-item"><div class="lib-icon">S</div>堆叠柱图</div>
+                <div class="lib-item"><div class="lib-icon">P</div>环形占比</div>
+                <div class="lib-item"><div class="lib-icon">R</div>Top 排行</div>
+                <div class="lib-item"><div class="lib-icon">H</div>热力图</div>
+                <div class="lib-item"><div class="lib-icon">T</div>动态透视表</div>
+              </div>
+              <div class="canvas">
+                <div class="widget-grid">
+                  <div class="widget w-kpi"><h4>检测总数 <small>今日</small></h4><div class="kpi-num">1,268,900</div><div class="kpi-sub up">较昨日 +4.8%</div></div>
+                  <div class="widget w-kpi"><h4>OK 数 <small>今日</small></h4><div class="kpi-num">1,252,340</div><div class="kpi-sub up">良率 98.69%</div></div>
+                  <div class="widget w-kpi"><h4>NG 数 <small>今日</small></h4><div class="kpi-num">16,560</div><div class="kpi-sub down">NG率 1.31%</div></div>
+                  <div class="widget w-kpi"><h4>高危缺陷 <small>HIGH</small></h4><div class="kpi-num">1,284</div><div class="kpi-sub down">需优先处理</div></div>
+                  <div class="widget w-line"><h4>产线 NG 趋势 <small>30分钟粒度</small></h4><div class="chart-line"><svg viewBox="0 0 600 150" preserveAspectRatio="none"><polyline fill="none" stroke="#2563eb" stroke-width="4" points="0,110 60,95 120,120 180,66 240,82 300,42 360,64 420,35 480,70 540,52 600,38"/><polyline fill="none" stroke="#ef4444" stroke-width="3" points="0,130 60,118 120,115 180,100 240,112 300,88 360,96 420,70 480,84 540,80 600,62" opacity=".75"/></svg></div></div>
+                  <div class="widget w-bar"><h4>各产线缺陷对比 <small>按缺陷类型堆叠</small></h4><div class="bars"><div class="bar" style="height:70%"></div><div class="bar" style="height:45%"></div><div class="bar" style="height:86%"></div><div class="bar" style="height:58%"></div><div class="bar" style="height:34%"></div></div></div>
+                  <div class="widget w-rank"><h4>工位缺陷 Top5 <small>今日</small></h4><div class="rank-row"><b>1</b><div class="rank-bar"><span style="width:94%"></span></div><span>2,340</span></div><div class="rank-row"><b>2</b><div class="rank-bar"><span style="width:80%"></span></div><span>1,980</span></div><div class="rank-row"><b>3</b><div class="rank-bar"><span style="width:67%"></span></div><span>1,620</span></div><div class="rank-row"><b>4</b><div class="rank-bar"><span style="width:48%"></span></div><span>1,100</span></div></div>
+                  <div class="widget w-pivot"><h4>动态缺陷透视表 <small>列来自缺陷类型配置</small></h4><table class="mini-table"><thead><tr><th>工位</th><th>检测总数</th><th>OK数</th><th>NG数</th><th>前腰污点</th><th>内装胶滴</th><th>复合接头</th><th>良率</th></tr></thead><tbody><tr><td>涂布工位</td><td>120000</td><td>118900</td><td>1100</td><td>420</td><td>510</td><td>170</td><td>99.08%</td></tr><tr><td>复合工位</td><td>98000</td><td>96950</td><td>1050</td><td>300</td><td>620</td><td>130</td><td>98.93%</td></tr><tr><td>包装工位</td><td>135000</td><td>134220</td><td>780</td><td>180</td><td>430</td><td>170</td><td>99.42%</td></tr></tbody></table></div>
+                </div>
+              </div>
+              <div class="config">
+                <h4>图表配置</h4>
+                <div class="group"><label>图表名称</label><div class="input">产线 NG 趋势</div><label>图表类型</label><div class="input">折线图</div></div>
+                <div class="group"><label>指标</label><div class="input">NG 数、NG率</div><label>维度</label><div class="input">时间、产线</div><label>时间粒度</label><div class="input">30 分钟</div></div>
+                <div class="group"><label>筛选继承</label><div class="input">跟随全局筛选</div><label>排序 / TopN</label><div class="input">按 NG 数倒序 / Top10</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal" style="margin-top:18px">
+          <div class="modal-hd"><span>新增/编辑图表交互</span><span class="tag gray">配置抽屉/弹窗</span></div>
+          <div class="modal-bd">
+            <div>
+              <div class="step"><div class="step-num">1</div><div><b>选择图表类型</b><p>KPI、折线、柱状、堆叠、环形、排行、热力、透视表、明细表。</p></div></div>
+              <div class="step"><div class="step-num">2</div><div><b>选择指标与维度</b><p>指标选择检测总数、OK、NG、良率、缺陷数；维度选择时间、产线、工位、相机、产品、班次、缺陷类型、位置。</p></div></div>
+              <div class="step"><div class="step-num">3</div><div><b>配置筛选与排序</b><p>可跟随全局筛选，也可设置图表独立筛选、TopN、排序、时间粒度。</p></div></div>
+            </div>
+            <div>
+              <div class="step"><div class="step-num">4</div><div><b>预览与性能校验</b><p>后端返回查询计划摘要，时间跨度过大或维度过多时提示优化建议。</p></div></div>
+              <div class="step"><div class="step-num">5</div><div><b>保存到画布</b><p>图表加入画布后支持拖拽、缩放、复制、删除、保存布局。</p></div></div>
+              <div class="step"><div class="step-num">6</div><div><b>异常与空状态</b><p>查询失败、配置失效、缺少映射时，在图表卡片内直接提示修复入口。</p></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="api">
+      <div class="section-hd"><div><h3>六、API 与开发计划</h3><p>按 P0 协议与配置闭环、P1 图表工作台、P2 性能与高级分析推进。</p></div></div>
+      <div class="section-bd">
+        <table class="table">
+          <thead><tr><th>类别</th><th>接口</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>上报</td><td><code>POST /api/v1/camera/inspection/batch-upload</code></td><td>新版检测批量上报。</td></tr>
+            <tr><td>缺陷类型</td><td><code>/api/v1/config/defect-types</code></td><td>缺陷类型分页、新增、编辑、删除/停用。</td></tr>
+            <tr><td>缺陷映射</td><td><code>/api/v1/config/camera-defect-mappings</code></td><td>sourceCode 与标准缺陷类型 1 对 1 配置。</td></tr>
+            <tr><td>导入</td><td><code>/import/preview</code>、<code>/import/commit</code></td><td>导入预检查与确认提交。</td></tr>
+            <tr><td>图表</td><td><code>/api/v1/analytics/query</code></td><td>按照图表配置查询聚合数据。</td></tr>
+            <tr><td>看板</td><td><code>/api/v1/analytics/dashboards</code></td><td>保存图表画布布局和组件配置。</td></tr>
+          </tbody>
+        </table>
+        <div class="timeline" style="margin-top:18px">
+          <div class="phase"><h4>P0 协议闭环</h4><ul><li>新增 DTO 与服务</li><li>新增映射表与聚合表</li><li>系统配置新增缺陷映射</li><li>杭州工厂测试数据</li></ul></div>
+          <div class="phase"><h4>P1 图表工作台</h4><ul><li>新增产线统计 Tab</li><li>图表新增编辑</li><li>拖拽缩放布局</li><li>动态透视表</li></ul></div>
+          <div class="phase"><h4>P2 性能优化</h4><ul><li>异步聚合任务</li><li>小时/日聚合</li><li>慢查询保护</li><li>历史归档</li></ul></div>
+          <div class="phase"><h4>验收发布</h4><ul><li>接口压测</li><li>映射冲突测试</li><li>图表筛选测试</li><li>部署回归</li></ul></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

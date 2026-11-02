@@ -1,0 +1,61 @@
+# ---- 构建产物 ----
+target/
+*.class
+*.jar
+*.war
+*.ear
+!.mvn/wrapper/maven-wrapper.jar
+
+# ---- 前端依赖与构建产物 ----
+node_modules/
+dist/
+.vite/
+*.local
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- 运行时与日志 ----
+logs/
+*.log
+runtime/
+work/
+*.pid
+*.seed
+
+# 本地开发时的图片上传落盘目录（运行数据，非源码）
+fact-product/uploads/
+uploads/
+
+# ---- WorkBuddy 工作区数据（非项目产物）----
+.workbuddy/
+
+# ---- IDE ----
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+
+# ---- 系统文件 ----
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# ---- 发布产物中的重型二进制 ----
+# 安装包 exe、Linux tar.gz、内置 JRE 均为构建输出，由 build-release.ps1 现场生成
+dist-release/installer/*.exe
+dist-release/CameraDetectionSystem/jre/
+dist-release/linux/*.tar.gz
+
+# ---- 敏感文件 ----
+*.pem
+*.key
+*.p12
+*.jks
+.env
+.env.local
+application-local.yml

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wms.mapper.FactProduction30minMapper">
+
+    <!--
+      【2026-10-28 移除】原先这里有一个 <select id="countByTimeBucketAndStation">，
+      与 Mapper 接口上的 @Select 注解**同名**，两者都会注册。
+      MyBatis-Plus 的优先级是 XML > 注解 —— XML 版本生效、注解版本被忽略
+      （启动日志可见 "is ignored, because it exists, maybe from xml file"）。
+
+      而这个 XML 版本引用了**表里根本不存在的列**：
+          WHERE time_bucket_id = #{timeBucketId} AND station_id = #{stationId}
+      fact_production_30min 的实际列是
+          bucket_date / bucket_index / workstation_id（无 time_bucket_id、无 station_id）
+      —— 一旦有代码调用该方法，必然报
+      "Unknown column 'time_bucket_id' in 'where clause'"。
+
+      这是典型的"潜伏故障"：平时没人调用就不暴露，等哪天有人用了就炸。
+
+      修复：删掉这个错误的 XML 定义，让接口上的 @Select 注解版本生效
+      （它的 SQL 是正确的：bucket_date + bucket_index + workstation_id）。
+    -->
+
+</mapper>

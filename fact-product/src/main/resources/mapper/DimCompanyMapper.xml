@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wms.mapper.DimCompanyMapper">
+
+    <!--
+      【2026-10-28 移除】原先这里有一个 <select id="selectList">，它**劫持了
+      BaseMapper 的通用方法** selectList(Wrapper)：
+        - BaseMapper 只传 ew/param1 两个参数；
+        - 而这个 XML 引用 #{companyName}；
+      结果 /api/company 直接 500：
+        "BindingException: Parameter 'companyName' not found.
+         Available parameters are [ew, param1]"
+
+      而且这个查询**从未被调用** —— Mapper 接口里只有
+      findByCompanyName / findByCompanyCode 两个 @Select 注解方法，
+      Service 层走的是 getOne(wrapper) / list(wrapper)；
+      XML 里的 selectList 反而劫持了它们，导致功能异常。
+
+      修复：删除这段死代码，让 BaseMapper 的 selectList 恢复原生行为。
+      将来若确实需要「按名称模糊查公司列表」，请在 Mapper 接口里
+      声明一个**不与 BaseMapper 方法重名**的方法（如 selectByCondition），
+      并在这里用同名 id 实现。
+    -->
+
+</mapper>

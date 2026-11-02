@@ -1,0 +1,535 @@
+/* 产线异常检测系统 — 全局样式
+ * 基于 UI设计规范 v1.0
+ * 主色调：#1677FF（蓝）
+ * 辅助色：#F5F5F5（页面背景）、#FFFFFF（卡片背景）
+ * 语义色：成功 #52C41A、警告 #FA8C16、错误 #FF4D4F
+ */
+
+/* ========================================
+   一、CSS 变量（设计规范直接应用）
+   ======================================== */
+:root {
+  /* 主色调 */
+  --color-primary: #1677FF;
+  --color-primary-hover: #4096FF;
+  --color-primary-active: #0958D9;
+  --color-primary-bg: #E6F4FF;
+
+  /* 辅助色 */
+  --color-bg-page: #F5F5F5;
+  --color-bg-card: #FFFFFF;
+  --color-border: #D9D9D9;
+  --color-border-hover: #4096FF;
+  --color-divider: #F0F0F0;
+  --color-text: #1F1F1F;
+  --color-text-secondary: #8C8C8C;
+  --color-text-disabled: #BFBFBF;
+
+  /* 语义色 */
+  --color-success: #52C41A;
+  --color-success-bg: #F6FFED;
+  --color-warning: #FA8C16;
+  --color-warning-bg: #FFF7E6;
+  --color-error: #FF4D4F;
+  --color-error-bg: #FFF1F0;
+
+  /* 字体 */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'SF Mono', 'Monaco', 'Roboto Mono', monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 24px;
+
+  /* 间距（8px 基准）*/
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --spacing-2xl: 32px;
+
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* 阴影 */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.1);
+  --shadow-3: 0 4px 12px rgba(0, 0, 0, 0.15);
+  --shadow-4: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+/* ========================================
+   二、全局重置与基础样式
+   ======================================== */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size-base);
+  color: var(--color-text);
+  background: var(--color-bg-page);
+  line-height: 1.5;
+  min-width: 1280px;
+}
+
+a {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--color-primary-hover);
+}
+
+/* ========================================
+   三、按钮样式（设计规范 5.1-5.3）
+   ======================================== */
+.el-button--primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.el-button--primary:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.el-button--primary:active {
+  background: var(--color-primary-active);
+  border-color: var(--color-primary-active);
+}
+
+/* ========================================
+   四、卡片样式（设计规范 7.1-7.2）
+   ======================================== */
+.card {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow 0.2s;
+}
+
+.card:hover {
+  box-shadow: var(--shadow-2);
+}
+
+.card-title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: var(--spacing-md);
+  padding-bottom: var(--spacing-md);
+  border-bottom: 1px solid var(--color-divider);
+}
+
+/* ========================================
+   五、表格样式（设计规范 8.1-8.2）
+   ======================================== */
+.el-table {
+  font-size: var(--font-size-base);
+  color: var(--color-text);
+}
+
+.el-table thead th {
+  background: #FAFAFA;
+  font-weight: 600;
+  color: var(--color-text);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.el-table tbody td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+/* 斑马纹 */
+.el-table--striped .el-table__body tr.el-table__row--striped td {
+  background: #FAFAFA;
+}
+
+/* 悬停效果 */
+.el-table tbody tr:hover td {
+  background: var(--color-primary-bg) !important;
+}
+
+/* 数字列右对齐 */
+.el-table .numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ========================================
+   六、状态标签样式（设计规范 10.1-10.2）
+   ======================================== */
+.el-tag--success {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+  border-color: #B7EB8F;
+}
+
+.el-tag--warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border-color: #FFD591;
+}
+
+.el-tag--danger {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+  border-color: #FFA39E;
+}
+
+/* ========================================
+   七、空状态样式（设计规范 9.1）
+   ======================================== */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 0;
+  color: var(--color-text-secondary);
+}
+
+.empty-icon {
+  font-size: 64px;
+  color: var(--color-text-disabled);
+  margin-bottom: var(--spacing-lg);
+}
+
+.empty-text {
+  font-size: var(--font-size-base);
+  margin-bottom: var(--spacing-lg);
+}
+
+/* ========================================
+   八、加载状态样式（设计规范 9.2）
+   ======================================== */
+.loading-state {
+  position: relative;
+}
+
+.loading-state::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.7);
+  z-index: 10;
+}
+
+.loading-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--color-primary-bg);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  z-index: 11;
+}
+
+@keyframes spin {
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+/* ========================================
+   九、错误状态样式（设计规范 9.3）
+   ======================================== */
+.error-alert {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--color-error-bg);
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--spacing-lg);
+}
+
+.error-icon {
+  font-size: 16px;
+  margin-right: var(--spacing-sm);
+}
+
+.error-text {
+  font-size: var(--font-size-base);
+  color: var(--color-text);
+  flex: 1;
+}
+
+/* ========================================
+   十、响应式断点（设计规范 13.1-13.2）
+   ======================================== */
+/* 大手机横屏（576px）*/
+@media (max-width: 576px) {
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.3s;
+  }
+
+  .sidebar.mobile-show {
+    transform: translateX(0);
+  }
+
+  .main-container {
+    width: 100%;
+  }
+
+  .topbar {
+    padding: 0 12px;
+  }
+
+  .user-name {
+    display: none;
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .filter-bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .filter-bar > * {
+    width: 100% !important;
+  }
+
+  .chart-container {
+    height: 250px !important;
+  }
+
+  .stat-card {
+    margin-bottom: 12px;
+  }
+}
+
+/* 平板（768px）*/
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.3s;
+  }
+
+  .sidebar.mobile-show {
+    transform: translateX(0);
+  }
+
+  .main-container {
+    width: 100%;
+  }
+
+  .chart-row {
+    flex-direction: column;
+  }
+
+  .chart-container {
+    height: 300px !important;
+  }
+}
+
+/* 小笔记本（992px）*/
+@media (max-width: 992px) {
+  .sidebar {
+    width: 64px !important;
+  }
+
+  .logo-text {
+    display: none;
+  }
+
+  .logo-mini {
+    display: block !important;
+  }
+}
+
+/* ========================================
+   十一、工具类（快速开发）
+   ======================================== */
+/* 文本对齐 */
+.text-left { text-align: left; }
+.text-center { text-align: center; }
+.text-right { text-align: right; }
+
+/* 间距工具 */
+.mt-xs { margin-top: var(--spacing-xs); }
+.mt-sm { margin-top: var(--spacing-sm); }
+.mt-md { margin-top: var(--spacing-md); }
+.mt-lg { margin-top: var(--spacing-lg); }
+.mt-xl { margin-top: var(--spacing-xl); }
+
+.mb-xs { margin-bottom: var(--spacing-xs); }
+.mb-sm { margin-bottom: var(--spacing-sm); }
+.mb-md { margin-bottom: var(--spacing-md); }
+.mb-lg { margin-bottom: var(--spacing-lg); }
+.mb-xl { margin-bottom: var(--spacing-xl); }
+
+/* Flex 工具 */
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.flex-center { display: flex; align-items: center; justify-content: center; }
+.flex-between { display: flex; align-items: center; justify-content: space-between; }
+.flex-wrap { flex-wrap: wrap; }
+.gap-xs { gap: var(--spacing-xs); }
+.gap-sm { gap: var(--spacing-sm); }
+.gap-md { gap: var(--spacing-md); }
+.gap-lg { gap: var(--spacing-lg); }
+
+/* 文字截断 */
+.text-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 数字等宽（表格数字列）*/
+.numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ========================================
+   十二、Element Plus 主题覆盖（设计规范 十七）
+   ======================================== */
+:root {
+  --el-color-primary: #1677FF;
+  --el-color-primary-light-3: #4096FF;
+  --el-color-primary-light-5: #E6F4FF;
+  --el-color-primary-dark-2: #0958D9;
+
+  --el-color-success: #52C41A;
+  --el-color-success-light-3: #F6FFED;
+
+  --el-color-warning: #FA8C16;
+  --el-color-warning-light-3: #FFF7E6;
+
+  --el-color-danger: #FF4D4F;
+  --el-color-danger-light-3: #FFF1F0;
+
+  --el-bg-color-page: #F5F5F5;
+  --el-bg-color: #FFFFFF;
+  --el-border-color: #D9D9D9;
+  --el-border-color-hover: #4096FF;
+  --el-text-color-primary: #1F1F1F;
+  --el-text-color-regular: #1F1F1F;
+  --el-text-color-secondary: #8C8C8C;
+  --el-text-color-placeholder: #BFBFBF;
+
+  --el-border-radius-base: 6px;
+  --el-border-radius-small: 4px;
+  --el-border-radius-round: 8px;
+
+  --el-font-size-base: 14px;
+  --el-font-size-small: 12px;
+  --el-font-size-medium: 16px;
+}
+
+/* ========================================
+   十三、页面过渡动画
+   ======================================== */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-enter-active,
+.slide-leave-active {
+  transition: transform 0.3s ease;
+}
+
+.slide-enter-from {
+  transform: translateX(-20px);
+  opacity: 0;
+}
+
+.slide-leave-to {
+  transform: translateX(20px);
+  opacity: 0;
+}
+
+/* ========================================
+   十四、打印样式
+   ======================================== */
+@media print {
+  .sidebar,
+  .topbar,
+  .filter-bar,
+  .pagination-wrapper {
+    display: none !important;
+  }
+
+  .main-content {
+    padding: 0 !important;
+  }
+
+  .card {
+    box-shadow: none !important;
+    border: 1px solid #000 !important;
+  }
+}
+
+/* ========================================
+   十五、无障碍访问（设计规范 十四）
+   ======================================== */
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* 屏幕阅读器专用（视觉隐藏）*/
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -1,0 +1,297 @@
+数据上报接口
+1. 接口概述
+本接口用于相机系统每分钟批量上报检测数据数组。每次请求包含多条记录（建议 2 秒间隔一条，每分钟约 30 条），平台将进行批量入库处理。
+项目	内容
+接口路径	/api/v1/camera/inspection/batch-upload
+请求方式	POST
+数据格式	application/json; charset=utf-8
+幂等性	基于 startTime + cameraName 唯一索引，重复提交将触发更新
+超时时间	建议设置 30 秒（批量数据处理耗时较长）
+________________________________________
+2. 请求报文
+2.1 请求头 (Header)
+参数	必填	说明
+Content-Type	是	application/json
+Authorization	是	Bearer {token} (认证令牌)
+X-Device-Id	是	相机设备编号
+X-Batch-Id	否	批次号 (用于追踪，建议用时间戳)
+2.2 请求体 (Body) - 数组结构
+{
+  "deviceId": "CAM-008-K8",
+  "batchTime": "2025-12-30 16:34:00",
+  "recordCount": 30,
+  "dataList": [
+    {
+      "startTime": "2025-12-30 16:32:00",
+      "endTime": "2025-12-30 16:32:02",
+      "productName": "008 小护-K8",
+      "cameraName": "正面检测",
+      "totalCount": 100,
+      "okCount": 95,
+      "ngCount": 5,
+      "materialJoint": 0,
+      "innerGlue13": 0,
+      "innerGlue3Plus": 0,
+      "frontWaistGlue13": 0,
+      "frontWaistGlue3Plus": 0,
+      "backWaistGlue13": 0,
+      "backWaistGlue3Plus": 0,
+      "innerOuterGlue13": 0,
+      "innerOuterGlue3Plus": 0,
+      "innerDefect1": 0,
+      "innerDefect13": 0,
+      "innerDefect3Plus": 0,
+      "frontWaistDefect1": 0,
+      "frontWaistDefect13": 0,
+      "frontWaistDefect3Plus": 0,
+      "backWaistDefect1": 0,
+      "backWaistDefect13": 0,
+      "backWaistDefect3Plus": 0,
+      "innerOuterDefect1": 0,
+      "innerOuterDefect13": 0,
+      "innerOuterDefect3Plus": 0,
+      "recordType": 0,
+      "exceptionType": 0,
+      "exceptionItems": "",
+      "incrementalTotal": 10,
+      "incrementalOk": 9,
+      "incrementalNg": 1
+    },
+    {
+      "startTime": "2025-12-30 16:32:02",
+      "endTime": "2025-12-30 16:32:04",
+      "productName": "008 小护-K8",
+      "cameraName": "正面检测",
+      "totalCount": 110,
+      "okCount": 104,
+      "ngCount": 6,
+      "materialJoint": 0,
+      "innerGlue13": 0,
+      "innerGlue3Plus": 0,
+      "frontWaistGlue13": 0,
+      "frontWaistGlue3Plus": 0,
+      "backWaistGlue13": 0,
+      "backWaistGlue3Plus": 0,
+      "innerOuterGlue13": 0,
+      "innerOuterGlue3Plus": 0,
+      "innerDefect1": 0,
+      "innerDefect13": 0,
+      "innerDefect3Plus": 0,
+      "frontWaistDefect1": 0,
+      "frontWaistDefect13": 0,
+      "frontWaistDefect3Plus": 0,
+      "backWaistDefect1": 0,
+      "backWaistDefect13": 0,
+      "backWaistDefect3Plus": 0,
+      "innerOuterDefect1": 0,
+      "innerOuterDefect13": 0,
+      "innerOuterDefect3Plus": 0,
+      "recordType": 0,
+      "exceptionType": 0,
+      "exceptionItems": "",
+      "incrementalTotal": 10,
+      "incrementalOk": 9,
+      "incrementalNg": 1
+    }
+  ]
+}
+2.3 字段映射说明
+模块	JSON 字段	类型	对应实体字段	说明
+批次信息	deviceId	String	-	相机设备编号
+	batchTime	String	-	批次上报时间
+	recordCount	Integer	-	本批次记录数量
+	dataList	Array	-	检测数据数组
+单条记录	startTime	String	startTime	格式：yyyy-MM-dd HH:mm:ss
+	endTime	String	endTime	格式：yyyy-MM-dd HH:mm:ss
+	productName	String	productName	产品名称
+	cameraName	String	cameraName	相机名称 (非低速)
+	totalCount	Integer	totalCount	产品总数 (累计值)
+	okCount	Integer	okCount	总 OK 数 (累计值)
+	ngCount	Integer	ngCount	总 NG 数 (累计值)
+	materialJoint	Integer	materialJoint	材料接头数
+	innerGlue13	Integer	innerGlue13	内装胶滴 1~3mm
+	innerGlue3Plus	Integer	innerGlue3Plus	内装胶滴 3mm 以上
+	frontWaistGlue13	Integer	frontWaistGlue13	前腰腹胶滴 1~3mm
+	frontWaistGlue3Plus	Integer	frontWaistGlue3Plus	前腰腹胶滴 3mm 以上
+	backWaistGlue13	Integer	backWaistGlue13	后腰腹胶滴 1~3mm
+	backWaistGlue3Plus	Integer	backWaistGlue3Plus	后腰腹胶滴 3mm 以上
+	innerOuterGlue13	Integer	innerOuterGlue13	内外层胶滴 1~3mm
+	innerOuterGlue3Plus	Integer	innerOuterGlue3Plus	内外层胶滴 3mm 以上
+	innerDefect1	Integer	innerDefect1	内装异物 1mm 以内
+	innerDefect13	Integer	innerDefect13	内装异物 1~3mm
+	innerDefect3Plus	Integer	innerDefect3Plus	内装异物 3mm 以上
+	frontWaistDefect1	Integer	frontWaistDefect1	前腰腹异物 1mm 以内
+	frontWaistDefect13	Integer	frontWaistDefect13	前腰腹异物 1~3mm
+	frontWaistDefect3Plus	Integer	frontWaistDefect3Plus	前腰腹异物 3mm 以上
+	backWaistDefect1	Integer	backWaistDefect1	后腰腹异物 1mm 以内
+	backWaistDefect13	Integer	backWaistDefect13	后腰腹异物 1~3mm
+	backWaistDefect3Plus	Integer	backWaistDefect3Plus	后腰腹异物 3mm 以上
+	innerOuterDefect1	Integer	innerOuterDefect1	内外层异物 1mm 以内
+	innerOuterDefect13	Integer	innerOuterDefect13	内外层异物 1~3mm
+	innerOuterDefect3Plus	Integer	innerOuterDefect3Plus	内外层异物 3mm 以上
+	recordType	Integer	recordType	0:增量记录，1:清零记录
+	exceptionType	Integer	exceptionType	0:相等，1:实际>记录，2:实际<记录
+	exceptionItems	String	exceptionItems	异常检查项详情
+	incrementalTotal	Integer	incrementalTotal	2 秒时间段内增量总数
+	incrementalOk	Integer	incrementalOk	2 秒时间段内增量 OK 数
+	incrementalNg	Integer	incrementalNg	2 秒时间段内增量 NG 数
+________________________________________
+3. 响应报文
+3.1 成功响应 (HTTP 200)
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "batchId": "BATCH20251230163400",
+    "totalRecords": 30,
+    "successCount": 30,
+    "failCount": 0,
+    "duplicateCount": 0,
+    "processedTime": "2025-12-30 16:34:05",
+    "details": [
+      {
+        "index": 0,
+        "startTime": "2025-12-30 16:32:00",
+        "status": "success",
+        "id": 21187,
+        "message": "插入成功"
+      },
+      {
+        "index": 1,
+        "startTime": "2025-12-30 16:32:02",
+        "status": "success",
+        "id": 21188,
+        "message": "插入成功"
+      }
+    ]
+  }
+}
+3.2 部分失败响应 (HTTP 207)
+{
+  "code": 207,
+  "message": "部分记录处理失败",
+  "data": {
+    "batchId": "BATCH20251230163400",
+    "totalRecords": 30,
+    "successCount": 28,
+    "failCount": 2,
+    "duplicateCount": 0,
+    "processedTime": "2025-12-30 16:34:05",
+    "details": [
+      {
+        "index": 0,
+        "startTime": "2025-12-30 16:32:00",
+        "status": "success",
+        "id": 21187,
+        "message": "插入成功"
+      },
+      {
+        "index": 5,
+        "startTime": "2025-12-30 16:32:10",
+        "status": "fail",
+        "id": null,
+        "message": "时间格式错误"
+      }
+    ]
+  }
+}
+3.3 失败响应 (HTTP 4xx/5xx)
+{
+  "code": 400,
+  "message": "dataList 不能为空",
+  "data": null
+}
+3.4 状态码定义
+代码	含义	处理建议
+200	全部成功	所有记录已入库
+207	部分成功	检查 details 中失败记录
+400	参数错误	检查 JSON 格式或必填项
+401	未授权	检查 Token
+413	数据过大	减少单次上报记录数
+500	服务器错误	联系运维
+________________________________________
+4. 服务端处理逻辑
+4.1 自动处理字段
+以下字段无需前端传递，由服务端自动处理：
+字段	实体字段	处理逻辑
+主键 ID	id	数据库自增，响应中返回
+非法 NG 数	illegalNgCount	服务端计算：ngCount - ∑(所有缺陷字段)
+数据来源	dataSource	服务端默认置为 batch_api_push
+创建时间	createTime	服务端自动填充 (当前时间)
+更新时间	updateTime	服务端自动填充 (当前时间)
+是否处理	isProcessed	服务端默认置为 0 (未处理)
+4.2 批量处理流程
+┌─────────────────────────────────────────────────────────┐
+│                    相机端每分钟上报                       │
+│                  (约 30 条记录/批次)                       │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                   平台接收批量请求                        │
+│              校验 dataList 非空且≤100 条                   │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                   遍历每条记录                           │
+│    1. 校验时间格式                                      │
+│    2. 计算 illegalNgCount                               │
+│    3. 填充 dataSource、isProcessed 等系统字段            │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                   批量入库处理                           │
+│    1. 检查唯一索引 (startTime + cameraName)              │
+│    2. 存在则 UPDATE，不存在则 INSERT                     │
+│    3. 记录每条处理结果                                   │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                   返回处理结果                           │
+│    包含 successCount、failCount、details 详情            │
+└─────────────────────────────────────────────────────────┘
+________________________________________
+5. 业务规则与注意事项
+5.1 上报频率建议
+场景	上报间隔	每条记录间隔	单次记录数
+正常生产	每分钟 1 次	2 秒	30 条
+高速生产	每分钟 2 次	1 秒	30 条
+低速生产	每分钟 1 次	5 秒	12 条
+5.2 数据一致性要求
+1.	时间连续性：dataList 中各记录的 startTime 应连续递增，间隔建议 2 秒。
+2.	累计值递增：totalCount、okCount、ngCount 应为累计值，后续记录应≥前序记录。
+3.	清零记录：换班或重置时，recordType=1，累计值从 0 重新开始。
+5.3 重试机制
+场景	处理策略
+网络超时	本地缓存，下次批次合并上报
+部分失败 (207)	仅重试失败记录，成功记录不重复上报
+全部失败	完整批次重试，最多 3 次
+唯一索引冲突	视为成功 (数据已存在)，不重试
+5.4 性能建议
+1.	单次上限：建议 dataList 不超过 100 条，避免请求超时。
+2.	请求超时：客户端超时时间建议设置为 30 秒。
+3.	并发控制：同一设备同一时间只允许一个批次在处理中。
+4.	数据压缩：如网络带宽有限，可启用 GZIP 压缩。
+________________________________________
+6. 附录
+6.1 缺陷字段命名速查
+部位	胶滴 (Glue)	异物 (Defect)
+内装	innerGlue...	innerDefect...
+前腰腹	frontWaistGlue...	frontWaistDefect...
+后腰腹	backWaistGlue...	backWaistDefect...
+内外层	innerOuterGlue...	innerOuterDefect...
+尺寸后缀	含义	示例字段
+1	1mm 以内	innerDefect1
+13	1~3mm	innerGlue13
+3Plus	3mm 以上	backWaistDefect3Plus
+6.2 错误码参考
+错误码	说明	解决方案
+DATA_001	dataList 为空	检查上报逻辑
+DATA_002	记录数超限	减少单次上报数量
+TIME_001	时间格式错误	统一为 yyyy-MM-dd HH:mm:ss
+TIME_002	时间不连续	检查记录间隔
+DUP_001	唯一索引冲突	视为成功，无需重试
+
