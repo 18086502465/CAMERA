@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wms.mapper.SysOperationLogMapper">
+
+    <!--
+      【2026-10-28 修复】原文件里有三个 id 劫持了 BaseMapper 的同名通用方法：
+        - <select id="selectList">  →  BaseMapper.selectList(Wrapper) 只传 ew/param1，
+          而 XML 引用 #{userId}/#{startTime} →
+          "Parameter 'userId' not found. Available parameters are [ew, param1]" → 查询接口 500
+        - <select id="selectCount"> →  同上
+        - <insert id="insert">      →  参数名与实体字段恰好一致，能正常工作
+
+      修复：删除两个从未被调用方使用的死查询（selectList / selectCount），
+      让 BaseMapper 的 selectList/selectCount 恢复原生实现。
+
+      【2026-10-31 服务器实测修正】
+      剩下的 <insert id="insert"> 同样与 BaseMapper.insert 撞名。
+      MyBatis-Plus 的规则是「XML 优先」，
+      于是启动时 MyBatis-Plus 会认为 BaseMapper 的 insert 已被 XML 加载，
+      跳过自己的注入，并打一条 WARN：
+        WARN  [com.wms.mapper.SysOperationLogMapper.insert] Has been loaded by XML
+              or SqlProvider or Mybatis's Annotation, so ignoring this injection
+              for [class com.baomidou.mybatisplus.core.injector.methods.Insert]
+
+      这个 WARN 每次启动都出现，会掩盖真正的告警。这里**把该 insert 也删掉**，
+      改由 MyBatis-Plus 原生的 BaseMapper.insert 负责 —— 实体字段与表列一一对应
+      （user_id / user_name / operation_type / module_name / operation_desc /
+        request_method / request_uri / request_params / ip_address /
+        operation_time / execution_time / operation_result / error_message），
+      原生插入行为完全等价。
+
+      ⚠️ 将来若要写自定义 SQL，**绝不能与 BaseMapper 的方法重名**
+      （selectList / selectCount / insert / updateById / deleteById …）。
+      请声明为独立方法名（如 selectListByCondition），再在这里用同名 id 实现。
+    -->
+
+</mapper>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wms.mapper.DimShiftMapper">
+    <!-- 根据时间匹配班次ID：修复语法错误+最优写法 -->
+    <select id="selectShiftIdByTime" resultType="java.lang.Integer">
+        SELECT shift_id FROM dim_shift
+        WHERE
+        -- 情况1：正常班次 开始时间 = 结束时间 (如 08:00:00 - 20:00:00 白班)
+        (start_time &lt;= end_time AND #{currentTime} BETWEEN start_time AND end_time)
+        OR
+        -- 情况2：跨天班次 开始时间 > 结束时间 (如 20:00:00 - 08:00:00 晚班)
+        (start_time &gt; end_time AND (#{currentTime} &gt;= start_time OR #{currentTime} &lt;= end_time))
+        LIMIT 1
+    </select>
+</mapper>

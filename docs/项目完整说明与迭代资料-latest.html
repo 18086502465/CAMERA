@@ -1,0 +1,439 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>产线缺陷在线AI检测系统 — 项目完整说明与后续迭代资料</title><style>
+  @page { size: A4; margin: 16mm 14mm 18mm 14mm; }
+  * { box-sizing: border-box; }
+  body { margin:0; color:#1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", Arial, sans-serif; font-size: 13px; line-height: 1.72; background:#fff; }
+  .page { max-width: 980px; margin: 0 auto; padding: 4px 0 24px; }
+  h1 { font-size: 26px; line-height:1.3; color:#0f172a; padding-bottom:12px; margin: 0 0 18px; border-bottom: 3px solid #2563eb; }
+  h2 { font-size: 20px; color:#1e3a8a; margin: 26px 0 12px; padding-left: 10px; border-left: 4px solid #3b82f6; break-after: avoid; }
+  h3 { font-size: 16px; color:#0f172a; margin: 18px 0 8px; break-after: avoid; }
+  h4,h5,h6 { font-size: 14px; color:#111827; margin: 14px 0 6px; break-after: avoid; }
+  p { margin: 7px 0 10px; }
+  a { color:#2563eb; text-decoration:none; }
+  hr { border:0; border-top:1px solid #e5e7eb; margin:18px 0; }
+  ul,ol { margin: 6px 0 12px 22px; padding:0; }
+  li { margin: 3px 0; }
+  code { font-family: Consolas, "Cascadia Mono", Menlo, monospace; background:#f1f5f9; color:#0f172a; padding:1px 5px; border-radius:4px; font-size: 12px; }
+  .code-wrap { margin: 10px 0 14px; border:1px solid #e2e8f0; border-radius: 8px; overflow:hidden; break-inside: avoid; background:#0f172a; }
+  .code-label { padding:5px 10px; color:#cbd5e1; background:#111827; font-size:11px; border-bottom:1px solid #334155; }
+  pre { margin:0; padding:11px 13px; overflow-wrap:anywhere; white-space:pre-wrap; word-break:break-word; }
+  pre code { background:transparent; color:#e5e7eb; padding:0; border-radius:0; font-size:11px; line-height:1.55; }
+  .table-wrap { margin: 10px 0 16px; overflow: visible; break-inside: avoid; }
+  table { width:100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+  th { background:#eff6ff; color:#1e3a8a; font-weight:700; }
+  th,td { border:1px solid #dbe3ef; padding:7px 8px; vertical-align:top; word-break:break-word; }
+  tr:nth-child(even) td { background:#fafafa; }
+  strong { color:#111827; }
+  .footer { margin-top: 28px; padding-top: 12px; border-top:1px solid #e5e7eb; color:#64748b; font-size:11px; }
+  </style></head><body><main class="page"><p># 产线缺陷在线AI检测系统 — 项目完整说明与后续迭代资料</p>
+<p>版本：v1.0.0 整理时间：2026-06-20 整理范围：<code>D:\45344\0004-软件源码</code> 当前前端、后端、数据库脚本、安装包与测试报告。</p>
+<hr/>
+<h2>1. 项目定位</h2>
+<p>本项目是一个部署在 Windows 工控机/现场服务器上的本地化相机 AI 检测平台，核心目标是承接现场相机/AI 设备的三类上报数据，并在浏览器中实时展示相机状态、缺陷图片与产线质量统计。</p>
+<p>系统名称：<strong>产线缺陷在线AI检测系统</strong>。</p>
+<p>系统围绕以下业务闭环建设：</p>
+<div class="code-wrap"><div class="code-label">mermaid</div><pre><code class="language-mermaid">flowchart LR
+  A[系统配置: 工厂/产线/工位/相机/产品/缺陷/映射] --&gt; B[相机状态心跳上报]
+  A --&gt; C[缺陷图片批量上传]
+  A --&gt; D[检测统计批量上报]
+  B --&gt; E[相机状态页]
+  C --&gt; F[图像记录页]
+  D --&gt; G[产线统计动态看板]
+  G --&gt; H[图表配置/导出/大屏展示]
+  E --&gt; I[操作日志/问题追溯]
+  F --&gt; I
+  G --&gt; I</code></pre></div>
+<hr/>
+<h2>2. 当前系统边界</h2>
+<h3>2.1 数据来源</h3>
+<p>当前只保留三类对外上报入口：</p>
+<div class="table-wrap"><table><thead><tr><th>数据来源</th><th>接口</th><th>用途</th></tr></thead><tbody>
+<tr><td>相机运行状态</td><td><code>POST /api/v1/camera/status/heartbeat</code></td><td>更新相机运行状态、资源占用、故障信息、累计识别计数</td></tr>
+<tr><td>相机缺陷图片</td><td><code>POST /api/v1/defect-images/upload</code></td><td>上传缺陷图片文件与 metadata，支持图片、缺陷框、严重度统计</td></tr>
+<tr><td>相机检测统计</td><td><code>POST /api/v1/camera/inspection/batch-upload</code></td><td>上报检测总数、OK 数、NG 数、缺陷编码计数，驱动产线统计报表</td></tr>
+</tbody></table></div>
+<h3>2.2 页面范围</h3>
+<p>当前主导航保留 3 个核心 Tab：</p>
+<ol>
+<li><strong>相机状态</strong>：默认首页，展示相机运行状态、上传状态、最近图像入口、上传/识别统计。</li>
+<li><strong>图像记录</strong>：按相机一行一个对象展示缺陷图片，支持筛选、展开、图片预览、上一张/下一张切换。</li>
+<li><strong>产线统计</strong>：动态配置质量统计看板，支持图表配置、模板管理、聚合任务、大屏展示。</li>
+</ol>
+<p>系统配置入口位于主界面右上方，主要用于基础资料维护、配置导入、操作日志、系统设置。</p>
+<hr/>
+<h2>3. 技术架构</h2>
+<h3>3.1 前端</h3>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>当前实现</th></tr></thead><tbody>
+<tr><td>框架</td><td>Vue 3</td></tr>
+<tr><td>构建工具</td><td>Vite</td></tr>
+<tr><td>UI 组件</td><td>Element Plus</td></tr>
+<tr><td>图表</td><td>ECharts</td></tr>
+<tr><td>状态管理</td><td>Pinia</td></tr>
+<tr><td>HTTP</td><td>Axios，统一 baseURL <code>/api</code></td></tr>
+<tr><td>路由</td><td>Vue Router，默认 <code>/camera-status</code></td></tr>
+<tr><td>发布方式</td><td><code>npm run build</code> 后复制到 Spring Boot <code>static</code> 目录，由 8091 统一服务</td></tr>
+</tbody></table></div>
+<p>关键目录：</p>
+<div class="table-wrap"><table><thead><tr><th>路径</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>D:\45344\0004-软件源码\frontend\src\components\Layout.vue</code></td><td>全局头部、筛选区、主 Tab、用户菜单</td></tr>
+<tr><td><code>D:\45344\0004-软件源码\frontend\src\views\camera\CameraStatusView.vue</code></td><td>相机状态页</td></tr>
+<tr><td><code>D:\45344\0004-软件源码\frontend\src\components\CameraImageRecords.vue</code></td><td>图像记录核心组件</td></tr>
+<tr><td><code>D:\45344\0004-软件源码\frontend\src\views\stats\LineAnalyticsView.vue</code></td><td>产线统计动态看板</td></tr>
+<tr><td><code>D:\45344\0004-软件源码\frontend\src\views\system\ConfigView.vue</code></td><td>系统配置聚合页</td></tr>
+<tr><td><code>D:\45344\0004-软件源码\frontend\src\components\common</code></td><td>统一分页、空状态、异常状态、加载状态组件</td></tr>
+</tbody></table></div>
+<h3>3.2 后端</h3>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>当前实现</th></tr></thead><tbody>
+<tr><td>框架</td><td>Spring Boot</td></tr>
+<tr><td>端口</td><td>8091</td></tr>
+<tr><td>数据库</td><td>MySQL 8.0 / <code>wms-new</code></td></tr>
+<tr><td>数据访问</td><td>MyBatis-Plus + MyBatis XML + JdbcTemplate</td></tr>
+<tr><td>鉴权</td><td>JWT + 设备 Bearer Token 校验</td></tr>
+<tr><td>静态资源</td><td>Vue dist 集成到 Spring Boot <code>static</code></td></tr>
+<tr><td>服务发布</td><td>Windows Service Wrapper + 内置 JRE</td></tr>
+<tr><td>文件存储</td><td>安装目录外部运行路径下 <code>runtime/data/uploads/defect-images</code></td></tr>
+<tr><td>日志</td><td><code>runtime/logs/camera-detection-system.log</code></td></tr>
+</tbody></table></div>
+<p>关键控制器：</p>
+<div class="table-wrap"><table><thead><tr><th>控制器</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>AuthController</code></td><td>登录、注册、当前用户</td></tr>
+<tr><td><code>CameraStatusHeartbeatController</code></td><td>相机状态心跳上报</td></tr>
+<tr><td><code>DefectImageController</code></td><td>缺陷图片上传、图片记录查询、图片文件读取</td></tr>
+<tr><td><code>BatchUploadController</code></td><td>新版检测统计批量上报</td></tr>
+<tr><td><code>LineAnalyticsController</code></td><td>产线统计元数据、查询、看板、图表、聚合任务</td></tr>
+<tr><td><code>FinalConfigController</code></td><td>产品、缺陷类型、相机缺陷映射、映射异常</td></tr>
+<tr><td><code>ConfigImportController</code></td><td>工厂/产线/工位/相机配置导入导出</td></tr>
+<tr><td><code>SysOperationLogController</code></td><td>操作日志查询、导出、删除、清空</td></tr>
+<tr><td><code>SystemSettingsController</code></td><td>系统设置中心</td></tr>
+<tr><td><code>SpaFallbackController</code></td><td>Vue 路由 fallback</td></tr>
+</tbody></table></div>
+<hr/>
+<h2>4. 数据模型概览</h2>
+<p>当前数据库从“最终模型”角度组织，旧表可废弃，P0 不迁移旧数据，仅保留备份。</p>
+<h3>4.1 配置维度表</h3>
+<div class="table-wrap"><table><thead><tr><th>表</th><th>用途</th></tr></thead><tbody>
+<tr><td><code>dim_factory</code></td><td>工厂维度</td></tr>
+<tr><td><code>dim_production_line</code></td><td>产线维度</td></tr>
+<tr><td><code>dim_workstation</code></td><td>工位维度</td></tr>
+<tr><td><code>dim_camera</code></td><td>相机维度，含相机编号、设备 ID、工厂/产线/工位绑定</td></tr>
+<tr><td><code>dim_product</code></td><td>产品维度</td></tr>
+<tr><td><code>dim_defect_type</code></td><td>缺陷类型维度，支持按产品配置</td></tr>
+<tr><td><code>dim_defect_position</code></td><td>缺陷位置维度</td></tr>
+<tr><td><code>dim_shift</code></td><td>班次维度</td></tr>
+<tr><td><code>cfg_camera_token</code></td><td>相机设备 token 配置</td></tr>
+<tr><td><code>cfg_camera_defect_mapping</code></td><td>相机上报编码到标准缺陷类型的一对一映射</td></tr>
+</tbody></table></div>
+<h3>4.2 事实表</h3>
+<div class="table-wrap"><table><thead><tr><th>表</th><th>用途</th></tr></thead><tbody>
+<tr><td><code>fact_camera_heartbeat</code></td><td>相机心跳明细</td></tr>
+<tr><td><code>fact_camera_status_current</code></td><td>相机当前状态快照</td></tr>
+<tr><td><code>fact_inspection_batch</code></td><td>检测统计上报批次</td></tr>
+<tr><td><code>fact_inspection_defect_count</code></td><td>检测缺陷计数明细</td></tr>
+<tr><td><code>fact_inspection_mapping_exception</code></td><td>检测上报映射异常</td></tr>
+<tr><td><code>defect_image_batch</code></td><td>缺陷图片上传批次</td></tr>
+<tr><td><code>defect_image_file</code></td><td>缺陷图片文件记录</td></tr>
+<tr><td><code>defect_image_box</code></td><td>图片缺陷框 metadata</td></tr>
+<tr><td><code>sys_operation_log</code></td><td>用户操作记录</td></tr>
+</tbody></table></div>
+<h3>4.3 聚合表与配置表</h3>
+<div class="table-wrap"><table><thead><tr><th>表</th><th>用途</th></tr></thead><tbody>
+<tr><td><code>agg_quality_30m</code></td><td>30 分钟质量聚合</td></tr>
+<tr><td><code>agg_defect_type_30m</code></td><td>30 分钟缺陷类型聚合</td></tr>
+<tr><td><code>agg_quality_daily</code> / <code>agg_defect_type_daily</code></td><td>大时间范围日聚合，执行迁移后可用</td></tr>
+<tr><td><code>cfg_analytics_dashboard</code></td><td>动态看板模板</td></tr>
+<tr><td><code>cfg_analytics_widget</code></td><td>动态图表配置</td></tr>
+<tr><td><code>cfg_analytics_aggregation_schedule</code></td><td>夜间日聚合配置</td></tr>
+<tr><td><code>fact_analytics_aggregation_job</code></td><td>聚合任务记录</td></tr>
+<tr><td><code>sys_system_setting</code></td><td>系统设置中心</td></tr>
+<tr><td><code>sys_data_retention_policy</code></td><td>数据保留策略</td></tr>
+</tbody></table></div>
+<hr/>
+<h2>5. 功能模块说明</h2>
+<h3>5.1 登录与权限</h3>
+<ul>
+<li>登录页系统名称为“产线缺陷在线AI检测系统”。</li>
+<li>登录成功后默认进入 <code>/camera-status</code>。</li>
+<li>前端本地保存 token 与用户信息。</li>
+<li>右上角展示角色和登录用户名，例如“系统管理员 · admin”。</li>
+<li>管理类页面通过 <code>requiresAdmin</code> 做页面级拦截。</li>
+</ul>
+<h3>5.2 全局布局与筛选</h3>
+<ul>
+<li>头部固定展示班次、工厂、产线、工位筛选。</li>
+<li>主 Tab 固定在页面上方，不随页面下滚消失。</li>
+<li>工厂、产线、工位筛选通过 <code>/api/cascade/all</code> 获取层级数据。</li>
+<li>全局分页统一默认 10 条，支持 10、20、50、100。</li>
+</ul>
+<h3>5.3 相机状态页</h3>
+<p>当前能力：</p>
+<ul>
+<li>搜索相机名称/编号/工位。</li>
+<li>按运行状态筛选：运行、停止、故障、待机、离线等。</li>
+<li>默认关闭“异常优先”，按数据库自增/配置顺序展示。</li>
+<li>展示相机名称、工位名称、相机编号、当前检测产品、检测总数、OK 数、缺陷数、CPU、内存、温度、故障信息、最近心跳/上传时间。</li>
+<li>最近图像区域提供“图像记录”按钮，可跳转到对应相机的图像记录页。</li>
+<li>状态来源：心跳运行状态 + 图片/检测上传状态分别计算。</li>
+</ul>
+<p>状态口径：</p>
+<div class="table-wrap"><table><thead><tr><th>code</th><th>枚举</th><th>中文</th></tr></thead><tbody>
+<tr><td>0</td><td>STOPPED</td><td>停止</td></tr>
+<tr><td>1</td><td>RUNNING</td><td>运行</td></tr>
+<tr><td>2</td><td>FAULT</td><td>故障</td></tr>
+<tr><td>3</td><td>STANDBY</td><td>待机</td></tr>
+<tr><td>9</td><td>OFFLINE</td><td>离线，服务端按超时派生</td></tr>
+</tbody></table></div>
+<h3>5.4 图像记录页</h3>
+<p>当前能力：</p>
+<ul>
+<li>一行展示一个相机对象。</li>
+<li>支持关键字、严重度、缺陷类型、工厂/产线/工位、时间范围筛选。</li>
+<li>支持按相机展开历史图片分页。</li>
+<li>单个相机历史总数不再受“最近 200 张”限制。</li>
+<li>图片点击后可弹窗查看，并支持上一张/下一张切换。</li>
+<li>图片记录与文件链路经过一致性检查：当前 DB 记录无缺失文件；历史孤儿文件不影响页面展示。</li>
+</ul>
+<p>核心 API：</p>
+<ul>
+<li><code>GET /api/v1/defect-images/camera-summaries</code></li>
+<li><code>GET /api/v1/defect-images/history</code></li>
+<li><code>GET /api/v1/defect-images/file/**</code></li>
+</ul>
+<h3>5.5 产线统计页</h3>
+<p>当前能力：</p>
+<ul>
+<li>按时间、工厂、产线、工位、相机、产品、班次、缺陷类型、严重度筛选。</li>
+<li>展示 KPI：检测总数、OK 数、NG 数、良率、缺陷数。</li>
+<li>支持动态图表：折线图、柱状图、堆叠柱状图、排行图、透视表。</li>
+<li>支持图表新增、编辑、删除、二次确认、保存后刷新。</li>
+<li>支持图表独立筛选，或跟随全局筛选。</li>
+<li>支持看板模板复制、另存为、删除。</li>
+<li>支持大屏/最大化展示。</li>
+<li>支持图表导出图片、Excel。</li>
+<li>大时间范围查询自动走日聚合；支持夜间自动执行时间配置、任务列表、失败详情与重试。</li>
+</ul>
+<h3>5.6 系统配置页</h3>
+<p>当前聚合页面：<code>/system/config</code>。</p>
+<div class="table-wrap"><table><thead><tr><th>Tab</th><th>当前能力</th></tr></thead><tbody>
+<tr><td>配置总览/工厂</td><td>按层级展示工厂，支持新增、编辑、删除依赖校验、分页</td></tr>
+<tr><td>产线管理</td><td>依赖工厂，支持新增、编辑、删除依赖校验、分页</td></tr>
+<tr><td>工位管理</td><td>依赖产线，支持新增、编辑、删除依赖校验、分页</td></tr>
+<tr><td>相机管理</td><td>依赖工位，支持新增、编辑、删除依赖校验、分页</td></tr>
+<tr><td>用户管理</td><td>用户增删改查、角色映射、状态展示</td></tr>
+<tr><td>操作记录</td><td>查询用户操作记录，支持删除、清空、导出等操作</td></tr>
+</tbody></table></div>
+<p>配置导入：</p>
+<ul>
+<li>支持工厂、产线、工位、相机层级配置模板导出。</li>
+<li>支持全量导入和增量导入的交互设计。</li>
+<li>导入前进行风险提示，导入失败需要展示失败行、失败原因和处理建议。</li>
+</ul>
+<p>产品、缺陷类型、相机缺陷映射当前由后端 <code>FinalConfigController</code> 提供接口，并作为产线统计和检测上报链路的核心配置；后续迭代建议继续并入系统配置 UI，形成统一配置中心。</p>
+<hr/>
+<h2>6. 对外接口概要</h2>
+<h3>6.1 通用响应结构</h3>
+<div class="code-wrap"><div class="code-label">json</div><pre><code class="language-json">{
+  &quot;code&quot;: 200,
+  &quot;message&quot;: &quot;success&quot;,
+  &quot;data&quot;: {}
+}</code></pre></div>
+<p>异常时：</p>
+<div class="code-wrap"><div class="code-label">json</div><pre><code class="language-json">{
+  &quot;code&quot;: 422,
+  &quot;message&quot;: &quot;字段或配置错误说明&quot;,
+  &quot;data&quot;: { &quot;issues&quot;: [] }
+}</code></pre></div>
+<h3>6.2 相机状态心跳</h3>
+<p><code>POST /api/v1/camera/status/heartbeat</code></p>
+<p>Header：</p>
+<ul>
+<li><code>Authorization: Bearer &lt;device-token&gt;</code></li>
+<li><code>X-Device-Id: &lt;cameraCode/deviceId&gt;</code></li>
+</ul>
+<p>Body：</p>
+<div class="code-wrap"><div class="code-label">json</div><pre><code class="language-json">{
+  &quot;cameraName&quot;: &quot;杭州1线-上料相机A&quot;,
+  &quot;productName&quot;: &quot;产品A&quot;,
+  &quot;timestamp&quot;: &quot;2026-06-20 10:00:00&quot;,
+  &quot;cameraStatus&quot;: 1,
+  &quot;recognizeCount&quot;: 1000,
+  &quot;correctCount&quot;: 980,
+  &quot;abnormalCount&quot;: 20,
+  &quot;cpuUsage&quot;: 35.5,
+  &quot;memoryUsage&quot;: 62.1,
+  &quot;temperature&quot;: 45.2,
+  &quot;errorMessage&quot;: &quot;&quot;,
+  &quot;resetFlag&quot;: false
+}</code></pre></div>
+<p>注意：<code>cameraStatus</code> 仅允许 0、1、2、3；离线由服务端根据超时派生。</p>
+<h3>6.3 缺陷图片批量上传</h3>
+<p><code>POST /api/v1/defect-images/upload</code></p>
+<p>请求类型：<code>multipart/form-data</code></p>
+<p>Header：</p>
+<ul>
+<li><code>Authorization: Bearer &lt;device-token&gt;</code></li>
+<li><code>X-Device-Id: &lt;cameraCode/deviceId&gt;</code></li>
+<li>建议：<code>X-Image-Count: &lt;本批图片数量&gt;</code>，超过 100 可快速拒绝。</li>
+</ul>
+<p>Form 字段：</p>
+<div class="table-wrap"><table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>files</code> 或 <code>file</code></td><td>图片文件数组，支持 jpg/jpeg/png/bmp/gif/webp/svg</td></tr>
+<tr><td><code>metadata</code></td><td>JSON 字符串，描述 cameraId、uploadTime、images、defects</td></tr>
+</tbody></table></div>
+<p>关键规则：</p>
+<ul>
+<li>单批最多 100 张图片。</li>
+<li><code>metadata.images[].fileName</code> 必须与上传文件原始文件名一一匹配，包含扩展名。</li>
+<li>同批次不允许重复文件名。</li>
+<li>图片保存与数据库写入在事务中处理；单图失败会清理失败文件。</li>
+<li>页面展示以 <code>defect_image_file</code> / <code>defect_image_box</code> 为准，文件路径由记录中的 <code>image_url</code> 加载。</li>
+</ul>
+<h3>6.4 检测统计批量上报</h3>
+<p><code>POST /api/v1/camera/inspection/batch-upload</code></p>
+<p>Header：</p>
+<ul>
+<li><code>Authorization: Bearer &lt;device-token&gt;</code></li>
+<li><code>X-Device-Id: &lt;cameraCode/deviceId&gt;</code></li>
+<li>可选：<code>X-Batch-Id: &lt;batchId&gt;</code></li>
+</ul>
+<p>关键规则：</p>
+<ul>
+<li>P0 只支持 <code>counterMode=INCREMENTAL</code>。</li>
+<li><code>schemaVersion</code> 固定为 <code>2.0</code>。</li>
+<li><code>totalCount = okCount + ngCount</code>。</li>
+<li><code>ngCount = sum(defects[].count)</code>。</li>
+<li><code>productName</code> 必须与产品配置完全匹配。</li>
+<li><code>cameraCode</code> / <code>X-Device-Id</code> 必须能匹配系统配置中的相机。</li>
+<li>每个 <code>sourceCode</code> 必须按“产品 + 相机 + sourceCode”映射到唯一标准缺陷类型，否则返回 HTTP 422，并记录映射异常。</li>
+<li>重复 <code>batchId</code> 按幂等处理，不重复累加。</li>
+<li>P0 同步写入 30 分钟聚合表，保障产线统计实时查询。</li>
+</ul>
+<hr/>
+<h2>7. 数据处理链路</h2>
+<h3>7.1 心跳链路</h3>
+<div class="code-wrap"><div class="code-label">mermaid</div><pre><code class="language-mermaid">sequenceDiagram
+  participant Camera as 相机/AI设备
+  participant API as Heartbeat API
+  participant DB as MySQL
+  participant UI as 相机状态页
+  Camera-&gt;&gt;API: POST /api/v1/camera/status/heartbeat
+  API-&gt;&gt;API: 校验 Token、X-Device-Id、状态枚举
+  API-&gt;&gt;DB: 写入 fact_camera_heartbeat
+  API-&gt;&gt;DB: 更新 fact_camera_status_current / camera_status
+  UI-&gt;&gt;DB: 查询相机状态汇总
+  DB--&gt;&gt;UI: 返回运行状态、资源、计数、故障信息</code></pre></div>
+<h3>7.2 缺陷图片链路</h3>
+<div class="code-wrap"><div class="code-label">mermaid</div><pre><code class="language-mermaid">sequenceDiagram
+  participant Camera as 相机/AI设备
+  participant API as 图片上传接口
+  participant FS as 文件系统
+  participant DB as MySQL
+  participant UI as 图像记录页
+  Camera-&gt;&gt;API: multipart files + metadata
+  API-&gt;&gt;API: 校验图片数量、metadata、文件名一一匹配
+  API-&gt;&gt;FS: 保存图片到 runtime/data/uploads/defect-images
+  API-&gt;&gt;DB: 写入 batch/file/box 记录
+  API-&gt;&gt;DB: 更新相机最近图像
+  UI-&gt;&gt;DB: 查询 camera-summaries/history
+  UI-&gt;&gt;FS: 通过 /file/** 读取图片</code></pre></div>
+<h3>7.3 检测统计链路</h3>
+<div class="code-wrap"><div class="code-label">mermaid</div><pre><code class="language-mermaid">sequenceDiagram
+  participant Camera as 相机/AI设备
+  participant API as 批量检测上报接口
+  participant DB as MySQL
+  participant UI as 产线统计页
+  Camera-&gt;&gt;API: JSON batch-upload
+  API-&gt;&gt;API: 校验协议版本/增量计数/计数一致性
+  API-&gt;&gt;DB: 匹配相机、产品、缺陷映射
+  alt 映射失败
+    API-&gt;&gt;DB: 写入 fact_inspection_mapping_exception
+    API--&gt;&gt;Camera: HTTP 422
+  else 映射成功
+    API-&gt;&gt;DB: 写入 fact_inspection_batch/defect_count
+    API-&gt;&gt;DB: 同步更新 agg_quality_30m/agg_defect_type_30m
+    UI-&gt;&gt;DB: 查询统计看板数据
+  end</code></pre></div>
+<hr/>
+<h2>8. 构建与发布</h2>
+<h3>8.1 一键构建</h3>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell">powershell -ExecutionPolicy Bypass -File D:\45344\0004-软件源码\build-release.ps1</code></pre></div>
+<p>构建过程：</p>
+<ol>
+<li>前端执行 <code>npm run build</code>。</li>
+<li>将 Vue dist 复制到后端 <code>src/main/resources/static</code>。</li>
+<li>Maven 构建 Spring Boot JAR。</li>
+<li>编译 Windows Service Wrapper。</li>
+<li>复制内置 JRE、配置模板、脚本、SQL、文档。</li>
+<li>使用 Inno Setup 生成安装包。</li>
+</ol>
+<h3>8.2 发布目录</h3>
+<div class="table-wrap"><table><thead><tr><th>路径</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>D:\45344\0004-软件源码\dist-release\CameraDetectionSystem</code></td><td>解压态发布目录</td></tr>
+<tr><td><code>D:\45344\0004-软件源码\dist-release\installer\CameraDetectionSystem-Setup-1.0.0.exe</code></td><td>Windows 安装包</td></tr>
+<tr><td><code>D:\45344\0004-软件源码\dist-release\build-release-latest.log</code></td><td>最新构建日志</td></tr>
+</tbody></table></div>
+<h3>8.3 运行目录</h3>
+<p>默认安装目录示例：<code>D:\45344\0000-jar\CameraDetectionSystem</code>。</p>
+<div class="table-wrap"><table><thead><tr><th>子目录</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>app</code></td><td>Spring Boot JAR</td></tr>
+<tr><td><code>config</code></td><td>外部配置 <code>application.yml</code></td></tr>
+<tr><td><code>jre</code></td><td>内置 JRE</td></tr>
+<tr><td><code>service</code></td><td>Windows 服务包装器</td></tr>
+<tr><td><code>scripts</code></td><td>服务安装/启动/停止/卸载、自检、数据库初始化脚本</td></tr>
+<tr><td><code>runtime/data/uploads/defect-images</code></td><td>缺陷图片上传目录</td></tr>
+<tr><td><code>runtime/logs</code></td><td>运行日志目录</td></tr>
+<tr><td><code>sql</code></td><td>数据库初始化 SQL</td></tr>
+<tr><td><code>docs</code></td><td>交付文档</td></tr>
+</tbody></table></div>
+<hr/>
+<h2>9. 测试与验收现状</h2>
+<p>最近一次安装包级发布验证结果：</p>
+<div class="table-wrap"><table><thead><tr><th>验收项</th><th>结果</th></tr></thead><tbody>
+<tr><td>安装包端到端验收</td><td>PASS</td></tr>
+<tr><td>上线验收脚本</td><td>PASS</td></tr>
+<tr><td>完整项目自动化测试</td><td>50/50 PASS</td></tr>
+<tr><td>新功能自动化测试</td><td>30/30 PASS</td></tr>
+<tr><td>相机状态跳图像记录专项</td><td>PASS</td></tr>
+<tr><td>100 路相机心跳压测</td><td>PASS</td></tr>
+<tr><td>100 张图片批量上传压测</td><td>PASS</td></tr>
+<tr><td>图片一致性检查</td><td>DB 缺失文件 0；历史孤儿文件 7</td></tr>
+</tbody></table></div>
+<p>关键报告：</p>
+<ul>
+<li><code>D:\45344\0004-软件源码\test-reports\安装包级发布验证汇总-latest.md</code></li>
+<li><code>D:\45344\0004-软件源码\test-reports\相机检测平台-测试报告-latest.md</code></li>
+<li><code>D:\45344\0004-软件源码\test-reports\新功能测试报告-latest.md</code></li>
+<li><code>D:\45344\0004-软件源码\test-reports\重点验收-相机图像记录跳转-latest.md</code></li>
+</ul>
+<hr/>
+<h2>10. 后续迭代建议</h2>
+<h3>P0：交付稳定性</h3>
+<ul>
+<li>在真实全新 Windows 电脑/虚拟机上完整执行安装向导。</li>
+<li>验证安装时工作路径选择是否正确落地到服务运行参数和外部配置。</li>
+<li>验证 MySQL 初始化脚本从空库一键导入。</li>
+<li>验证 Windows 服务安装、启动、停止、卸载和异常恢复。</li>
+<li>持续保留 100 路心跳、100 张图片批量上传压测。</li>
+</ul>
+<h3>P1：现场使用体验</h3>
+<ul>
+<li>将产品、缺陷类型、缺陷位置、相机缺陷映射、映射异常正式并入系统配置 UI。</li>
+<li>图像记录继续增强筛选：按批次、缺陷框数量、图片是否存在、上传结果等筛选。</li>
+<li>产线统计图表配置向导继续降低误配成本。</li>
+<li>配置导入失败提示继续产品化，支持失败 Excel 下载和二次导入。</li>
+<li>操作日志增加高级查询、审计报表和敏感操作高亮。</li>
+</ul>
+<h3>P2：工程治理</h3>
+<ul>
+<li>继续拆分 <code>LineAnalyticsController</code>、<code>StatsController</code>。</li>
+<li>拆分 <code>ConfigView.vue</code>、<code>LineAnalyticsView.vue</code>。</li>
+<li>将 JdbcTemplate SQL 逐步归拢 Repository 层。</li>
+<li>数据库结构全面迁移到版本化 migration 管理。</li>
+<li>增加后端单元测试、接口契约测试、前端组件测试和安装包验收自动化。</li>
+</ul>
+<hr/>
+<h2>11. 已知注意点</h2>
+<ol>
+<li>当前发布包中 <code>application.yml</code> 模板存在中文注释编码显示异常，不影响配置键值解析；后续建议统一用 UTF-8 无 BOM 重写模板注释。</li>
+<li>历史图片目录存在 7 个孤儿文件，当前 DB 不缺文件，不影响页面展示；可后续执行隔离清理。</li>
+<li>正式现场建议 MySQL 3306 仅本机开放，8091 提供页面与相机接口。</li>
+<li>设备侧必须固定传 <code>Authorization</code> 与 <code>X-Device-Id</code>，便于后续收紧安全策略。</li>
+</ol><div class="footer">PDF 导出时间：2026-06-21 · 来源 Markdown 文档自动转换</div></main></body></html>

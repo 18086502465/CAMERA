@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.wms.mapper.DimTimeBucket30minMapper">
+
+    <!-- 根据 日期+小时+分钟分组 精准查询bucketId -->
+    <select id="selectBucketIdByTime" resultType="java.lang.Integer">
+        SELECT bucket_id FROM dim_time_bucket_30min
+        WHERE full_date = #{fullDate}
+                  AND `hour` = #{hour}
+          AND minute_group = #{minuteGroup}
+            LIMIT 1
+    </select>
+
+    <!-- 根据时间区间 兜底查询bucketId -->
+    <select id="selectBucketIdByDateTime" resultType="java.lang.Integer">
+        SELECT bucket_id FROM dim_time_bucket_30min
+        WHERE start_time &lt;= #{dateTime}
+          AND end_time &gt; #{dateTime}
+            LIMIT 1
+    </select>
+
+</mapper>

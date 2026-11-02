@@ -1,0 +1,322 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>产线缺陷在线AI检测系统 — 最新交付件信息</title><style>
+  @page { size: A4; margin: 16mm 14mm 18mm 14mm; }
+  * { box-sizing: border-box; }
+  body { margin:0; color:#1f2937; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", Arial, sans-serif; font-size: 13px; line-height: 1.72; background:#fff; }
+  .page { max-width: 980px; margin: 0 auto; padding: 4px 0 24px; }
+  h1 { font-size: 26px; line-height:1.3; color:#0f172a; padding-bottom:12px; margin: 0 0 18px; border-bottom: 3px solid #2563eb; }
+  h2 { font-size: 20px; color:#1e3a8a; margin: 26px 0 12px; padding-left: 10px; border-left: 4px solid #3b82f6; break-after: avoid; }
+  h3 { font-size: 16px; color:#0f172a; margin: 18px 0 8px; break-after: avoid; }
+  h4,h5,h6 { font-size: 14px; color:#111827; margin: 14px 0 6px; break-after: avoid; }
+  p { margin: 7px 0 10px; }
+  a { color:#2563eb; text-decoration:none; }
+  hr { border:0; border-top:1px solid #e5e7eb; margin:18px 0; }
+  ul,ol { margin: 6px 0 12px 22px; padding:0; }
+  li { margin: 3px 0; }
+  code { font-family: Consolas, "Cascadia Mono", Menlo, monospace; background:#f1f5f9; color:#0f172a; padding:1px 5px; border-radius:4px; font-size: 12px; }
+  .code-wrap { margin: 10px 0 14px; border:1px solid #e2e8f0; border-radius: 8px; overflow:hidden; break-inside: avoid; background:#0f172a; }
+  .code-label { padding:5px 10px; color:#cbd5e1; background:#111827; font-size:11px; border-bottom:1px solid #334155; }
+  pre { margin:0; padding:11px 13px; overflow-wrap:anywhere; white-space:pre-wrap; word-break:break-word; }
+  pre code { background:transparent; color:#e5e7eb; padding:0; border-radius:0; font-size:11px; line-height:1.55; }
+  .table-wrap { margin: 10px 0 16px; overflow: visible; break-inside: avoid; }
+  table { width:100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+  th { background:#eff6ff; color:#1e3a8a; font-weight:700; }
+  th,td { border:1px solid #dbe3ef; padding:7px 8px; vertical-align:top; word-break:break-word; }
+  tr:nth-child(even) td { background:#fafafa; }
+  strong { color:#111827; }
+  .footer { margin-top: 28px; padding-top: 12px; border-top:1px solid #e5e7eb; color:#64748b; font-size:11px; }
+  </style></head><body><main class="page"><p># 产线缺陷在线AI检测系统 — 最新交付件信息</p>
+<p>版本：v1.0.0 整理时间：2026-06-20 交付根目录：<code>D:\45344\0004-软件源码</code></p>
+<hr/>
+<h2>1. 本次交付结论</h2>
+<p>当前项目已经形成可安装交付形态：<strong>Windows 安装包 + 内置 JRE + Spring Boot 后端 + Vue 前端静态资源 + 外部配置 + MySQL 初始化脚本 + 运维脚本 + 交付文档 + 自动化测试报告</strong>。</p>
+<p>最新安装包级发布验证结论：<strong>PASS，可作为现场验收候选包</strong>。</p>
+<hr/>
+<h2>2. 交付件总览</h2>
+<div class="table-wrap"><table><thead><tr><th>类型</th><th>路径</th><th>说明</th></tr></thead><tbody>
+<tr><td>Windows 安装包</td><td><code>D:\45344\0004-软件源码\dist-release\installer\CameraDetectionSystem-Setup-1.0.0.exe</code></td><td>最终安装程序，约 101.45 MB</td></tr>
+<tr><td>发布目录</td><td><code>D:\45344\0004-软件源码\dist-release\CameraDetectionSystem</code></td><td>安装包生成前的完整文件目录</td></tr>
+<tr><td>后端 JAR</td><td><code>D:\45344\0004-软件源码\dist-release\CameraDetectionSystem\app\time-bucket-demo.jar</code></td><td>Spring Boot 可执行 JAR，约 54.21 MB</td></tr>
+<tr><td>内置 JRE</td><td><code>D:\45344\0004-软件源码\dist-release\CameraDetectionSystem\jre</code></td><td>避免目标机器缺少 Java 运行环境</td></tr>
+<tr><td>Windows 服务包装器</td><td><code>D:\45344\0004-软件源码\dist-release\CameraDetectionSystem\service\CameraDetectionService.exe</code></td><td>将后端 JAR 作为 Windows 服务运行</td></tr>
+<tr><td>外部配置</td><td><code>D:\45344\0004-软件源码\dist-release\CameraDetectionSystem\config\application.yml</code></td><td>端口、数据库、上传目录、日志目录等配置</td></tr>
+<tr><td>数据库 SQL</td><td><code>D:\45344\0004-软件源码\dist-release\CameraDetectionSystem\sql\wms-new.sql</code></td><td>初始化数据库数据脚本</td></tr>
+<tr><td>运维脚本</td><td><code>D:\45344\0004-软件源码\dist-release\CameraDetectionSystem\scripts</code></td><td>安装/启动/停止/卸载服务、自检、数据库初始化</td></tr>
+<tr><td>交付文档</td><td><code>D:\45344\0004-软件源码\docs</code></td><td>项目说明、接口协议、部署调试、测试报告索引</td></tr>
+<tr><td>测试报告</td><td><code>D:\45344\0004-软件源码\test-reports</code></td><td>自动化测试、压测、安装包验收报告</td></tr>
+</tbody></table></div>
+<hr/>
+<h2>3. 发布目录结构</h2>
+<div class="code-wrap"><div class="code-label">text</div><pre><code class="language-text">CameraDetectionSystem
+├─ app
+│  └─ time-bucket-demo.jar
+├─ config
+│  └─ application.yml
+├─ data
+│  └─ uploads
+├─ docs
+├─ jre
+│  └─ bin/java.exe
+├─ logs
+├─ runtime
+│  ├─ data/uploads/defect-images
+│  └─ logs
+├─ scripts
+│  ├─ init-database.ps1
+│  ├─ install-service.ps1
+│  ├─ start-service.ps1
+│  ├─ stop-service.ps1
+│  ├─ uninstall-service.ps1
+│  ├─ service-status.ps1
+│  └─ verify-installation.ps1
+├─ service
+│  └─ CameraDetectionService.exe
+└─ sql
+   └─ wms-new.sql</code></pre></div>
+<hr/>
+<h2>4. 功能说明</h2>
+<h3>4.1 页面功能</h3>
+<div class="table-wrap"><table><thead><tr><th>页面</th><th>URL</th><th>功能</th></tr></thead><tbody>
+<tr><td>登录页</td><td><code>/login</code></td><td>用户登录，进入系统后默认跳转相机状态</td></tr>
+<tr><td>相机状态</td><td><code>/camera-status</code></td><td>相机运行状态、上传状态、资源信息、检测计数、最近图片入口</td></tr>
+<tr><td>图像记录</td><td><code>/stats/images</code></td><td>按相机聚合缺陷图片，支持筛选、分页、展开、图片预览和切换</td></tr>
+<tr><td>产线统计</td><td><code>/line-analytics</code></td><td>动态质量看板、图表配置、模板管理、聚合任务、大屏展示</td></tr>
+<tr><td>系统配置</td><td><code>/system/config</code></td><td>工厂/产线/工位/相机/用户/操作记录配置维护</td></tr>
+<tr><td>个人中心</td><td><code>/profile</code></td><td>当前用户信息查看</td></tr>
+</tbody></table></div>
+<h3>4.2 核心业务能力</h3>
+<ul>
+<li>相机状态实时展示。</li>
+<li>缺陷图片实时上传、入库、文件保存、页面展示。</li>
+<li>检测统计数据上报、缺陷映射、30 分钟聚合、日聚合加速。</li>
+<li>动态报表图表配置与看板模板管理。</li>
+<li>工厂、产线、工位、相机层级配置导入导出。</li>
+<li>操作日志审计。</li>
+<li>Windows 安装包部署和服务化运行。</li>
+</ul>
+<hr/>
+<h2>5. 对外接口说明</h2>
+<h3>5.1 接口一：相机状态心跳</h3>
+<div class="code-wrap"><div class="code-label">http</div><pre><code class="language-http">POST /api/v1/camera/status/heartbeat
+Content-Type: application/json
+Authorization: Bearer &lt;device-token&gt;
+X-Device-Id: &lt;cameraCode/deviceId&gt;</code></pre></div>
+<p>请求示例：</p>
+<div class="code-wrap"><div class="code-label">json</div><pre><code class="language-json">{
+  &quot;cameraName&quot;: &quot;杭州1线-上料相机A&quot;,
+  &quot;productName&quot;: &quot;产品A&quot;,
+  &quot;timestamp&quot;: &quot;2026-06-20 10:00:00&quot;,
+  &quot;cameraStatus&quot;: 1,
+  &quot;recognizeCount&quot;: 1000,
+  &quot;correctCount&quot;: 980,
+  &quot;abnormalCount&quot;: 20,
+  &quot;cpuUsage&quot;: 35.5,
+  &quot;memoryUsage&quot;: 62.1,
+  &quot;temperature&quot;: 45.2,
+  &quot;errorMessage&quot;: &quot;&quot;
+}</code></pre></div>
+<p>字段注意事项：</p>
+<div class="table-wrap"><table><thead><tr><th>字段</th><th>是否必填</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>cameraName</code></td><td>是</td><td>展示名称</td></tr>
+<tr><td><code>productName</code></td><td>否</td><td>当前检测产品</td></tr>
+<tr><td><code>timestamp</code></td><td>否</td><td>上报时间，建议 <code>yyyy-MM-dd HH:mm:ss</code></td></tr>
+<tr><td><code>cameraStatus</code></td><td>否</td><td>0 停止、1 运行、2 故障、3 待机</td></tr>
+<tr><td><code>recognizeCount</code></td><td>否</td><td>累计识别总数</td></tr>
+<tr><td><code>correctCount</code></td><td>否</td><td>累计识别正确数</td></tr>
+<tr><td><code>abnormalCount</code></td><td>否</td><td>累计识别异常数</td></tr>
+<tr><td><code>cpuUsage</code></td><td>否</td><td>0~100</td></tr>
+<tr><td><code>memoryUsage</code></td><td>否</td><td>0~100</td></tr>
+<tr><td><code>temperature</code></td><td>否</td><td>摄氏度</td></tr>
+<tr><td><code>errorMessage</code></td><td>否</td><td>故障状态建议填写</td></tr>
+</tbody></table></div>
+<h3>5.2 接口二：缺陷图片批量上传</h3>
+<div class="code-wrap"><div class="code-label">http</div><pre><code class="language-http">POST /api/v1/defect-images/upload
+Content-Type: multipart/form-data
+Authorization: Bearer &lt;device-token&gt;
+X-Device-Id: &lt;cameraCode/deviceId&gt;
+X-Image-Count: &lt;image-count&gt;</code></pre></div>
+<p>form-data：</p>
+<div class="table-wrap"><table><thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>files</code> / <code>file</code></td><td>File[]</td><td>图片数组，单批最大 100 张</td></tr>
+<tr><td><code>metadata</code></td><td>String</td><td>JSON 字符串</td></tr>
+</tbody></table></div>
+<p>metadata 示例：</p>
+<div class="code-wrap"><div class="code-label">json</div><pre><code class="language-json">{
+  &quot;cameraId&quot;: &quot;CAM-001&quot;,
+  &quot;cameraName&quot;: &quot;杭州1线-上料相机A&quot;,
+  &quot;uploadTime&quot;: &quot;2026-06-20 10:00:00.000&quot;,
+  &quot;images&quot;: [
+    {
+      &quot;fileName&quot;: &quot;img-001.png&quot;,
+      &quot;captureTime&quot;: &quot;2026-06-20 09:59:59.120&quot;,
+      &quot;defects&quot;: [
+        {
+          &quot;type&quot;: &quot;划伤&quot;,
+          &quot;severity&quot;: &quot;HIGH&quot;,
+          &quot;x&quot;: 10,
+          &quot;y&quot;: 20,
+          &quot;width&quot;: 100,
+          &quot;height&quot;: 60,
+          &quot;area&quot;: 6000
+        }
+      ]
+    }
+  ]
+}</code></pre></div>
+<p>接入注意事项：</p>
+<ol>
+<li><code>metadata.images[].fileName</code> 必须与上传文件原始文件名完全一致。</li>
+<li>图片数量超过 100 会直接拒绝，建议设备端传 <code>X-Image-Count</code> 便于快速失败。</li>
+<li>支持格式：jpg、jpeg、png、bmp、gif、webp、svg。</li>
+<li>严重度建议固定为 <code>HIGH</code>、<code>MEDIUM</code>、<code>LOW</code>。</li>
+<li>上传成功后页面通过 <code>/api/v1/defect-images/camera-summaries</code> 与 <code>/history</code> 展示。</li>
+</ol>
+<h3>5.3 接口三：检测统计批量上报</h3>
+<div class="code-wrap"><div class="code-label">http</div><pre><code class="language-http">POST /api/v1/camera/inspection/batch-upload
+Content-Type: application/json
+Authorization: Bearer &lt;device-token&gt;
+X-Device-Id: &lt;cameraCode/deviceId&gt;
+X-Batch-Id: &lt;batchId&gt;</code></pre></div>
+<p>请求示例：</p>
+<div class="code-wrap"><div class="code-label">json</div><pre><code class="language-json">{
+  &quot;schemaVersion&quot;: &quot;2.0&quot;,
+  &quot;batchId&quot;: &quot;CAM-001-20260620100000-001&quot;,
+  &quot;requestId&quot;: &quot;REQ-20260620100000-001&quot;,
+  &quot;cameraCode&quot;: &quot;CAM-001&quot;,
+  &quot;productName&quot;: &quot;产品A&quot;,
+  &quot;reportTime&quot;: &quot;2026-06-20 10:00:00&quot;,
+  &quot;timeRange&quot;: {
+    &quot;startTime&quot;: &quot;2026-06-20 09:59:00&quot;,
+    &quot;endTime&quot;: &quot;2026-06-20 10:00:00&quot;
+  },
+  &quot;counterMode&quot;: &quot;INCREMENTAL&quot;,
+  &quot;summary&quot;: {
+    &quot;totalCount&quot;: 100,
+    &quot;okCount&quot;: 95,
+    &quot;ngCount&quot;: 5
+  },
+  &quot;defects&quot;: [
+    { &quot;sourceCode&quot;: &quot;P0_SCRATCH&quot;, &quot;count&quot;: 3 },
+    { &quot;sourceCode&quot;: &quot;P1_DIRTY&quot;, &quot;count&quot;: 2 }
+  ]
+}</code></pre></div>
+<p>接入注意事项：</p>
+<ol>
+<li><code>schemaVersion</code> 固定为 <code>2.0</code>。</li>
+<li>P0 只支持 <code>counterMode=INCREMENTAL</code>。</li>
+<li><code>batchId</code> 对同一相机必须唯一，重复上报按幂等处理。</li>
+<li><code>totalCount</code> 必须等于 <code>okCount + ngCount</code>。</li>
+<li><code>ngCount</code> 必须等于 <code>defects[].count</code> 之和。</li>
+<li><code>productName</code> 必须提前配置并完全匹配。</li>
+<li><code>sourceCode</code> 必须提前配置映射，未映射返回 422。</li>
+<li>上报成功后会同步写入 30 分钟聚合表，产线统计页面可立即查询。</li>
+</ol>
+<hr/>
+<h2>6. 调试说明</h2>
+<h3>6.1 本地服务检查</h3>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell">Get-Service -Name CameraDetectionSystem
+Get-NetTCPConnection -LocalPort 8091 -State Listen
+Invoke-WebRequest -UseBasicParsing http://localhost:8091/camera-status</code></pre></div>
+<h3>6.2 查看 Java 进程</h3>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell">Get-CimInstance Win32_Process |
+  Where-Object { $_.Name -like 'java*' -and $_.CommandLine -like '*time-bucket-demo.jar*' } |
+  Select-Object ProcessId,CommandLine</code></pre></div>
+<h3>6.3 查看日志</h3>
+<p>默认日志：</p>
+<div class="code-wrap"><div class="code-label">text</div><pre><code class="language-text">D:\45344\0000-jar\CameraDetectionSystem\runtime\logs\camera-detection-system.log</code></pre></div>
+<p>常用命令：</p>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell">Get-Content -LiteralPath &quot;D:\45344\0000-jar\CameraDetectionSystem\runtime\logs\camera-detection-system.log&quot; -Tail 200</code></pre></div>
+<h3>6.4 验证接口</h3>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell">Invoke-WebRequest -UseBasicParsing &quot;http://localhost:8091/api/cascade/all&quot;
+Invoke-WebRequest -UseBasicParsing &quot;http://localhost:8091/api/v1/defect-images/camera-summaries?latestLimit=1&quot;</code></pre></div>
+<h3>6.5 图片一致性检查</h3>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell">cmd /c node D:\45344\0004-软件源码\scripts\defect-image-consistency-check.mjs</code></pre></div>
+<p>重点看：</p>
+<ul>
+<li><code>missingFileCount</code>：DB 有记录但文件缺失，必须为 0。</li>
+<li><code>orphanFileCount</code>：文件存在但 DB 无记录，通常是历史失败残留，可隔离清理。</li>
+</ul>
+<hr/>
+<h2>7. 部署说明</h2>
+<h3>7.1 目标机器要求</h3>
+<div class="table-wrap"><table><thead><tr><th>项</th><th>要求</th></tr></thead><tbody>
+<tr><td>操作系统</td><td>Windows</td></tr>
+<tr><td>运行时</td><td>安装包自带 JRE，无需额外安装 Java</td></tr>
+<tr><td>数据库</td><td>MySQL 8.0</td></tr>
+<tr><td>端口</td><td>TCP 8091 对页面和相机接口开放；TCP 3306 默认仅本机 MySQL 使用</td></tr>
+<tr><td>磁盘</td><td>根据图片量预留上传目录空间</td></tr>
+</tbody></table></div>
+<h3>7.2 安装步骤</h3>
+<ol>
+<li>安装 MySQL 8.0。</li>
+<li>创建数据库 <code>wms-new</code>，或使用初始化脚本自动创建。</li>
+<li>运行安装包：<code>D:\45344\0004-软件源码\dist-release\installer\CameraDetectionSystem-Setup-1.0.0.exe</code>。</li>
+<li>选择安装目录和工作路径。</li>
+<li>检查 <code>config/application.yml</code> 中数据库连接、上传目录、日志目录。</li>
+<li>执行数据库初始化：</li>
+</ol>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell">powershell -ExecutionPolicy Bypass -File &quot;&lt;安装目录&gt;\scripts\init-database.ps1&quot;</code></pre></div>
+<ol>
+<li>安装并启动服务：</li>
+</ol>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell">powershell -ExecutionPolicy Bypass -File &quot;&lt;安装目录&gt;\scripts\install-service.ps1&quot;
+powershell -ExecutionPolicy Bypass -File &quot;&lt;安装目录&gt;\scripts\start-service.ps1&quot;</code></pre></div>
+<ol>
+<li>浏览器访问：</li>
+</ol>
+<div class="code-wrap"><div class="code-label">text</div><pre><code class="language-text">http://localhost:8091/camera-status</code></pre></div>
+<h3>7.3 服务操作</h3>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell"># 查看状态
+powershell -ExecutionPolicy Bypass -File &quot;&lt;安装目录&gt;\scripts\service-status.ps1&quot;
+
+# 启动
+powershell -ExecutionPolicy Bypass -File &quot;&lt;安装目录&gt;\scripts\start-service.ps1&quot;
+
+# 停止
+powershell -ExecutionPolicy Bypass -File &quot;&lt;安装目录&gt;\scripts\stop-service.ps1&quot;
+
+# 卸载
+powershell -ExecutionPolicy Bypass -File &quot;&lt;安装目录&gt;\scripts\uninstall-service.ps1&quot;</code></pre></div>
+<h3>7.4 安装自检</h3>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell">powershell -ExecutionPolicy Bypass -File &quot;&lt;安装目录&gt;\scripts\verify-installation.ps1&quot;</code></pre></div>
+<p>自检项包括：内置 JRE、后端 JAR、外部配置、数据库 SQL、Windows 服务、TCP 8091、页面访问、图片超量快速拒绝。</p>
+<hr/>
+<h2>8. 验收报告与测试脚本</h2>
+<h3>8.1 最新验收报告</h3>
+<div class="table-wrap"><table><thead><tr><th>报告</th><th>路径</th></tr></thead><tbody>
+<tr><td>安装包级发布验证汇总</td><td><code>D:\45344\0004-软件源码\test-reports\安装包级发布验证汇总-latest.md</code></td></tr>
+<tr><td>完整项目测试报告</td><td><code>D:\45344\0004-软件源码\test-reports\相机检测平台-测试报告-latest.md</code></td></tr>
+<tr><td>新功能测试报告</td><td><code>D:\45344\0004-软件源码\test-reports\新功能测试报告-latest.md</code></td></tr>
+<tr><td>重点跳转验收</td><td><code>D:\45344\0004-软件源码\test-reports\重点验收-相机图像记录跳转-latest.md</code></td></tr>
+</tbody></table></div>
+<h3>8.2 自动化脚本</h3>
+<div class="code-wrap"><div class="code-label">powershell</div><pre><code class="language-powershell">powershell -ExecutionPolicy Bypass -File D:\45344\0004-软件源码\scripts\install-package-acceptance.ps1
+powershell -ExecutionPolicy Bypass -File D:\45344\0004-软件源码\scripts\go-live-acceptance.ps1
+cmd /c node D:\45344\0004-软件源码\scripts\qa-full-project-auto-test.mjs
+cmd /c node D:\45344\0004-软件源码\scripts\qa-new-features-auto-test.mjs
+cmd /c node D:\45344\0004-软件源码\scripts\qa-focus-camera-image-navigation.mjs
+cmd /c node D:\45344\0004-软件源码\scripts\perf-100-camera-heartbeat.mjs
+cmd /c node D:\45344\0004-软件源码\scripts\perf-100-defect-image-upload.mjs</code></pre></div>
+<hr/>
+<h2>9. 现场交付检查清单</h2>
+<div class="table-wrap"><table><thead><tr><th>序号</th><th>检查项</th><th>验收标准</th></tr></thead><tbody>
+<tr><td>1</td><td>安装包可运行</td><td>安装向导完成，无缺失 JRE 错误</td></tr>
+<tr><td>2</td><td>工作路径可选</td><td>图片、日志落到指定工作路径</td></tr>
+<tr><td>3</td><td>MySQL 可连接</td><td>应用启动无数据库连接异常</td></tr>
+<tr><td>4</td><td>初始化脚本可执行</td><td>空库或升级库执行成功</td></tr>
+<tr><td>5</td><td>Windows 服务可控</td><td>启动、停止、卸载均正常</td></tr>
+<tr><td>6</td><td>页面可访问</td><td><code>http://localhost:8091/camera-status</code> HTTP 200</td></tr>
+<tr><td>7</td><td>心跳接口可用</td><td>相机状态页实时更新</td></tr>
+<tr><td>8</td><td>图片上传可用</td><td>图像记录页展示上传图片</td></tr>
+<tr><td>9</td><td>检测统计可用</td><td>产线统计图表出现检测、OK、NG、缺陷数据</td></tr>
+<tr><td>10</td><td>配置导入可用</td><td>工厂/产线/工位/相机导入失败有明确原因</td></tr>
+<tr><td>11</td><td>日志可查看</td><td>运行日志、操作日志可定位问题</td></tr>
+<tr><td>12</td><td>安全边界</td><td>8091 按需开放，3306 默认仅本机开放</td></tr>
+</tbody></table></div>
+<hr/>
+<h2>10. 已知风险与处理建议</h2>
+<div class="table-wrap"><table><thead><tr><th>风险</th><th>等级</th><th>处理建议</th></tr></thead><tbody>
+<tr><td>尚需真实全新 Windows 电脑完整安装验证</td><td>P1</td><td>下一轮使用干净环境执行安装包全流程</td></tr>
+<tr><td>历史孤儿图片文件 7 个</td><td>P2</td><td>不影响展示，可后续执行隔离清理</td></tr>
+<tr><td>产品/缺陷/映射配置 UI 需进一步统一</td><td>P1</td><td>后续并入系统配置中心，减少现场配置割裂</td></tr>
+<tr><td>配置模板中文注释编码可读性</td><td>P2</td><td>重写模板注释为 UTF-8，避免查看时乱码</td></tr>
+</tbody></table></div><div class="footer">PDF 导出时间：2026-06-21 · 来源 Markdown 文档自动转换</div></main></body></html>
