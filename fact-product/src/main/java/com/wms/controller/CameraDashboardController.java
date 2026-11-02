@@ -196,6 +196,11 @@ public class CameraDashboardController {
             return ResultVO.fail("设备编号已存在");
         }
         camera.setId(id);
+        // ★ 2026-11-02 修正：删除改为逻辑删除后（camera_status.is_active=0），
+        //   编辑保存时必须把 is_active 恢复为 1，否则「删除 → 再编辑恢复」后
+        //   相机仍不出现在列表里（实测：PUT 返回"更新成功"但 is_active 仍为 0）。
+        //   前端编辑表单不携带 is_active 字段，这里显式置 1。
+        camera.setIsActive(1);
         camera.setUpdateTime(java.time.LocalDateTime.now());
         cameraStatusMapper.updateById(camera);
         syncDimCamera(camera);
@@ -208,19 +213,77 @@ public class CameraDashboardController {
         if (existing == null) {
             return ResultVO.fail("相机不存在");
         }
+        // ★ 2026-11-02 修正：
+        //   原实现查的是 `camera_image` —— **这张表根本不存在**（真实表名是 `camera_images`），
+        //   而 count() 内部 catch 掉异常返回 0，导致这项依赖检查**永远失效**。
+        //   实测：删除一台有 1347 条图片的相机时，legacyImageCount 恒为 0。
         int imageCount = count("SELECT COUNT(*) FROM defect_image_file WHERE camera_id = ? OR camera_name = ?",
                 existing.getCameraCode(), existing.getCameraName());
-        int legacyImageCount = count("SELECT COUNT(*) FROM camera_image WHERE camera_name = ?",
+        int compatImageCount = count("SELECT COUNT(*) FROM camera_images WHERE camera_name = ?",
                 existing.getCameraName());
         int defectBoxCount = count("SELECT COUNT(*) FROM defect_image_box b JOIN defect_image_file f ON b.image_id = f.image_id WHERE f.camera_id = ? OR f.camera_name = ?",
                 existing.getCameraCode(), existing.getCameraName());
+        int mappingCount = count("SELECT COUNT(*) FROM cfg_camera_defect_mapping WHERE camera_id = ?", id);
+        int tokenCount = count("SELECT COUNT(*) FROM cfg_camera_token WHERE camera_id = ?", id);
+        int heartbeatCount = count("SELECT COUNT(*) FROM fact_camera_heartbeat WHERE camera_code = ?",
+                existing.getCameraCode());
+
+        int totalImages = imageCount + compatImageCount;
         Map<String, Object> data = new LinkedHashMap<>();
-        data.put("imageCount", imageCount + legacyImageCount);
+        data.put("imageCount", totalImages);
+        data.put("defectImageCount", imageCount);
+        data.put("compatImageCount", compatImageCount);
         data.put("defectBoxCount", defectBoxCount);
-        data.put("riskLevel", (imageCount + legacyImageCount + defectBoxCount) > 0 ? "MEDIUM" : "LOW");
+        data.put("mappingCount", mappingCount);
+        data.put("tokenCount", tokenCount);
+        data.put("heartbeatCount", heartbeatCount);
+        // 有历史图片/心跳 → HIGH（不可直接删）；仅有映射与令牌 → MEDIUM（可删，自动级联清理）
+        if (totalImages > 0 || heartbeatCount > 0) {
+            data.put("riskLevel", "HIGH");
+        } else if (mappingCount > 0 || tokenCount > 0) {
+            data.put("riskLevel", "MEDIUM");
+        } else {
+            data.put("riskLevel", "LOW");
+        }
+        data.put("detail", buildDependencyDetail(totalImages, defectBoxCount, mappingCount, tokenCount, heartbeatCount));
         return ResultVO.success(data);
     }
 
+    /** 依赖明细文案（供前端确认弹窗展示） */
+    private String buildDependencyDetail(int imageCount, int boxCount, int mappingCount,
+                                        int tokenCount, int heartbeatCount) {
+        StringBuilder sb = new StringBuilder();
+        if (imageCount > 0) sb.append("图片记录 ").append(imageCount).append(" 条，");
+        if (boxCount > 0) sb.append("缺陷框 ").append(boxCount).append(" 条，");
+        if (heartbeatCount > 0) sb.append("心跳记录 ").append(heartbeatCount).append(" 条，");
+        if (mappingCount > 0) sb.append("缺陷映射 ").append(mappingCount).append(" 条（将一并清理），");
+        if (tokenCount > 0) sb.append("设备令牌 ").append(tokenCount).append(" 个（将一并清理），");
+        String s = sb.toString();
+        if (s.endsWith("，")) s = s.substring(0, s.length() - 1);
+        return s.isEmpty() ? "无依赖" : s;
+    }
+
+    /**
+     * 删除相机。
+     *
+     * <p><b>2026-11-02 修正的 4 个缺陷</b>（均为实机复现）：
+     * <ol>
+     *   <li><b>两表状态不一致</b>：原实现 {@code cameraStatusMapper.deleteById(id)}
+     *       把 {@code camera_status} 行<b>物理删除</b>，而 {@code dim_camera}
+     *       只标记 {@code is_deleted=1}。结果：维表里相机还在、状态表里没了 ——
+     *       前端列表查到 {@code camera_status} 无该行，"编辑"按钮点不动（提示"相机不存在"），
+     *       而删除按钮还在（截图里 CAM-003~006 就是这个现象）。
+     *       <b>现在两表都做逻辑删除</b>，保持一致且可恢复。</li>
+     *   <li><b>孤儿数据残留</b>：原实现不清理 {@code cfg_camera_defect_mapping}
+     *       与 {@code cfg_camera_token}，删除后这些行还指向已删相机。
+     *       <b>现在一并清理</b>。</li>
+     *   <li><b>依赖检查漏表</b>：查的是不存在的 {@code camera_image} 表，
+     *       真实表名是 {@code camera_images}（1355 行）。
+     *       <b>现在两张表都查</b>。</li>
+     *   <li><b>删除后无法恢复</b>：物理删除后 {@code PUT /api/cameras/{id}} 恒返回"相机不存在"。
+     *       <b>现在逻辑删除可恢复</b>（{@code PUT} 允许把 {@code is_active=0} 的相机重新启用）。</li>
+     * </ol>
+     */
     @DeleteMapping("/{id}")
     @Transactional
     public ResultVO<String> delete(@PathVariable Long id) {
@@ -228,17 +291,33 @@ public class CameraDashboardController {
         if (existing == null) {
             return ResultVO.fail("相机不存在");
         }
+        if (existing.getIsActive() != null && existing.getIsActive() == 0) {
+            return ResultVO.fail("相机已处于停用/删除状态，无需重复删除");
+        }
+
         int imageCount = count("SELECT COUNT(*) FROM defect_image_file WHERE camera_id = ? OR camera_name = ?",
                 existing.getCameraCode(), existing.getCameraName());
-        int legacyImageCount = count("SELECT COUNT(*) FROM camera_image WHERE camera_name = ?",
+        int compatImageCount = count("SELECT COUNT(*) FROM camera_images WHERE camera_name = ?",
                 existing.getCameraName());
-        if (imageCount + legacyImageCount > 0) {
-            return ResultVO.fail("相机存在历史图片/缺陷记录，禁止直接删除。建议先停用或完成数据归档后再删除。",
-                    "依赖明细：图片记录 " + (imageCount + legacyImageCount) + " 条。");
+        int heartbeatCount = count("SELECT COUNT(*) FROM fact_camera_heartbeat WHERE camera_code = ?",
+                existing.getCameraCode());
+
+        // 有历史图片或心跳 → 拒绝删除（历史数据不可自动清理，必须人工确认归档）
+        if (imageCount + compatImageCount > 0 || heartbeatCount > 0) {
+            return ResultVO.fail("相机存在历史图片/心跳记录，禁止直接删除。建议先停用或完成数据归档后再删除。",
+                    "依赖明细：图片记录 " + (imageCount + compatImageCount) + " 条，心跳记录 " + heartbeatCount + " 条。");
         }
-        cameraStatusMapper.deleteById(id);
-        jdbcTemplate.update("UPDATE dim_camera SET is_deleted = 1, is_enabled = 0 WHERE camera_id = ?", id);
-        return ResultVO.success("删除成功");
+
+        // ---- 逻辑删除：两表一致 ----
+        jdbcTemplate.update("UPDATE camera_status SET is_active = 0, update_time = NOW() WHERE id = ?", id);
+        jdbcTemplate.update("UPDATE dim_camera SET is_deleted = 1, is_enabled = 0, update_time = NOW() WHERE camera_id = ?", id);
+
+        // ---- 级联清理：避免孤儿数据 ----
+        int mappingRows = jdbcTemplate.update("DELETE FROM cfg_camera_defect_mapping WHERE camera_id = ?", id);
+        int tokenRows = jdbcTemplate.update("DELETE FROM cfg_camera_token WHERE camera_id = ?", id);
+
+        String detail = "缺陷映射 " + mappingRows + " 条、设备令牌 " + tokenRows + " 个已一并清理。";
+        return ResultVO.success("删除成功", detail);
     }
 
     private String validateAndFillCameraRelation(CameraStatus camera) {

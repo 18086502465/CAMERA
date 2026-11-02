@@ -307,6 +307,11 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
     @Override
     public IPage<CameraStatus> pageQuery(Integer pageNum, Integer pageSize, String keyword, Integer status, Set<Integer> workstationIds) {
         LambdaQueryWrapper<CameraStatus> wrapper = new LambdaQueryWrapper<>();
+        // ★ 2026-11-02 新增：过滤已逻辑删除（is_active=0）的相机。
+        //   删除改为逻辑删除后，若不过滤，被删的相机会继续出现在列表里，
+        //   但它的映射与令牌已被级联清理 —— 用户会看到一个"半死不活"的条目。
+        //   与 dim_camera.is_deleted 保持同一口径。
+        wrapper.eq(CameraStatus::getIsActive, 1);
         if (workstationIds != null && !workstationIds.isEmpty()) {
             wrapper.in(CameraStatus::getWorkstationId, workstationIds);
         }

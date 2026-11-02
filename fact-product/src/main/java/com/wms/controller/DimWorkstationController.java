@@ -82,23 +82,35 @@ public class DimWorkstationController {
         return ResultVO.success("更新成功");
     }
 
+    /**
+     * 删除工位。
+     *
+     * <p><b>2026-11-02 修正</b>：依赖校验原先查 {@code camera_status.workstation_id}，
+     * 但<b>相机与工位的绑定关系实际维护在 {@code dim_camera.workstation_id}</b>
+     * （{@code camera_status} 只是状态快照，可能没有对应行，或行已随删除消失）。
+     * 结果：绑定了相机的工位<b>可以被误删</b>，留下悬空的相机绑定。
+     * <p>现在改为查 {@code dim_camera}（含 {@code is_deleted=0} 的有效绑定）。
+     */
     @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     public ResultVO<String> delete(@PathVariable Integer id) {
-        int cameraCount = count("SELECT COUNT(*) FROM camera_status WHERE workstation_id = ?", id);
+        int cameraCount = count("SELECT COUNT(*) FROM dim_camera WHERE workstation_id = ? AND IFNULL(is_deleted,0)=0", id);
         int productionCount = count("SELECT COUNT(*) FROM fact_production_30min WHERE workstation_id = ?", id);
         int defectCount = count("SELECT COUNT(*) FROM product_detection_history WHERE workstation_id = ?", id);
         if (cameraCount > 0) {
             return ResultVO.fail("工位已绑定相机，禁止直接删除。请先迁移或解绑相机后再操作。",
                     "依赖明细：相机 " + cameraCount + " 台，生产记录 " + productionCount + " 条，缺陷记录 " + defectCount + " 条。");
         }
+        // 解除残留的绑定（指向已逻辑删除相机的行），避免悬空引用
+        jdbcTemplate.update("UPDATE dim_camera SET workstation_id = NULL WHERE workstation_id = ?", id);
         workstationService.removeById(id);
         return ResultVO.success("删除成功");
     }
 
     @GetMapping("/{id}/dependencies")
     public ResultVO<Map<String, Object>> dependencies(@PathVariable Integer id) {
-        int cameraCount = count("SELECT COUNT(*) FROM camera_status WHERE workstation_id = ?", id);
+        // ★ 查 dim_camera（绑定关系的真实来源），而非 camera_status（状态快照）
+        int cameraCount = count("SELECT COUNT(*) FROM dim_camera WHERE workstation_id = ? AND IFNULL(is_deleted,0)=0", id);
         int productionCount = count("SELECT COUNT(*) FROM fact_production_30min WHERE workstation_id = ?", id);
         int defectCount = count("SELECT COUNT(*) FROM product_detection_history WHERE workstation_id = ?", id);
         Map<String, Object> data = new LinkedHashMap<>();
