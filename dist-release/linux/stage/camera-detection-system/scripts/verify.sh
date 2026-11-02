@@ -209,6 +209,22 @@ if [[ -n "$TOKEN" ]]; then
   check "看板统计接口（带 token）" "$([[ "$AUTH_CODE" == "200" ]] && echo true || echo false)" "HTTP ${AUTH_CODE}"
   check "鉴权生效（匿名应被拒）" "$([[ "$ANON_CODE" == "403" || "$ANON_CODE" == "401" ]] && echo true || echo false)" \
         "匿名 HTTP ${ANON_CODE}（期望 401/403）"
+
+  # 服务器监控接口（2026-11-02 新增）
+  # 这个接口依赖 OSHI + JNA，是本项目唯一依赖 native 库的采集能力。
+  # 若 java.io.tmpdir 不可写（JNA 无法解压 native 库），接口会返回
+  # errorCode=OSHI_INIT_FAILED 而不是崩溃 —— 属于「可降级但需知晓」的状态，
+  # 因此单独列一项检查，让现场一眼看出监控是否真的在跑。
+  METRICS_CODE=$(http_code -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/v1/system/server/metrics")
+  check "服务器监控接口" "$([[ "$METRICS_CODE" == "200" ]] && echo true || echo false)" \
+        "HTTP ${METRICS_CODE}"
+  if [[ "$METRICS_CODE" == "200" ]]; then
+    METRICS_ERR=$(curl -s -m 10 -H "Authorization: Bearer ${TOKEN}" \
+      "${BASE_URL}/api/v1/system/server/metrics" 2>/dev/null \
+      | grep -oE '"errorCode":"[^"]*"' | head -1 | cut -d'"' -f4)
+    check "服务器指标采集可用" "$([[ -z "$METRICS_ERR" || "$METRICS_ERR" == "null" ]] && echo true || echo false)" \
+          "$([[ -z "$METRICS_ERR" || "$METRICS_ERR" == "null" ]] && echo "OSHI 采集正常" || echo "采集异常：${METRICS_ERR}")"
+  fi
 else
   check "看板统计接口（带 token）" false "未取到 token，无法验证"
 fi

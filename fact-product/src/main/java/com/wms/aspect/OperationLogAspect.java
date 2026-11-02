@@ -139,13 +139,30 @@ public class OperationLogAspect {
     /**
      * 操作日志页面本身的查询、删除、清空不再写入操作日志，避免出现“删除后又新增一条日志”
      * 或“清空后马上又出现一条查询/清空日志”的自记录问题。
+     *
+     * <p><b>2026-11-02 新增：服务器监控轮询接口也必须排除。</b>
+     * 前端以 5 秒周期轮询 {@code GET /api/v1/system/server/metrics}，
+     * 若不排除，每天会往 {@code sys_operation_log} 写入
+     * 86400 / 5 = <b>17280 条</b>无意义记录，
+     * 把真正的操作日志淹没，还会让这张表以每天 1.7 万行的速度膨胀。
      */
     private boolean shouldSkipOperationLog(HttpServletRequest request) {
         if (request == null) {
             return false;
         }
         String uri = request.getRequestURI();
-        return uri != null && uri.startsWith("/api/logs/operation");
+        if (uri == null) {
+            return false;
+        }
+        // 操作日志自身的查询/清理
+        if (uri.startsWith("/api/logs/operation")) {
+            return true;
+        }
+        // 服务器监控的高频轮询接口
+        if (uri.startsWith("/api/v1/system/server/")) {
+            return true;
+        }
+        return false;
     }
 
     /**

@@ -173,6 +173,17 @@ const routes = [
         name: 'SystemConfig',
         component: () => import('../views/system/ConfigView.vue'),
         meta: { title: '系统配置', requiresAdmin: true }
+      },
+      {
+        // 服务器监控（2026-11-02 新增）
+        // 不设 requiresAdmin —— 按决策所有登录用户都能看服务器负载，
+        // 现场运维人员排查时也需要这个页面。
+        // 后端接口 /api/v1/system/server/metrics 由 SecurityConfig 的
+        // /api/v1/system/** → authenticated() 规则保护。
+        path: 'server-monitor',
+        name: 'ServerMonitor',
+        component: () => import('../views/system/ServerMonitorView.vue'),
+        meta: { title: '服务器监控' }
       }
     ]
   }

@@ -61,6 +61,11 @@
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="5" rx="1"/><rect x="12" y="8" width="3" height="9" rx="1"/><rect x="17" y="5" width="3" height="12" rx="1"/></svg>
         产线统计
       </router-link>
+      <!-- 服务器监控（2026-11-02 新增）：所有登录用户可见，故不加 v-if="isAdmin" -->
+      <router-link to="/server-monitor" class="tb-item" active-class="active">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M6 11l3-3 2 2 4-4 3 3"/></svg>
+        服务器监控
+      </router-link>
       </nav>
     </div>
 

@@ -76,6 +76,14 @@ upload:
   max-file-size: 10MB
   max-request-size: 1024MB
 
+server-metrics:
+  # 服务器资源指标采集器（OSHI 6.9.3）。
+  # 后台定时采集 + 内存缓存，接口只读缓存（理由见开发版注释）。
+  # 采集间隔 5 秒，内存窗口 10 分钟（120 点）。
+  interval-ms: 5000
+  initial-delay-ms: 1000
+  history-size: 120
+
 defect-image:
   # 单批缺陷图片最大数量。超过 100 张请拆分批次上报。
   # 设备端建议同步传 Header: X-Image-Count，便于服务端在解析图片流前快速拒绝超量请求。
