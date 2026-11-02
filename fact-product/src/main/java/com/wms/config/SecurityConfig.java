@@ -143,7 +143,14 @@ public class SecurityConfig {
                     "/holidays",
                     "/operation-logs",
                     "/profile",
-                    "/defects/**"
+                    "/defects/**",
+                    // 服务器监控页（2026-11-02 新增）
+                    // ⚠️ 必须加进 SPA 页面路由白名单，否则浏览器直接访问该 URL
+                    //    刷新时会 403 —— 服务端要先返回 index.html，
+                    //    而此时用户可能还没登录、没有 token。
+                    //    页面里的数据请求走 /api/v1/system/server/**，仍受鉴权保护。
+                    "/server-monitor",
+                    "/server-monitor/**"
                 ).permitAll()
                 // ---- 认证相关 ----
                 // /api/auth/register 保留匿名：注册角色已固定为普通用户(0)，

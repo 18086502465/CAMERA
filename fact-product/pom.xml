@@ -103,6 +103,31 @@
             <version>0.11.5</version>
             <scope>runtime</scope>
         </dependency>
+        <!--
+            OSHI —— 服务器资源指标采集（CPU / 内存 / 磁盘空间 / 磁盘 I/O 速率与 IOPS）
+
+            版本锁定说明（2026-11-02 实测校验，勿随意升级）：
+              本项目强制 Java 8（maven.compiler.source=8）。逐个下载解包验证字节码：
+                5.8.7 → major=52 (Java 8)
+                6.4.0 → major=52 (Java 8)
+                6.9.3 → major=52 (Java 8)，MANIFEST 明确标注 Java-Version: 8  ← 选用
+                7.7.3 → major=52，但包结构大改（oshi/driver/*）且依赖 jna-jpms，风险高
+              网上流传的「OSHI 6.x 需 Java 11」不准确 —— 官网另提供 oshi-core-java11 变体，
+              主 artifact 保持 Java 8 兼容。
+
+            注意：
+              1) oshi-core 会传递引入 jna + jna-platform，两者都必须存在。
+                 只加 jna 会在 Windows 上抛
+                 NoClassDefFoundError: com/sun/jna/platform/win32/Win32Exception。
+              2) slf4j-api 由 Spring Boot 自带，不要重复声明。
+              3) JNA 需要把 native 库解压到 java.io.tmpdir —— Linux systemd 单元
+                 启用了 PrivateTmp=true，实机已验证可用（见服务器运行与问题排查手册）。
+        -->
+        <dependency>
+            <groupId>com.github.oshi</groupId>
+            <artifactId>oshi-core</artifactId>
+            <version>6.9.3</version>
+        </dependency>
         <!-- Spring Security Crypto (for BCrypt) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

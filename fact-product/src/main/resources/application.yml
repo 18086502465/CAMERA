@@ -74,6 +74,17 @@ logging:
     name: ${app.home}/logs/camera-detection-system.log
 
 
+server-metrics:
+  # 服务器资源指标采集器（OSHI）。
+  # 采集在后台定时执行，接口只读内存缓存 —— 实测单次采集 124~214ms
+  # （其中 getDiskStores 独占 85~95ms），若在请求时现采，
+  # 并发用户会互相打乱磁盘速率的做差基准，算出的速率是错的。
+  interval-ms: 5000
+  # 启动后延迟多久开始第一次定时采集（@PostConstruct 已先采一次，此处仅影响定时器）
+  initial-delay-ms: 1000
+  # 内存环形缓存的历史点数。120 点 / 5 秒 = 10 分钟窗口
+  history-size: 120
+
 defect-image:
   # 单批缺陷图片最大数量。超过 100 张请拆分批次上报。
   # 设备端建议同步传 Header: X-Image-Count，便于服务端在解析图片流前快速拒绝超量请求。
