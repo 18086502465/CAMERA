@@ -148,7 +148,7 @@
               <el-table-column prop="lastLogin" label="最后登录" width="170" />
             </template>
 
-            <el-table-column label="操作" width="160" fixed="right" align="center">
+            <el-table-column label="操作" width="180" fixed="right" align="center">
               <template #default="{ row }">
                 <div class="action-group">
                   <el-button size="small" class="action-btn edit" @click="editRow(activeMenu, row)">编辑</el-button>
@@ -789,9 +789,20 @@ onMounted(fetchAll)
 .status-badge.danger { background: #fee2e2; color: #b91c1c; }
 .status-badge.off { background: #f1f5f9; color: #475569; }
 .status-badge.neutral { background: #e0f2fe; color: #0369a1; }
-.action-group { display: inline-flex; align-items: center; gap: 6px; padding: 2px; border: 1px solid #e5e7eb; border-radius: 999px; background: #f8fafc; }
+/* 操作列按钮组
+   ★ 2026-11-02 修正「部分行只剩删除按钮、编辑按钮消失」：
+     1) width:160 太窄，两个按钮 + gap + padding 实际超过列宽，
+        Element Plus 的 fixed="right" 固定列在列宽不足时会把按钮挤出可视区；
+     2) 行高被长文本撑成两行时，固定列的渲染层与主体行错位，
+        按钮会"掉"到别的行去 —— 表现为某些行只剩一个按钮。
+     解决办法：列宽放宽、按钮组 nowrap 且宽度固定、禁止单元格换行。
+*/
+.action-group { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 2px; border: 1px solid #e5e7eb; border-radius: 999px; background: #f8fafc; white-space: nowrap; width: 128px; }
 .action-group :deep(.el-button + .el-button) { margin-left: 0; }
-.action-btn { height: 24px; min-height: 24px; padding: 0 11px !important; border: none !important; border-radius: 999px !important; font-size: 12px; font-weight: 700; transition: all .15s; }
+.action-btn { height: 24px; min-height: 24px; width: 52px; margin: 0 !important; padding: 0 !important; border: none !important; border-radius: 999px !important; font-size: 12px; font-weight: 700; transition: all .15s; }
+/* 操作列单元格：禁止换行，避免行高变化导致固定列错位 */
+.cfg-table :deep(.el-table__fixed-right .cell),
+.cfg-table :deep(.el-table-fixed-column--right .cell) { white-space: nowrap; overflow: visible; }
 .action-btn.edit { color: #2563eb; background: #eff6ff; }
 .action-btn.del { color: #dc2626; background: #fff1f2; }
 .action-btn.edit:hover { color: #fff; background: #2563eb; }

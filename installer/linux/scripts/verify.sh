@@ -261,30 +261,55 @@ check "匿名不得写系统设置" "$([[ "$ANON_WRITE_CODE" == "403" || "$ANON_
 echo
 echo "${C_HEAD}[7] 设备上报接口${C_OFF}"
 
+# ★ 2026-11-02 修正：相机编号与产品名原先**硬编码** CAM-001 / 产品A。
+#   现场把「杭州工厂」配置删除后（只保留临平二期），
+#   CAM-001 已不存在 → 批量上报恒返回 422 → 自检永远失败 1 项。
+#   现在改为**从库里动态取一台真实存在的相机与产品**，换机器/换配置都不会失效。
+# 从 /etc/default 读数据库口令（640 root），供 db_query 自行使用。
+# 单独抽成函数，避免依赖后面第 9 节才赋值的 MYSQL_PW 变量（顺序陷阱）。
+_read_db_pw() {
+  local pw="${MYSQL_PASSWORD:-}"
+  if [[ -z "$pw" && -r /etc/default/camera-detection ]]; then
+    pw="$(sed -n 's/^MYSQL_PASSWORD=["'\'']\{0,1\}\([^"'\'']*\)["'\'']\{0,1\}$/\1/p' \
+      /etc/default/camera-detection | head -1)"
+  fi
+  echo "$pw"
+}
+db_query() {
+  local pw; pw="$(_read_db_pw)"
+  [[ -z "$pw" ]] && return 1
+  MYSQL_PWD="$pw" mysql -h127.0.0.1 -uroot -D "${VERIFY_DB_NAME:-wms-new}" -N -e "$1" 2>/dev/null
+}
+DEV_CAMERA_CODE="$(db_query "SELECT camera_code FROM dim_camera WHERE IFNULL(is_deleted,0)=0 ORDER BY camera_id LIMIT 1;")"
+DEV_PRODUCT_NAME="$(db_query "SELECT product_name FROM dim_product WHERE IFNULL(is_enabled,1)=1 ORDER BY product_id LIMIT 1;")"
+[[ -z "$DEV_CAMERA_CODE" ]] && DEV_CAMERA_CODE="CAM-001"
+[[ -z "$DEV_PRODUCT_NAME" ]] && DEV_PRODUCT_NAME="产品A"
+echo "  自检使用相机: ${DEV_CAMERA_CODE}  产品: ${DEV_PRODUCT_NAME}"
+
 HB_CODE=$(http_code -X POST -H "Content-Type: application/json" \
-  -H "X-Device-Id: CAM-001" -H "Authorization: Bearer dev-token" \
-  -d '{"cameraName":"自检相机","cameraCode":"CAM-001","cameraStatus":1}' \
+  -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "Authorization: Bearer dev-token" \
+  -d "{\"cameraName\":\"自检相机\",\"cameraCode\":\"${DEV_CAMERA_CODE}\",\"cameraStatus\":1}" \
   "${BASE_URL}/api/v1/camera/status/heartbeat")
 check "心跳上报" "$([[ "$HB_CODE" == "200" ]] && echo true || echo false)" "HTTP ${HB_CODE}"
 
 BU_CODE=$(http_code -X POST -H "Content-Type: application/json" \
-  -H "X-Device-Id: CAM-001" -H "X-Batch-Id: VERIFY-$(date +%s)" -H "Authorization: Bearer dev-token" \
-  -d '{"schemaVersion":"2.0","batchId":"VERIFY","cameraCode":"CAM-001","productName":"产品A","reportTime":"2026-01-01 00:00:00","counterMode":"INCREMENTAL","timeRange":{"startTime":"2026-01-01 00:00:00","endTime":"2026-01-01 00:30:00"},"summary":{"totalCount":1,"okCount":1,"ngCount":0},"defects":[]}' \
+  -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "X-Batch-Id: VERIFY-$(date +%s)" -H "Authorization: Bearer dev-token" \
+  -d "{\"schemaVersion\":\"2.0\",\"batchId\":\"VERIFY\",\"cameraCode\":\"${DEV_CAMERA_CODE}\",\"productName\":\"${DEV_PRODUCT_NAME}\",\"reportTime\":\"2026-01-01 00:00:00\",\"counterMode\":\"INCREMENTAL\",\"timeRange\":{\"startTime\":\"2026-01-01 00:00:00\",\"endTime\":\"2026-01-01 00:30:00\"},\"summary\":{\"totalCount\":1,\"okCount\":1,\"ngCount\":0},\"defects\":[]}" \
   "${BASE_URL}/api/v1/camera/inspection/batch-upload")
 check "批量上报" "$([[ "$BU_CODE" == "200" ]] && echo true || echo false)" "HTTP ${BU_CODE}"
 
 # 未映射编码应返回 422 UNMAPPED
 UNMAPPED_CODE=$(http_code -X POST -H "Content-Type: application/json" \
-  -H "X-Device-Id: CAM-001" -H "X-Batch-Id: VERIFY-UNMAPPED-$(date +%s)" -H "Authorization: Bearer dev-token" \
-  -d '{"schemaVersion":"2.0","batchId":"VERIFY-UNMAPPED","cameraCode":"CAM-001","productName":"产品A","reportTime":"2026-01-01 00:00:00","counterMode":"INCREMENTAL","timeRange":{"startTime":"2026-01-01 00:00:00","endTime":"2026-01-01 00:30:00"},"summary":{"totalCount":1,"okCount":0,"ngCount":1},"defects":[{"sourceCode":"__NOT_MAPPED__","count":1}]}' \
+  -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "X-Batch-Id: VERIFY-UNMAPPED-$(date +%s)" -H "Authorization: Bearer dev-token" \
+  -d "{\"schemaVersion\":\"2.0\",\"batchId\":\"VERIFY-UNMAPPED\",\"cameraCode\":\"${DEV_CAMERA_CODE}\",\"productName\":\"${DEV_PRODUCT_NAME}\",\"reportTime\":\"2026-01-01 00:00:00\",\"counterMode\":\"INCREMENTAL\",\"timeRange\":{\"startTime\":\"2026-01-01 00:00:00\",\"endTime\":\"2026-01-01 00:30:00\"},\"summary\":{\"totalCount\":1,\"okCount\":0,\"ngCount\":1},\"defects\":[{\"sourceCode\":\"__NOT_MAPPED__\",\"count\":1}]}" \
   "${BASE_URL}/api/v1/camera/inspection/batch-upload")
 check "未映射编码拒绝" "$([[ "$UNMAPPED_CODE" == "422" ]] && echo true || echo false)" "HTTP ${UNMAPPED_CODE}（期望 422）"
 
 # --- 8. 图片超量快速拒绝 -----------------------------------------------------
 OVER_CODE=$(http_code -X POST -H "X-Image-Count: 101" \
-  -H "X-Device-Id: CAM-001" -H "Authorization: Bearer dev-token" \
+  -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "Authorization: Bearer dev-token" \
   "${BASE_URL}/api/v1/defect-images/upload")
-check "图片超量拒绝" "$([[ "$OVER_CODE" == "413" ]] && echo true || echo false)" "HTTP ${OVER_CODE}（期望 413）"
+check "图片超量拒绝" "$([[ "$OVER_CODE" == "413" ]] && echo true || echo false)" "HTTP ${OVER_CODE}"
 
 # --- 9. 清理自检产生的测试数据 -------------------------------------------------
 # ⚠️ 2026-10-31 服务器实测发现的问题：
