@@ -45,11 +45,25 @@ Thumbs.db
 .DS_Store
 desktop.ini
 
-# ---- 发布产物中的重型二进制 ----
-# 安装包 exe、Linux tar.gz、内置 JRE 均为构建输出，由 build-release.ps1 现场生成
-dist-release/installer/*.exe
+# ---- 发布产物中的重型第三方运行时 ----
+# ⚠️ 2026-11-02 决策调整：
+#   用户要求「完全都进行推送」，因此**发布产物全部入库**，
+#   包括 Windows 安装包 exe（100M）与 Linux tar.gz（54M）——
+#   这两者是本项目的构建输出，可重现但体积大。
+#
+#   仅排除 **内置 JRE（209M）**：那是第三方 OpenJDK 运行时，
+#   不是本项目代码，且会随 JDK 版本更新而失效、由 build-release.ps1
+#   现场下载。入库会带来：
+#     1) 仓库体积膨胀 209M，且每次 JDK 升级都产生一个大二进制 diff；
+#     2) 第三方许可与安全更新责任混入本仓库；
+#     3) 与 .gitignore 里「jar 由 mvn package 现场构建」的原则冲突。
+#   需要时用 build-release.ps1 现场重建即可。
 dist-release/CameraDetectionSystem/jre/
-dist-release/linux/*.tar.gz
+
+# 运行时日志（每次执行自检/备份都会产生）
+dist-release/logs/
+dist-release/build-release-latest.log
+dist-release/installer/install-verify.log
 
 # ---- 敏感文件 ----
 *.pem
