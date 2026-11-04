@@ -3,7 +3,7 @@
   [int]$Port = 3306,
   [string]$Database = 'wms-new',
   [string]$User = 'root',
-  [string]$Password = 'CCshenda889',
+  [string]$Password = '<数据库口令>',
   [string]$SqlFile,
   [switch]$Yes
 )
