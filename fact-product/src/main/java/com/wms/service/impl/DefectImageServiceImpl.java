@@ -1021,15 +1021,40 @@ public class DefectImageServiceImpl implements IDefectImageService {
     private void updateCameraLatestImage(String cameraId, String cameraName, String deviceId, String latestImageUrl, LocalDateTime uploadTime) {
         if (!StringUtils.hasText(latestImageUrl)) return;
         try {
-            CameraStatus existing = cameraStatusMapper.selectOne(
-                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<CameraStatus>()
-                            .eq(CameraStatus::getCameraName, cameraName)
-                            .or()
-                            .eq(CameraStatus::getCameraCode, cameraId)
-                            .or()
-                            .eq(CameraStatus::getCameraCode, deviceId)
-                            .last("LIMIT 1")
-            );
+            // ★ 2026-11-04 修正（命中不确定性）：
+            //   原实现是一条无优先级的 OR 链 + LIMIT 1：
+            //     camera_name = ? OR camera_code = ? OR camera_code = ?
+            //   MySQL 在多条件命中时返回哪一行**没有确定顺序**，
+            //   而 camera_name 在现场存在重名（CV1_Cam1 等各 2 行），
+            //   一旦同时命中多行，就会写到**随机的那一行** ——
+            //   表现为某台相机的最新图片/上传时间被别的相机覆盖。
+            //
+            //   改为与心跳通道一致的口径：**camera_code 优先，名称仅兜底**。
+            CameraStatus existing = null;
+
+            String codeCandidate = firstNotBlank(cameraId, deviceId);
+            if (StringUtils.hasText(codeCandidate)) {
+                existing = cameraStatusMapper.selectOne(
+                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<CameraStatus>()
+                                .eq(CameraStatus::getCameraCode, codeCandidate)
+                                .last("LIMIT 1")
+                );
+            }
+
+            if (existing == null && StringUtils.hasText(cameraName)) {
+                // 名称兜底：只在名称唯一时使用，避免重名时写到错误的行
+                List<CameraStatus> byName = cameraStatusMapper.selectList(
+                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<CameraStatus>()
+                                .eq(CameraStatus::getCameraName, cameraName)
+                );
+                if (byName.size() == 1) {
+                    existing = byName.get(0);
+                } else if (byName.size() > 1) {
+                    log.warn("相机名称 {} 有 {} 条配置，跳过最新图片更新以避免串号。cameraCode={}",
+                            cameraName, byName.size(), codeCandidate);
+                }
+            }
+
             if (existing != null) {
                 LocalDateTime existingLastUploadAt = existing.getLastUploadAt();
                 boolean shouldRefreshLatest = existingLastUploadAt == null
