@@ -20,12 +20,11 @@ const ADMIN_PWD = process.env.CAMERA_ADMIN_PASSWORD || '';
 
   await page.goto(BASE + '/login', { waitUntil: 'networkidle2', timeout: 60000 });
   await page.waitForSelector('input', { timeout: 20000 });
-  await page.evaluate((pwd) => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-    const els = document.querySelectorAll('input');
-    setter.call(els[0], 'admin'); els[0].dispatchEvent(new Event('input', { bubbles: true }));
-    setter.call(els[1], pwd); els[1].dispatchEvent(new Event('input', { bubbles: true }));
-  }, ADMIN_PWD);
+  // ★ 统一用辅助函数登录：Element Plus 的 password 输入框会静默吞掉
+  //   page.type() 的输入（实测值为空），必须用 focus+Ctrl+A+Backspace+keyboard.type。
+  const { login: doLogin } = require('./scripts/browser-helper.cjs');
+  const loginRes = await doLogin(page, 'admin', ADMIN_PWD);
+  if (!loginRes.ok) log(`  [提示] 登录未成功（${loginRes.url}）：${loginRes.error}`);
   await Promise.all([
     page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {}),
     page.evaluate(() => {

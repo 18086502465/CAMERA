@@ -67,7 +67,7 @@ Host: 127.0.0.1
 Port: 3306
 Database: wms-new
 User: root
-Password: CCshenda889
+Password: ${MYSQL_PASSWORD}
 ```
 
 可在安装目录下修改：
@@ -172,7 +172,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\init-database
   -Port 3306 `
   -Database "wms-new" `
   -User "root" `
-  -Password "CCshenda889" `
+  -Password "<数据库口令>" `
   -Yes
 ```
 
@@ -295,7 +295,7 @@ spring:
   datasource:
     url: jdbc:mysql://127.0.0.1:3306/wms-new?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
     username: root
-    password: CCshenda889
+    password: ${MYSQL_PASSWORD}
 ```
 
 ### 6.3 上传大小

@@ -10,7 +10,7 @@
 > OpenJDK 1.8.0_504 / MySQL 8.0.46 / systemd 255 / 16 GB 内存。
 > 从零部署 → 建库 → 启动 → 自检 **21 项全过**；首轮暴露的 5 个真实缺陷已修复，详见**附录 B**。
 
-> **数据库账号**：本方案按现场要求使用 **`root` / `CCshenda889`**（该机 root 的认证插件是
+> **数据库账号**：本方案按现场要求使用 **`root` / `<数据库口令>`**（该机 root 的认证插件是
 > `mysql_native_password`，密码直连可用，**无需**改 `auth_socket`）。
 > 若换到其他机器，root 可能是 `auth_socket`（只认操作系统身份、不认密码），
 > 需按 §3.2 改用专用账号。
@@ -81,7 +81,7 @@
 |---|---|---|
 | 应用端口 | `8091` | `installer/templates/application.yml` ①（`server.port`）<br>`installer/linux/systemd/camera-detection.service` ②（仅当用 nginx 反代时改监听）<br>`installer/linux/scripts/verify.sh` ③（自检端口） |
 | 数据库名 | `wms-new` | `installer/templates/application.yml` ①<br>`installer/linux/scripts/init-database.sh` ②（`DATABASE` 默认值） |
-| 数据库账号/密码 | `root` / `CCshenda889` | `installer/templates/application.yml` ① |
+| 数据库账号/密码 | `root` / `<数据库口令>` | `installer/templates/application.yml` ① |
 | 管理员口令 | `123456` | 见 §4.3（用 `reset-password.sh` 改，不要写进脚本） |
 | 安装目录 | `/opt/camera-detection-system` | `installer/linux/scripts/install.sh` ① |
 | 工作目录 | `/var/lib/camera-detection-system` | `installer/linux/scripts/install.sh` ① |
@@ -160,7 +160,7 @@ java -version && mysql --version
 
 ### 3.2 MySQL 账号
 
-**本方案按现场要求使用 `root` / `CCshenda889`。** 该机（`10.2.77.72`）的 root 认证插件是
+**本方案按现场要求使用 `root` / `<数据库口令>`。** 该机（`10.2.77.72`）的 root 认证插件是
 `mysql_native_password`，**密码直连可用**，无需改动：
 
 ```bash
@@ -179,7 +179,7 @@ mysql -h 127.0.0.1 -u root -p -e "SELECT 1;"
 > **A. 改成密码认证**（保持用 root）：
 > ```bash
 > sudo mysql <<'SQL'
-> ALTER USER 'root'@'localhost' IDENTIFIED WITH caching_sha2_password BY 'CCshenda889';
+> ALTER USER 'root'@'localhost' IDENTIFIED WITH caching_sha2_password BY '<数据库口令>';
 > FLUSH PRIVILEGES;
 > SQL
 > ```
