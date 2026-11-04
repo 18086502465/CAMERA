@@ -126,18 +126,45 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
             status.setYieldRate(BigDecimal.valueOf(dto.getCorrectCount() * 100.0 / dto.getRecognizeCount()).setScale(2, RoundingMode.HALF_UP));
         }
 
-        CameraStatus existing = cameraStatusMapper.selectOne(
-                new LambdaQueryWrapper<CameraStatus>()
-                        .eq(CameraStatus::getCameraName, dto.getCameraName())
-                        .last("LIMIT 1")
-        );
-        boolean matchedByName = existing != null;
-        if (existing == null && StringUtils.hasText(deviceId)) {
+        // ★ 2026-11-04 修正（数据串号隐患）：
+        //   原实现**先按 camera_name 匹配、编号兜底**，而 camera_name 在现场并不唯一
+        //   （实测 camera_status 里 CV1_Cam1 / CV2_Cam1 各有 2 行，分别属于
+        //   杭州临平一期 ZK54 与二期 ZK23 两套工位）。
+        //   只要设备上报的名称与配置名一致，LIMIT 1 就会把心跳写进**另一台相机**的行 ——
+        //   表现为该相机的心跳时间/计数被另一台设备覆盖，现场极难察觉。
+        //
+        //   camera_code 上有唯一索引 uk_camera_code，是设备的天然身份标识，
+        //   因此改为：**编号优先，名称仅在无编号时兜底**。
+        //   这与同文件的 findCameraForAlert（已是 code-first）口径一致。
+        CameraStatus existing = null;
+        boolean matchedByName = false;
+
+        if (StringUtils.hasText(deviceId)) {
             existing = cameraStatusMapper.selectOne(
                     new LambdaQueryWrapper<CameraStatus>()
                             .eq(CameraStatus::getCameraCode, deviceId)
                             .last("LIMIT 1")
             );
+        }
+
+        if (existing == null && StringUtils.hasText(dto.getCameraName())) {
+            // 名称兜底：仅当名称唯一时才敢用。命中多行说明配置有重名，
+            // 此时无法判断该写哪一台 —— 宁可拒绝也不静默写错行。
+            List<CameraStatus> byName = cameraStatusMapper.selectList(
+                    new LambdaQueryWrapper<CameraStatus>()
+                            .eq(CameraStatus::getCameraName, dto.getCameraName())
+            );
+            if (byName.size() > 1) {
+                log.warn("相机名称 {} 在系统中存在 {} 条配置，无法唯一定位，拒绝写入以避免串号。请补齐设备编号或修正重名。",
+                        dto.getCameraName(), byName.size());
+                throw new IllegalArgumentException(
+                        "相机名称重复，无法确定目标设备: " + dto.getCameraName()
+                                + "（请改用设备编号上报，或在配置中修正重名）");
+            }
+            if (byName.size() == 1) {
+                existing = byName.get(0);
+                matchedByName = true;
+            }
         }
 
         if (existing != null) {
