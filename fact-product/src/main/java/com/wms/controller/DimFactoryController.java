@@ -6,6 +6,7 @@ import com.wms.entity.DimFactory;
 import com.wms.service.IDimFactoryService;
 import com.wms.vo.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
@@ -71,6 +72,14 @@ public class DimFactoryController {
         return ResultVO.success("更新成功");
     }
 
+    /**
+     * 删除工厂。
+     *
+     * <p><b>2026-11-04 修正</b>：原方法<b>缺少 {@code @PreAuthorize("hasRole('ADMIN')")}</b>，
+     * 而同类的产线/工位/相机删除接口都有 —— 导致任何已登录用户都能删工厂。
+     * 这是权限漏洞，本次补齐。
+     */
+    @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     public ResultVO<String> delete(@PathVariable Integer id) {
         int lineCount = count("SELECT COUNT(*) FROM dim_production_line WHERE factory_id = ? AND IFNULL(is_deleted,0)=0", id);
@@ -86,8 +95,11 @@ public class DimFactoryController {
     @GetMapping("/{id}/dependencies")
     public ResultVO<Map<String, Object>> dependencies(@PathVariable Integer id) {
         int lineCount = count("SELECT COUNT(*) FROM dim_production_line WHERE factory_id = ? AND IFNULL(is_deleted,0)=0", id);
-        int stationCount = count("SELECT COUNT(*) FROM dim_workstation ws JOIN dim_production_line pl ON ws.line_id = pl.line_id WHERE pl.factory_id = ? AND IFNULL(pl.is_deleted,0)=0", id);
-        int cameraCount = count("SELECT COUNT(*) FROM camera_status cs JOIN dim_workstation ws ON cs.workstation_id = ws.workstation_id JOIN dim_production_line pl ON ws.line_id = pl.line_id WHERE pl.factory_id = ?", id);
+        // ★ 2026-11-04 修正：dim_workstation 是逻辑删除，需过滤 is_deleted
+        int stationCount = count("SELECT COUNT(*) FROM dim_workstation ws JOIN dim_production_line pl ON ws.line_id = pl.line_id WHERE pl.factory_id = ? AND IFNULL(pl.is_deleted,0)=0 AND IFNULL(ws.is_deleted,0)=0", id);
+        // ★ 2026-11-04 修正：原查 camera_status（状态快照，可能无对应行），
+        //   改为查 dim_camera（相机与产线绑定的真实来源）。
+        int cameraCount = count("SELECT COUNT(*) FROM dim_camera dc JOIN dim_workstation ws ON dc.workstation_id = ws.workstation_id JOIN dim_production_line pl ON ws.line_id = pl.line_id WHERE pl.factory_id = ? AND IFNULL(dc.is_deleted,0)=0", id);
         int userCount = count("SELECT COUNT(*) FROM sys_user WHERE factory_id = ?", id);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("lineCount", lineCount);

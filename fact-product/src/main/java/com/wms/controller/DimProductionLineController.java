@@ -88,8 +88,13 @@ public class DimProductionLineController {
     @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     public ResultVO<String> delete(@PathVariable Integer id) {
-        int stationCount = count("SELECT COUNT(*) FROM dim_workstation WHERE line_id = ?", id);
-        int cameraCount = count("SELECT COUNT(*) FROM camera_status WHERE line_id = ?", id);
+        // ★ 2026-11-04 修正：dim_workstation 补了 @TableLogic 后是**逻辑删除**，
+        //   但这里的依赖检查没过滤 is_deleted → 已删除的工位仍被算作依赖，
+        //   导致「工位已删、产线却永远删不掉」。
+        int stationCount = count("SELECT COUNT(*) FROM dim_workstation WHERE line_id = ? AND IFNULL(is_deleted,0)=0", id);
+        // ★ 2026-11-04 修正：原查 camera_status（状态快照，可能无对应行），
+        //   改为查 dim_camera（相机与产线绑定的真实来源）。
+        int cameraCount = count("SELECT COUNT(*) FROM dim_camera WHERE line_id = ? AND IFNULL(is_deleted,0)=0", id);
         if (stationCount > 0 || cameraCount > 0) {
             return ResultVO.fail("产线存在依赖数据，禁止直接删除。请先迁移或删除下属工位/相机后再操作。",
                     "依赖明细：工位 " + stationCount + " 条，相机 " + cameraCount + " 台。");
@@ -100,8 +105,11 @@ public class DimProductionLineController {
 
     @GetMapping("/{id}/dependencies")
     public ResultVO<Map<String, Object>> dependencies(@PathVariable Integer id) {
-        int stationCount = count("SELECT COUNT(*) FROM dim_workstation WHERE line_id = ?", id);
-        int cameraCount = count("SELECT COUNT(*) FROM camera_status WHERE line_id = ?", id);
+        // ★ 2026-11-04 修正：dim_workstation 补了 @TableLogic 后是**逻辑删除**，
+        //   但这里的依赖检查没过滤 is_deleted → 已删除的工位仍被算作依赖，
+        //   导致「工位已删、产线却永远删不掉」。
+        int stationCount = count("SELECT COUNT(*) FROM dim_workstation WHERE line_id = ? AND IFNULL(is_deleted,0)=0", id);
+        int cameraCount = count("SELECT COUNT(*) FROM dim_camera WHERE line_id = ? AND IFNULL(is_deleted,0)=0", id);
         int productionCount = count("SELECT COUNT(*) FROM fact_production_30min WHERE line_id = ?", id);
         int defectCount = count("SELECT COUNT(*) FROM product_detection_history WHERE line_id = ?", id);
         Map<String, Object> data = new LinkedHashMap<>();

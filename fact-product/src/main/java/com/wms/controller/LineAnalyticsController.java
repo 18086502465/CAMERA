@@ -76,6 +76,9 @@ public class LineAnalyticsController {
         widgetTypes.add(item("STACK_BAR", "堆叠柱状图", "按缺陷类型堆叠展示"));
         widgetTypes.add(item("RANK", "排行", "展示 Top 缺陷/工位/相机"));
         widgetTypes.add(item("PIVOT", "透视表", "动态生成产品缺陷列"));
+        widgetTypes.add(item("PLANT_OVERVIEW", "工厂总览", "厂长视角：规模、风险等级、首要缺陷一页看清"));
+        widgetTypes.add(item("PARETO", "帕累托图", "缺陷类型累计占比，定位主要矛盾"));
+        widgetTypes.add(item("SEVERITY", "严重度构成", "高/中/低缺陷占比，判断质量风险等级"));
         data.put("widgetTypes", widgetTypes);
 
         List<Map<String, Object>> dimensions = new ArrayList<>();
@@ -179,6 +182,255 @@ public class LineAnalyticsController {
         data.put("mappingExceptions", safeList(
                 "SELECT exception_id AS exceptionId, camera_code AS cameraCode, product_name AS productName, source_code AS sourceCode, exception_type AS exceptionType, exception_message AS exceptionMessage, create_time AS createTime " +
                         "FROM fact_inspection_mapping_exception WHERE status = 'OPEN' ORDER BY create_time DESC LIMIT 10"));
+
+        // ★ 数据源兜底：聚合表无数据时，回落到「缺陷图片事实表」。
+        //   现场设备走的是 defect-images/upload 通道，该通道只写 defect_image_*，
+        //   不写 agg_* 聚合表 —— 若只读聚合表，统计页在只有图片上报的现场永远是 0。
+        if (longVal(kpi.get("totalCount")) == 0 && longVal(kpi.get("defectCount")) == 0) {
+            Map<String, Object> fallback = buildDefectImageSummary(start, end, factoryId, lineId, workstationId, cameraId, severity);
+            if (longVal(map(fallback.get("kpi")).get("totalCount")) > 0) {
+                data.putAll(fallback);
+                data.put("aggregationLevel", daily ? "DAY" : "30M");
+                data.put("dataSource", "DEFECT_IMAGE");
+                data.put("dataSourceMessage", "当前范围聚合表无数据，已自动切换到缺陷图片事实表统计。");
+            }
+        }
+        if (!data.containsKey("dataSource")) {
+            data.put("dataSource", "AGGREGATION");
+            data.put("dataSourceMessage", "当前使用质量聚合表统计。");
+        }
+
+        // ---- 工厂厂长视角指标（严重度分布 / 帕累托 / 总览 / 缺陷趋势）----
+        // ⚠️ 严重度分布必须用「与主数据源同源」的查询，否则兜底路径下会被空结果覆盖。
+        Object severityRows = "DEFECT_IMAGE".equals(data.get("dataSource"))
+                ? data.get("severityDistribution")
+                : buildSeverityDistribution(defectTable, timeColumn, daily, start, end,
+                        factoryId, lineId, workstationId, cameraId, productId, shiftId, severity);
+        data.put("severityDistribution", severityRows);
+        data.put("defectPareto", buildPareto(data.get("defectRanking")));
+        data.put("plantOverview", buildPlantOverview(data));
+        data.put("defectTrend", buildDefectTrend(data.get("trend")));
+        return data;
+    }
+
+    /**
+     * 缺陷趋势 —— 与质量趋势区分：只画缺陷数与高危缺陷数，不画良率。
+     * 厂长的关注点是「问题在变多还是变少」，不是良率曲线。
+     */
+    private List<Map<String, Object>> buildDefectTrend(Object trend) {
+        List<Map<String, Object>> rows = listMap(trend);
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> r : rows) {
+            Map<String, Object> item = new LinkedHashMap<>(r);
+            item.put("defectCount", longVal(r.get("defectCount")));
+            item.put("ngCount", longVal(r.get("ngCount")));
+            result.add(item);
+        }
+        return result;
+    }
+
+    /**
+     * 严重度分布（高/中/低）—— 工厂厂长判断质量风险等级的第一眼指标。
+     */
+    private List<Map<String, Object>> buildSeverityDistribution(String defectTable, String timeColumn, boolean daily,
+                                                                 LocalDateTime start, LocalDateTime end,
+                                                                 Long factoryId, Long lineId, Long workstationId,
+                                                                 Long cameraId, Long productId, Long shiftId, String severity) {
+        List<Object> params = new ArrayList<>();
+        String where = buildDefectWhere(timeColumn, daily, start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, null, severity, params);
+        return jdbcTemplate.queryForList(
+                "SELECT UPPER(IFNULL(severity,'UNKNOWN')) AS severity, SUM(defect_count) AS defectCount " +
+                        "FROM " + defectTable + " " + where + " GROUP BY UPPER(IFNULL(severity,'UNKNOWN')) ORDER BY defectCount DESC",
+                params.toArray());
+    }
+
+    /**
+     * 帕累托：缺陷类型排行 + 累计占比。
+     * 厂长用帕累托一眼看出「80% 的问题来自哪几类缺陷」，比单纯排行更可决策。
+     */
+    private List<Map<String, Object>> buildPareto(Object defectRanking) {
+        List<Map<String, Object>> rows = listMap(defectRanking);
+        long total = 0;
+        for (Map<String, Object> r : rows) total += longVal(r.get("defectCount"));
+        long acc = 0;
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> r : rows) {
+            Map<String, Object> item = new LinkedHashMap<>(r);
+            long count = longVal(r.get("defectCount"));
+            acc += count;
+            item.put("totalDefect", total);
+            item.put("accumulatedDefect", acc);
+            item.put("accumulatedRate", total > 0 ? Math.round(acc * 10000.0 / total) / 100.0 : 0.0);
+            result.add(item);
+        }
+        return result;
+    }
+
+    /**
+     * 工厂总览 —— 面向厂长的「一页看清」汇总卡。
+     *
+     * <p>字段含义：
+     * <ul>
+     *   <li>{@code detectionTotal} 检测总量；{@code defectTotal} 缺陷总数；</li>
+     *   <li>{@code highDefect} 高危缺陷数；{@code highRate} 高危占比（%）；</li>
+     *   <li>{@code affectedWorkstation} 受影响工位数；{@code affectedCamera} 涉及相机数；</li>
+     *   <li>{@code topDefectName} 首要缺陷类型；{@code topDefectRate} 其占比（%）；</li>
+     *   <li>{@code yieldRateAvailable} 良率是否可算（图片通道无良品样本 → false）。</li>
+     * </ul>
+     */
+    private Map<String, Object> buildPlantOverview(Map<String, Object> data) {
+        Map<String, Object> kpi = map(data.get("kpi"));
+        Map<String, Object> overview = new LinkedHashMap<>();
+        long detection = longVal(kpi.get("totalCount"));
+        long defect = longVal(kpi.get("defectCount"));
+        long high = longVal(kpi.get("highCount"));
+        overview.put("detectionTotal", detection);
+        overview.put("defectTotal", defect);
+        overview.put("highDefect", high);
+        overview.put("highRate", defect > 0 ? Math.round(high * 10000.0 / defect) / 100.0 : 0.0);
+        overview.put("defectPerImage", detection > 0 ? Math.round(defect * 10000.0 / detection) / 100.0 : 0.0);
+        overview.put("affectedWorkstation", longVal(kpi.get("workstationCount")));
+        overview.put("affectedCamera", longVal(kpi.get("cameraCount")));
+        overview.put("yieldRateAvailable", !Boolean.FALSE.equals(kpi.get("yieldRateAvailable")));
+        Object rate = kpi.get("yieldRate");
+        overview.put("yieldRate", rate == null ? null : rate);
+        List<Map<String, Object>> ranking = listMap(data.get("defectRanking"));
+        if (!ranking.isEmpty()) {
+            Map<String, Object> top = ranking.get(0);
+            overview.put("topDefectName", top.get("defectName"));
+            long topCount = longVal(top.get("defectCount"));
+            overview.put("topDefectCount", topCount);
+            overview.put("topDefectRate", defect > 0 ? Math.round(topCount * 10000.0 / defect) / 100.0 : 0.0);
+        } else {
+            overview.put("topDefectName", null);
+            overview.put("topDefectCount", 0L);
+            overview.put("topDefectRate", 0.0);
+        }
+        overview.put("dataSource", data.get("dataSource"));
+        return overview;
+    }
+
+    /**
+     * 基于「缺陷图片事实表」的统计（聚合表无数据时的兜底数据源）。
+     *
+     * <p>现场设备通过 {@code /api/v1/defect-images/upload} 上报，
+     * 该通道只写 {@code defect_image_batch / defect_image_file / defect_image_box}，
+     * <b>不写</b> {@code agg_quality_30m}。因此统计页若只读聚合表，
+     * 在只有图片上报的现场就永远是 0 —— 实测线上 KPI 全为 0 正是此原因。
+     *
+     * <p>口径说明（与聚合表不同，前端需按 dataSource 区分展示）：
+     * <ul>
+     *   <li>{@code totalCount} = 缺陷图片张数（每张图代表一次检测事件）；</li>
+     *   <li>{@code defectCount} = 缺陷框总数（一张图可能有多个缺陷框）；</li>
+     *   <li>{@code okCount} = 0，{@code ngCount} = 缺陷图片数
+     *       —— <b>图片通道只上报缺陷图，没有良品样本</b>，所以良率不可计算，
+     *       前端对 {@code dataSource=DEFECT_IMAGE} 应显示「—」而不是 0%；</li>
+     *   <li>{@code yieldRate} = null（不可计算），由前端显示「—」。</li>
+     * </ul>
+     */
+    private Map<String, Object> buildDefectImageSummary(LocalDateTime start, LocalDateTime end,
+                                                        Long factoryId, Long lineId, Long workstationId,
+                                                        Long cameraId, String severity) {
+        Map<String, Object> data = new LinkedHashMap<>();
+
+        // 图片表的 camera_id 存的是相机编号（camera_code），需经 dim_camera 关联出维度
+        String joinCam = " LEFT JOIN dim_camera c ON c.camera_code = f.camera_id ";
+        List<Object> params = new ArrayList<>();
+        StringBuilder where = new StringBuilder(" WHERE f.capture_time BETWEEN ? AND ? ");
+        params.add(Timestamp.valueOf(start));
+        params.add(Timestamp.valueOf(end));
+        if (factoryId != null) { where.append(" AND c.factory_id = ? "); params.add(factoryId); }
+        if (lineId != null) { where.append(" AND c.line_id = ? "); params.add(lineId); }
+        if (workstationId != null) { where.append(" AND c.workstation_id = ? "); params.add(workstationId); }
+        if (cameraId != null) { where.append(" AND c.camera_id = ? "); params.add(cameraId); }
+        String sevWhere = "";
+        if (severity != null && !severity.trim().isEmpty()) {
+            sevWhere = " AND b.severity = ? ";
+        }
+
+        Map<String, Object> kpi = new LinkedHashMap<>();
+        List<Object> kpiParams = new ArrayList<>(params);
+        String kpiSql = "SELECT COUNT(1) AS imageCount, COALESCE(SUM(f.defect_count),0) AS defectCount, " +
+                "COALESCE(SUM(f.high_count),0) AS highCount, COALESCE(SUM(f.medium_count),0) AS mediumCount, " +
+                "COALESCE(SUM(f.low_count),0) AS lowCount, COUNT(DISTINCT c.camera_id) AS cameraCount, " +
+                "COUNT(DISTINCT c.workstation_id) AS workstationCount " +
+                "FROM defect_image_file f " + joinCam + where;
+        Map<String, Object> imgStat = one(kpiSql, kpiParams);
+        long imageCount = longVal(imgStat.get("imageCount"));
+        long defectCount = longVal(imgStat.get("defectCount"));
+        kpi.put("totalCount", imageCount);
+        kpi.put("defectCount", defectCount);
+        kpi.put("okCount", 0L);
+        kpi.put("ngCount", imageCount);
+        kpi.put("highCount", longVal(imgStat.get("highCount")));
+        kpi.put("mediumCount", longVal(imgStat.get("mediumCount")));
+        kpi.put("lowCount", longVal(imgStat.get("lowCount")));
+        kpi.put("cameraCount", longVal(imgStat.get("cameraCount")));
+        kpi.put("workstationCount", longVal(imgStat.get("workstationCount")));
+        kpi.put("yieldRate", null);   // 图片通道无良品样本，良率不可计算
+        kpi.put("ngRate", null);
+        kpi.put("yieldRateAvailable", false);
+        data.put("kpi", kpi);
+
+        // 趋势：按小时聚合缺陷图与缺陷数
+        List<Object> trendParams = new ArrayList<>(params);
+        data.put("trend", jdbcTemplate.queryForList(
+                "SELECT DATE_FORMAT(f.capture_time,'%Y-%m-%d %H:00:00') AS timeBucket, " +
+                        "COUNT(1) AS totalCount, 0 AS okCount, COUNT(1) AS ngCount, " +
+                        "COALESCE(SUM(f.defect_count),0) AS defectCount, 0 AS yieldRate " +
+                        "FROM defect_image_file f " + joinCam + where +
+                        " GROUP BY DATE_FORMAT(f.capture_time,'%Y-%m-%d %H:00:00') ORDER BY timeBucket",
+                trendParams.toArray()));
+
+        // 缺陷类型排行：按 defect_image_box 的 defect_type（现场口径为中文缺陷名）
+        List<Object> rankParams = new ArrayList<>(params);
+        if (!sevWhere.isEmpty()) { rankParams.add(severity.trim().toUpperCase(Locale.ROOT)); }
+        data.put("defectRanking", jdbcTemplate.queryForList(
+                "SELECT b.defect_type AS defectName, b.defect_type AS defectCode, 0 AS defectTypeId, " +
+                        "b.severity AS severity, COUNT(1) AS defectCount " +
+                        "FROM defect_image_box b " +
+                        " JOIN defect_image_file f ON f.image_id = b.image_id " + joinCam + where + sevWhere +
+                        " GROUP BY b.defect_type, b.severity ORDER BY defectCount DESC LIMIT 20",
+                rankParams.toArray()));
+
+        // 工位排行
+        List<Object> stationParams = new ArrayList<>(params);
+        data.put("stationRanking", jdbcTemplate.queryForList(
+                "SELECT c.workstation_id AS workstationId, w.station_name AS workstationName, " +
+                        "COUNT(1) AS totalCount, 0 AS okCount, COUNT(1) AS ngCount, " +
+                        "COALESCE(SUM(f.defect_count),0) AS defectCount, 0 AS yieldRate " +
+                        "FROM defect_image_file f " + joinCam +
+                        " LEFT JOIN dim_workstation w ON w.workstation_id = c.workstation_id " + where +
+                        " GROUP BY c.workstation_id, w.station_name ORDER BY ngCount DESC, totalCount DESC LIMIT 20",
+                stationParams.toArray()));
+
+        // 相机排行
+        List<Object> cameraParams = new ArrayList<>(params);
+        data.put("cameraRanking", jdbcTemplate.queryForList(
+                "SELECT c.camera_id AS cameraId, c.camera_name AS cameraName, c.camera_code AS cameraCode, " +
+                        "COUNT(1) AS totalCount, 0 AS okCount, COUNT(1) AS ngCount, " +
+                        "COALESCE(SUM(f.defect_count),0) AS defectCount, 0 AS yieldRate " +
+                        "FROM defect_image_file f " + joinCam + where +
+                        " GROUP BY c.camera_id, c.camera_name, c.camera_code ORDER BY ngCount DESC, totalCount DESC LIMIT 20",
+                cameraParams.toArray()));
+
+        // 产品缺陷透视：图片通道无产品维度，用缺陷类型作列
+        data.put("defectPivot", jdbcTemplate.queryForList(
+                "SELECT 0 AS productId, 0 AS defectTypeId, b.defect_type AS defectCode, b.defect_type AS defectName, " +
+                        "COUNT(1) AS defectCount " +
+                        "FROM defect_image_box b " +
+                        " JOIN defect_image_file f ON f.image_id = b.image_id " + joinCam + where + sevWhere +
+                        " GROUP BY b.defect_type ORDER BY defectCount DESC LIMIT 30",
+                rankParams.toArray()));
+
+        // 严重度分布
+        data.put("severityDistribution", jdbcTemplate.queryForList(
+                "SELECT UPPER(IFNULL(b.severity,'UNKNOWN')) AS severity, COUNT(1) AS defectCount " +
+                        "FROM defect_image_box b " +
+                        " JOIN defect_image_file f ON f.image_id = b.image_id " + joinCam + where + sevWhere +
+                        " GROUP BY UPPER(IFNULL(b.severity,'UNKNOWN')) ORDER BY defectCount DESC",
+                rankParams.toArray()));
+
         return data;
     }
 
@@ -205,6 +457,8 @@ public class LineAnalyticsController {
 
     @GetMapping("/dashboards/default")
     public ResultVO<Map<String, Object>> defaultDashboard(@RequestParam(required = false) Long factoryId) {
+        // 旧版默认看板升级为「工厂质量看板（厂长视角）」
+        upgradeLegacyDefaultDashboard(factoryId);
         Map<String, Object> dashboard = findDefaultDashboard(factoryId);
         if (dashboard == null) {
             Long dashboardId = createDefaultDashboard(factoryId);
@@ -498,6 +752,12 @@ public class LineAnalyticsController {
     }
 
     private Map<String, Object> submitDailyAggregation(LocalDate startDate, LocalDate endDate, Long factoryId, Long lineId, String triggerSource, Long retryFromJobId) {
+        // ★ 必须先确保两张日聚合表存在。
+        //   之前只有 runDailyAggregation / retryAggregationJob 两条入口做了 ensure，
+        //   而 @Scheduled 定时任务走的 submitDailyAggregation 直接就 DELETE，
+        //   线上实测报 "Table 'wms-new.agg_quality_day' doesn't exist" → 任务 FAILED。
+        ensureDailyAggregationTables();
+        ensureAggregationJobTable();
         Long jobId = createAggregationJob(startDate, endDate, factoryId, lineId, triggerSource, retryFromJobId);
         Map<String, Object> job = findAggregationJob(jobId);
         aggregationExecutor.submit(() -> {
@@ -538,8 +798,15 @@ public class LineAnalyticsController {
      *   <li>慢查询日志被自己的 DDL 淹没，真正的业务慢查找不到。</li>
      * </ul>
      *
-     * <p>修复：DDL <b>只在首次调用时执行一次</b>（进程内标志位），
-     * 之后直接跳过。若表被人为删掉，重启应用即可重建。
+     * <p>修复：DDL <b>只在表真正缺失时才执行</b>。
+     * 判断依据从「进程内标志位」改成 <b>INFORMATION_SCHEMA 实际存在性</b>：
+     * <ul>
+     *   <li>标志位只能反映「本进程建过」，一旦表被人为删掉（或首次调用时建表失败）
+     *       就永远不会再建 —— 实测线上就出现过
+     *       {@code agg_quality_day} 表缺失导致日聚合任务 FAILED；</li>
+     *   <li>INFORMATION_SCHEMA 查询是内存字典查询（毫秒级），
+     *       比 DDL 轻两个数量级，不构成性能问题。</li>
+     * </ul>
      */
     private final java.util.concurrent.atomic.AtomicBoolean scheduleTableEnsured =
             new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -548,9 +815,24 @@ public class LineAnalyticsController {
     private final java.util.concurrent.atomic.AtomicBoolean aggregationJobTableEnsured =
             new java.util.concurrent.atomic.AtomicBoolean(false);
 
+    /**
+     * 判断表是否真实存在（查 INFORMATION_SCHEMA，不执行任何 DDL）。
+     */
+    private boolean tableExists(String tableName) {
+        try {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(1) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
+                    Integer.class, tableName);
+            return count != null && count > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private void ensureAggregationScheduleTable() {
-        if (!scheduleTableEnsured.compareAndSet(false, true)) {
-            return;   // ★ 已建过，直接跳过，不再重复执行 DDL
+        if (tableExists("analytics_aggregation_schedule")) {
+            scheduleTableEnsured.set(true);
+            return;   // ★ 表在，不执行 DDL
         }
         try {
         jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS analytics_aggregation_schedule (" +
@@ -569,6 +851,7 @@ public class LineAnalyticsController {
         if (count == null || count == 0) {
             jdbcTemplate.update("INSERT INTO analytics_aggregation_schedule(config_id, enabled, schedule_time, lookback_days) VALUES (1,1,'02:00:00',7)");
         }
+        scheduleTableEnsured.set(true);
         } catch (Exception e) {
             // 建表失败要让标志位复位，否则应用再也不会尝试建表
             scheduleTableEnsured.set(false);
@@ -586,8 +869,9 @@ public class LineAnalyticsController {
     }
 
     private void ensureDailyAggregationTables() {
-        if (!dailyAggTablesEnsured.compareAndSet(false, true)) {
-            return;   // ★ 已建过，直接跳过
+        if (tableExists("agg_quality_day") && tableExists("agg_defect_type_day")) {
+            dailyAggTablesEnsured.set(true);
+            return;   // ★ 表在，不执行 DDL
         }
         try {
         jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS agg_quality_day (" +
@@ -633,6 +917,7 @@ public class LineAnalyticsController {
                 "KEY idx_defect_day_line(date_bucket,line_id)," +
                 "KEY idx_defect_day_product(date_bucket,product_id)" +
                 ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='缺陷类型日聚合表'");
+        dailyAggTablesEnsured.set(true);
         } catch (Exception e) {
             dailyAggTablesEnsured.set(false);
             throw e;
@@ -641,8 +926,9 @@ public class LineAnalyticsController {
 
 
     private void ensureAggregationJobTable() {
-        if (!aggregationJobTableEnsured.compareAndSet(false, true)) {
-            return;   // ★ 已建过，直接跳过
+        if (tableExists("analytics_aggregation_job")) {
+            aggregationJobTableEnsured.set(true);
+            return;   // ★ 表在，不执行 DDL
         }
         try {
         jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS analytics_aggregation_job (" +
@@ -669,6 +955,7 @@ public class LineAnalyticsController {
         addColumnQuiet("analytics_aggregation_job", "error_detail", "ALTER TABLE analytics_aggregation_job ADD COLUMN error_detail TEXT NULL AFTER message");
         addColumnQuiet("analytics_aggregation_job", "trigger_source", "ALTER TABLE analytics_aggregation_job ADD COLUMN trigger_source VARCHAR(30) NOT NULL DEFAULT 'MANUAL' AFTER error_detail");
         addColumnQuiet("analytics_aggregation_job", "retry_from_job_id", "ALTER TABLE analytics_aggregation_job ADD COLUMN retry_from_job_id BIGINT NULL AFTER trigger_source");
+        aggregationJobTableEnsured.set(true);
         } catch (Exception e) {
             aggregationJobTableEnsured.set(false);
             throw e;
@@ -907,18 +1194,79 @@ public class LineAnalyticsController {
         return lineAnalyticsRepository.listWidgets(dashboardId);
     }
 
+    /**
+     * 默认看板 —— **工厂厂长视角**（2026-11-02 设计）。
+     *
+     * <p><b>设计主线：质量总览 → 缺陷帕累托 → 责任工位定位 → 严重度构成 → 缺陷趋势</b>
+     *
+     * <p>为什么是这条主线而不是「良率 + 产量」：
+     * <ul>
+     *   <li>现场设备走的是缺陷图片上报通道，<b>只上传缺陷图，没有良品样本</b>，
+     *       良率在当前数据源下<b>根本算不出来</b>；</li>
+     *   <li>厂长的决策链是「质量好不好 → 主要矛盾是什么 → 谁的工位 → 多严重 → 趋势如何」，
+     *       帕累托与责任工位正好对应「主要矛盾」和「责任人」这两个动作；</li>
+     *   <li>等设备端补齐良品样本后，产量/良率维度可以再加回来，不影响本主线。</li>
+     * </ul>
+     */
     private Long createDefaultDashboard(Long factoryId) {
         jdbcTemplate.update(
                 "INSERT INTO cfg_analytics_dashboard (dashboard_name, factory_id, scope_type, is_default, layout_json, is_enabled) " +
                         "VALUES (?,?,?,1,CAST(? AS JSON),1)",
-                "默认产线统计看板", factoryId, "FACTORY", "{\"cols\":12,\"rowHeight\":120}");
+                "工厂质量看板（厂长视角）", factoryId, "FACTORY", "{\"cols\":12,\"rowHeight\":120}");
         Long dashboardId = jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
-        insertDefaultWidget(dashboardId, "核心质量指标", "KPI", "{\"metric\":\"quality\"}", "[\"time\"]", "{\"x\":0,\"y\":0,\"w\":12,\"h\":1}", 1);
-        insertDefaultWidget(dashboardId, "30分钟质量趋势", "LINE", "{\"metric\":\"trend\"}", "[\"time\"]", "{\"x\":0,\"y\":1,\"w\":12,\"h\":3}", 2);
-        insertDefaultWidget(dashboardId, "缺陷类型排行", "RANK", "{\"metric\":\"defectRanking\"}", "[\"defectType\"]", "{\"x\":0,\"y\":4,\"w\":6,\"h\":3}", 3);
-        insertDefaultWidget(dashboardId, "异常工位排行", "RANK", "{\"metric\":\"stationRanking\"}", "[\"workstation\"]", "{\"x\":6,\"y\":4,\"w\":6,\"h\":3}", 4);
-        insertDefaultWidget(dashboardId, "产品缺陷透视表", "PIVOT", "{\"metric\":\"defectPivot\"}", "[\"product\",\"defectType\"]", "{\"x\":0,\"y\":7,\"w\":12,\"h\":3}", 5);
+        // 1. 质量总览：一眼看清规模、风险等级、首要缺陷
+        insertDefaultWidget(dashboardId, "质量总览（厂长视角）", "KPI", "{\"metric\":\"plantOverview\"}", "[\"time\"]", "{\"x\":0,\"y\":0,\"w\":12,\"h\":1}", 1);
+        // 2. 缺陷帕累托：80/20 定位主要矛盾
+        insertDefaultWidget(dashboardId, "缺陷类型帕累托（累计占比）", "BAR", "{\"metric\":\"defectPareto\"}", "[\"defectType\"]", "{\"x\":0,\"y\":1,\"w\":8,\"h\":3}", 2);
+        // 3. 严重度构成：质量风险等级
+        insertDefaultWidget(dashboardId, "缺陷严重度构成", "STACK_BAR", "{\"metric\":\"severityDistribution\"}", "[\"severity\"]", "{\"x\":8,\"y\":1,\"w\":4,\"h\":3}", 3);
+        // 4. 责任工位：找问题出在哪个工位
+        insertDefaultWidget(dashboardId, "责任工位定位（缺陷数）", "BAR", "{\"metric\":\"stationRanking\"}", "[\"workstation\"]", "{\"x\":0,\"y\":4,\"w\":6,\"h\":3}", 4);
+        // 5. 责任相机：排查设备或视角问题
+        insertDefaultWidget(dashboardId, "责任相机定位（缺陷数）", "BAR", "{\"metric\":\"cameraRanking\"}", "[\"camera\"]", "{\"x\":6,\"y\":4,\"w\":6,\"h\":3}", 5);
+        // 6. 缺陷趋势：看问题是在收敛还是在恶化
+        insertDefaultWidget(dashboardId, "缺陷发生趋势", "LINE", "{\"metric\":\"defectTrend\"}", "[\"time\"]", "{\"x\":0,\"y\":7,\"w\":12,\"h\":3}", 6);
         return dashboardId;
+    }
+
+    /**
+     * 已存在的旧默认看板（老名字 + 老组件）升级为厂长视角。
+     *
+     * <p>只做一次：把「默认产线统计看板」重命名并按新蓝图重建组件。
+     * 若用户已自行改造过该看板（有非内置组件），则跳过，避免覆盖用户配置。
+     */
+    private void upgradeLegacyDefaultDashboard(Long factoryId) {
+        try {
+            List<Map<String, Object>> legacy = jdbcTemplate.queryForList(
+                    "SELECT dashboard_id AS dashboardId, dashboard_name AS dashboardName FROM cfg_analytics_dashboard " +
+                            "WHERE is_enabled=1 AND dashboard_name='默认产线统计看板' " +
+                            (factoryId == null ? "" : "AND (factory_id = ? OR factory_id IS NULL) ") +
+                            "ORDER BY dashboard_id LIMIT 1",
+                    factoryId == null ? new Object[]{} : new Object[]{factoryId});
+            if (legacy.isEmpty()) return;
+            Long dashboardId = longVal(legacy.get(0).get("dashboardId"));
+            // 只升级「组件全是内置默认组件」的看板，保留用户手工改造过的
+            Integer customCount = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(1) FROM cfg_analytics_widget WHERE dashboard_id=? AND is_enabled=1 " +
+                            "AND widget_name NOT IN ('核心质量指标','30分钟质量趋势','缺陷类型排行','异常工位排行','产品缺陷透视表')",
+                    Integer.class, dashboardId);
+            if (customCount != null && customCount > 0) return;
+            jdbcTemplate.update("UPDATE cfg_analytics_dashboard SET dashboard_name='工厂质量看板（厂长视角）' WHERE dashboard_id=?", dashboardId);
+            jdbcTemplate.update("DELETE FROM cfg_analytics_widget WHERE dashboard_id=?", dashboardId);
+            createDashboardWidgets(dashboardId);
+        } catch (Exception ignored) {
+            // 升级失败不影响主流程，用户仍可手工新建看板
+        }
+    }
+
+    /** 按厂长视角蓝图写入组件（新建与升级共用）。 */
+    private void createDashboardWidgets(Long dashboardId) {
+        insertDefaultWidget(dashboardId, "质量总览（厂长视角）", "KPI", "{\"metric\":\"plantOverview\"}", "[\"time\"]", "{\"x\":0,\"y\":0,\"w\":12,\"h\":1}", 1);
+        insertDefaultWidget(dashboardId, "缺陷类型帕累托（累计占比）", "BAR", "{\"metric\":\"defectPareto\"}", "[\"defectType\"]", "{\"x\":0,\"y\":1,\"w\":8,\"h\":3}", 2);
+        insertDefaultWidget(dashboardId, "缺陷严重度构成", "STACK_BAR", "{\"metric\":\"severityDistribution\"}", "[\"severity\"]", "{\"x\":8,\"y\":1,\"w\":4,\"h\":3}", 3);
+        insertDefaultWidget(dashboardId, "责任工位定位（缺陷数）", "BAR", "{\"metric\":\"stationRanking\"}", "[\"workstation\"]", "{\"x\":0,\"y\":4,\"w\":6,\"h\":3}", 4);
+        insertDefaultWidget(dashboardId, "责任相机定位（缺陷数）", "BAR", "{\"metric\":\"cameraRanking\"}", "[\"camera\"]", "{\"x\":6,\"y\":4,\"w\":6,\"h\":3}", 5);
+        insertDefaultWidget(dashboardId, "缺陷发生趋势", "LINE", "{\"metric\":\"defectTrend\"}", "[\"time\"]", "{\"x\":0,\"y\":7,\"w\":12,\"h\":3}", 6);
     }
 
     private void insertDefaultWidget(Long dashboardId, String name, String type, String metricJson,
@@ -966,6 +1314,34 @@ public class LineAnalyticsController {
             for (Map<String, Object> r : listMap(summary.get("mappingExceptions"))) {
                 table.rows.add(row(r.get("createTime"), r.get("cameraCode"), r.get("productName"), r.get("sourceCode"), r.get("exceptionType"), r.get("exceptionMessage")));
             }
+        } else if ("plantOverview".equals(metric)) {
+            table.headers = list("指标", "数值");
+            Map<String, Object> o = map(summary.get("plantOverview"));
+            table.rows.add(row("检测总量", o.get("detectionTotal")));
+            table.rows.add(row("缺陷总数", o.get("defectTotal")));
+            table.rows.add(row("高危缺陷数", o.get("highDefect")));
+            table.rows.add(row("高危占比(%)", o.get("highRate")));
+            table.rows.add(row("单图缺陷数", o.get("defectPerImage")));
+            table.rows.add(row("受影响工位数", o.get("affectedWorkstation")));
+            table.rows.add(row("涉及相机数", o.get("affectedCamera")));
+            table.rows.add(row("首要缺陷", o.get("topDefectName")));
+            table.rows.add(row("首要缺陷占比(%)", o.get("topDefectRate")));
+            table.rows.add(row("良率(%)", o.get("yieldRateAvailable") == Boolean.FALSE ? "不可计算（无良品样本）" : o.get("yieldRate")));
+        } else if ("defectPareto".equals(metric)) {
+            table.headers = list("缺陷类型", "严重度", "缺陷数", "累计缺陷数", "累计占比(%)");
+            for (Map<String, Object> r : listMap(summary.get("defectPareto"))) {
+                table.rows.add(row(r.get("defectName"), r.get("severity"), r.get("defectCount"), r.get("accumulatedDefect"), r.get("accumulatedRate")));
+            }
+        } else if ("severityDistribution".equals(metric)) {
+            table.headers = list("严重度", "缺陷数");
+            for (Map<String, Object> r : listMap(summary.get("severityDistribution"))) {
+                table.rows.add(row(r.get("severity"), r.get("defectCount")));
+            }
+        } else if ("defectTrend".equals(metric)) {
+            table.headers = list("时间", "缺陷数", "异常数");
+            for (Map<String, Object> r : listMap(summary.get("defectTrend"))) {
+                table.rows.add(row(r.get("timeBucket"), r.get("defectCount"), r.get("ngCount")));
+            }
         } else {
             table.headers = list("缺陷ID", "缺陷编码", "缺陷名称", "严重度", "缺陷数");
             for (Map<String, Object> r : listMap(summary.get("defectRanking"))) {
@@ -1009,6 +1385,9 @@ public class LineAnalyticsController {
         if ("BAR".equalsIgnoreCase(type)) return "stationRanking";
         if ("STACK_BAR".equalsIgnoreCase(type)) return "stackDefectBySeverity";
         if ("PIVOT".equalsIgnoreCase(type)) return "defectPivot";
+        if ("PLANT_OVERVIEW".equalsIgnoreCase(type)) return "plantOverview";
+        if ("PARETO".equalsIgnoreCase(type)) return "defectPareto";
+        if ("SEVERITY".equalsIgnoreCase(type)) return "severityDistribution";
         return "defectRanking";
     }
 

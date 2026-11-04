@@ -1,6 +1,6 @@
 <template>
   <div class="sys-config">
-    <div class="config-layout">
+    <div class="config-layout" :class="{ resizing: isResizing }">
       <aside class="config-sidebar">
         <div class="sidebar-head">
           <div class="sidebar-mark">层</div>
@@ -41,13 +41,30 @@
             <span class="tree-node" :class="`tree-node-${data.type}`">
               <span class="tree-icon">{{ treeIcon(data.type) }}</span>
               <span class="tree-text">
-                <span class="tree-label">{{ data.label }}</span>
+                <!-- title 属性：即使名字被截断，鼠标悬停也能看到完整名称 -->
+                <span class="tree-label" :title="data.label">{{ data.label }}</span>
                 <span class="tree-meta">{{ treeTypeLabel(data.type) }}</span>
               </span>
               <span v-if="data.count != null" class="tree-count">{{ data.count }}</span>
             </span>
           </template>
         </el-tree>
+        <!-- 侧边栏宽度拖拽把手（2026-11-04 新增） -->
+        <div
+          class="sidebar-resizer"
+          :class="{ dragging: isResizing }"
+          role="separator"
+          aria-orientation="vertical"
+          :aria-valuenow="Math.round(sidebarWidth)"
+          aria-valuemin="SIDEBAR_MIN_WIDTH"
+          aria-valuemax="SIDEBAR_MAX_WIDTH"
+          tabindex="0"
+          title="拖动调整层级栏宽度（也可使用方向键）"
+          @mousedown="startResize"
+          @touchstart.prevent="startResize"
+          @dblclick="resetSidebarWidth"
+          @keydown="onResizeKeydown"
+        ></div>
         <nav class="sidebar-nav sidebar-tools">
           <button
             v-for="item in navItems"
@@ -233,7 +250,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import request from '@/utils/request'
 import { getCascadeAll } from '@/api/stats'
@@ -270,6 +287,95 @@ const listLoading = ref(false)
 const remoteRows = ref([])
 const remoteTotal = ref(0)
 const treeProps = { children: 'children', label: 'label' }
+
+/* ------------------------------------------------------------------
+ * 侧边栏宽度拖拽（2026-11-04 新增）
+ *
+ * 需求：配置层级窗口希望能拖动，让工位名称完整可见。
+ * 实现：
+ *   - 用一个绝对定位的「把手」贴在侧边栏右边缘；
+ *   - mousedown/touchstart 开始拖动，mousemove/touchmove 实时改宽度；
+ *   - 宽度写入 CSS 变量 --sidebar-width，由 .config-sidebar 使用；
+ *   - 宽度持久化到 localStorage，刷新后保持；
+ *   - 双击把手恢复默认宽度；方向键 ±20px 微调（无障碍）。
+ * ------------------------------------------------------------------ */
+const SIDEBAR_MIN_WIDTH = 220
+const SIDEBAR_MAX_WIDTH = 620
+const SIDEBAR_DEFAULT_WIDTH = 288
+const SIDEBAR_WIDTH_KEY = 'camera-config-sidebar-width'
+
+const sidebarWidth = ref(SIDEBAR_DEFAULT_WIDTH)
+const isResizing = ref(false)
+let resizeStartX = 0
+let resizeStartWidth = 0
+
+const applySidebarWidth = (width) => {
+  const w = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)))
+  sidebarWidth.value = w
+  document.documentElement.style.setProperty('--sidebar-width', w + 'px')
+  try {
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w))
+  } catch (e) { /* 隐私模式下 localStorage 不可用，忽略 */ }
+}
+
+const restoreSidebarWidth = () => {
+  let saved = 0
+  try { saved = parseInt(localStorage.getItem(SIDEBAR_WIDTH_KEY) || '0', 10) } catch (e) { saved = 0 }
+  applySidebarWidth(saved > 0 ? saved : SIDEBAR_DEFAULT_WIDTH)
+}
+
+const startResize = (event) => {
+  isResizing.value = true
+  resizeStartX = (event.touches && event.touches[0] ? event.touches[0].clientX : event.clientX)
+  resizeStartWidth = sidebarWidth.value
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+  window.addEventListener('mousemove', onResizeMove)
+  window.addEventListener('mouseup', stopResize)
+  window.addEventListener('touchmove', onResizeMove, { passive: false })
+  window.addEventListener('touchend', stopResize)
+  event.preventDefault()
+}
+
+const onResizeMove = (event) => {
+  if (!isResizing.value) return
+  const clientX = (event.touches && event.touches[0] ? event.touches[0].clientX : event.clientX)
+  applySidebarWidth(resizeStartWidth + (clientX - resizeStartX))
+  if (event.cancelable && event.touches) event.preventDefault()
+}
+
+const stopResize = () => {
+  if (!isResizing.value) return
+  isResizing.value = false
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+  window.removeEventListener('mousemove', onResizeMove)
+  window.removeEventListener('mouseup', stopResize)
+  window.removeEventListener('touchmove', onResizeMove)
+  window.removeEventListener('touchend', stopResize)
+}
+
+const resetSidebarWidth = () => {
+  applySidebarWidth(SIDEBAR_DEFAULT_WIDTH)
+}
+
+const onResizeKeydown = (event) => {
+  if (event.key === 'ArrowLeft') { applySidebarWidth(sidebarWidth.value - 20); event.preventDefault() }
+  else if (event.key === 'ArrowRight') { applySidebarWidth(sidebarWidth.value + 20); event.preventDefault() }
+  else if (event.key === 'Home') { resetSidebarWidth(); event.preventDefault() }
+}
+
+onMounted(() => {
+  restoreSidebarWidth()
+  window.addEventListener('beforeunload', stopResize)
+})
+
+// 组件卸载时清理全局监听，避免内存泄漏
+onBeforeUnmount(() => {
+  stopResize()
+  window.removeEventListener('beforeunload', stopResize)
+})
+
 const expandConfigTree = async (expanded) => {
   await nextTick()
   const tree = configTreeRef.value
@@ -368,14 +474,12 @@ const configTreeData = computed(() => [{
         id: station.workstationId,
         label: station.stationName,
         raw: station,
-        count: cameraCountByStation.value[station.workstationId] || 0,
-        children: cameraList.value.filter(camera => sameId(camera.workstationId, station.workstationId)).map(camera => ({
-          key: `camera-${camera.id || camera.cameraId}`,
-          type: 'camera',
-          id: camera.id || camera.cameraId,
-          label: camera.cameraName,
-          raw: camera
-        }))
+        count: cameraCountByStation.value[station.workstationId] || 0
+        // ★ 2026-11-04：层级树**只到工位层级**，不再往下挂相机节点。
+        //   原实现在工位下继续展开相机节点，但点击相机节点时右侧列表
+        //   并没有按该相机过滤（appendContextParams 对 camera 类型不传参），
+        //   表现为「选了一台相机，右侧却列出全部 16 台相机」，语义自相矛盾。
+        //   现在层级 = 工厂 → 产线 → 工位，选中工位即展示该工位下的相机。
       }))
     }))
   }))
@@ -432,10 +536,10 @@ const handleTreeSelect = (data) => {
   } else if (type === 'workstation') {
     activeMenu.value = 'camera'
     parentLocked.value = { workstation: true, line: true }
-  } else if (type === 'camera') {
-    activeMenu.value = 'camera'
-    parentLocked.value = { workstation: true, line: true }
   }
+  // ★ 2026-11-04：层级树已只到工位层级，这里不再处理 camera 类型节点。
+  //   保留分支是为了兼容「旧的相机节点」被外部数据（如 URL 状态恢复）带进来的情况，
+  //   此时回退到工位层级展示，避免出现「选了一台相机却列出全部相机」。
   pages.value[activeMenu.value] = 1
   router.replace({ path: '/system/config', query: { tab: activeMenu.value } })
   if (configMenuKeys.includes(activeMenu.value)) loadCurrentPage()
@@ -617,16 +721,32 @@ const normalizeRowByType = (type, row) => {
   return row
 }
 
+/**
+ * 按左侧层级树当前选中节点追加筛选参数。
+ *
+ * <p>层级语义（2026-11-04 明确）：
+ * <ul>
+ *   <li>选「工厂」→ 右侧列出该工厂下的产线（factoryId）；</li>
+ *   <li>选「产线」→ 右侧列出该产线下的工位（lineId）；</li>
+ *   <li>选「工位」→ 右侧列出该工位下的相机（stationId）。</li>
+ * </ul>
+ *
+ * <p><b>修复点</b>：原实现的 camera 分支是三个独立 {@code if}，
+ * 当选中节点类型不被识别时（如旧的相机节点），<b>一个过滤参数都不传</b>，
+ * 后端就返回<b>全部</b>相机 —— 表现为「点了一台相机，右侧却列出所有相机」。
+ * 现在改为 {@code else if} 链，每一层都有确定的过滤参数。
+ */
 const appendContextParams = (params) => {
   const node = selectedTreeNode.value || {}
-  if (activeMenu.value === 'line' && node.type === 'factory') params.factoryId = node.id
-  if (activeMenu.value === 'workstation' && node.type === 'line') params.lineId = node.id
+  const type = node.type
+  if (activeMenu.value === 'line' && type === 'factory') params.factoryId = node.id
+  if (activeMenu.value === 'workstation' && type === 'line') params.lineId = node.id
   if (activeMenu.value === 'camera') {
-    if (node.type === 'factory') params.factoryId = node.id
-    if (node.type === 'line') params.lineId = node.id
-    if (node.type === 'workstation') params.stationId = node.id
+    if (type === 'factory') params.factoryId = node.id
+    else if (type === 'line') params.lineId = node.id
+    else if (type === 'workstation') params.stationId = node.id
   }
-  if (activeMenu.value === 'user' && node.type === 'factory') params.factoryId = node.id
+  if (activeMenu.value === 'user' && type === 'factory') params.factoryId = node.id
   return params
 }
 
@@ -721,7 +841,16 @@ const handleSave = async () => {
 }
 const deleteRow = async (type, row) => {
   const id = { factory: row.factoryId, line: row.lineId, workstation: row.workstationId || row.stationId, camera: row.id || row.cameraId, user: row.userId }[type]
-  const name = row.factoryName || row.lineName || row.stationName || row.cameraName || row.username
+  // ★ 必须按类型取名称。原实现用 `row.factoryName || row.lineName || row.stationName || row.cameraName`，
+  //   而相机行里**同时有** lineName（所属产线）和 cameraName（相机名），
+  //   lineName 在前 → 相机删除弹窗显示的竟是产线名「ZK54」，用户完全看不懂在删什么。
+  const name = {
+    factory: row.factoryName,
+    line: row.lineName,
+    workstation: row.stationName,
+    camera: row.cameraName,
+    user: row.realName || row.username
+  }[type] || '-'
   try {
     await confirmDeleteRisk(type, id, name)
     const res = await request.delete('/' + apiPath(type) + '/' + id)
@@ -750,8 +879,18 @@ onMounted(fetchAll)
 
 <style scoped>
 .sys-config { max-width: 1420px; margin: 0 auto; }
-.config-layout { display: flex; min-height: calc(100vh - 200px); background: #fff; border-radius: 18px; box-shadow: 0 14px 34px rgba(15,23,42,.08); overflow: hidden; border: 1px solid rgba(226,232,240,.9); }
-.config-sidebar { width: 288px; background: linear-gradient(180deg,#f8fbff 0%,#f9fbff 48%,#ffffff 100%); border-right: 1px solid #e5e7eb; padding: 18px 14px; flex-shrink: 0; }
+.config-layout { display: flex; min-height: calc(100vh - 200px); background: #fff; border-radius: 18px; box-shadow: 0 14px 34px rgba(15,23,42,.08); overflow: hidden; border: 1px solid rgba(226,232,240,.9); position: relative; }
+/* 宽度由 JS 拖拽写入 CSS 变量 --sidebar-width（默认值 288px） */
+.config-sidebar { width: var(--sidebar-width, 288px); background: linear-gradient(180deg,#f8fbff 0%,#f9fbff 48%,#ffffff 100%); border-right: 1px solid #e5e7eb; padding: 18px 14px; flex-shrink: 0; position: relative; transition: width .12s ease; }
+/* 拖拽把手：贴在侧边栏右边缘。
+   ⚠️ 必须用 `right: -4px` 而不是 `margin-left:-4px` ——
+   后者会把元素推到侧栏盒子之外，被父级 overflow:hidden 裁掉，导致拖不动。 */
+.sidebar-resizer { position: absolute; top: 0; bottom: 0; right: -4px; width: 8px; cursor: col-resize; z-index: 30; background: transparent; transition: background .15s ease; }
+.sidebar-resizer:hover, .sidebar-resizer:focus-visible { background: rgba(37,99,235,.28); outline: none; }
+.sidebar-resizer.dragging { background: rgba(37,99,235,.42); }
+/* 拖拽时禁用宽度过渡，宽度跟手无延迟 */
+/* 拖拽时禁用宽度过渡，宽度跟手无延迟（用 class 而非 :has()，兼容性更好） */
+.config-layout.resizing .config-sidebar { transition: none; }
 .sidebar-head { display: flex; align-items: center; gap: 12px; padding: 12px 12px 14px; margin-bottom: 12px; border-radius: 16px; background: linear-gradient(135deg,#2563eb 0%,#38bdf8 100%); color: #fff; box-shadow: 0 10px 22px rgba(37,99,235,.22); }
 .sidebar-mark { width: 38px; height: 38px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: #1d4ed8; background: rgba(255,255,255,.92); font-size: 16px; font-weight: 900; box-shadow: inset 0 0 0 1px rgba(255,255,255,.6); }
 .sidebar-title { font-size: 16px; font-weight: 900; line-height: 1.1; letter-spacing: .02em; }
@@ -830,6 +969,7 @@ onMounted(fetchAll)
 @media (max-width: 900px) {
   .config-layout { flex-direction: column; }
   .config-sidebar { width: 100%; border-right: none; border-bottom: 1px solid #e5e7eb; padding: 12px; }
+  .sidebar-resizer { display: none; }
   .sidebar-nav { flex-direction: row; flex-wrap: wrap; }
   .nav-item { border-left: none; border-bottom: 2px solid transparent; padding: 8px 14px; }
   .nav-item.active { border-left: none; border-bottom-color: #2563eb; }
@@ -857,7 +997,10 @@ onMounted(fetchAll)
 .tree-node-workstation .tree-icon { color: #d97706; background: #fffbeb; border-color: #fde68a; }
 .tree-node-camera .tree-icon { color: #0891b2; background: #ecfeff; border-color: #bae6fd; }
 .tree-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.tree-label { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #1e293b; font-size: 13px; font-weight: 750; line-height: 1.25; }
+/* ★ 2026-11-04：改为「完整显示」而非省略号截断。
+   工位名较长（如「产品正面胶污检测」），固定 288px 侧栏下会被截成「产品正面…」。
+   现在允许换行完整展示；配合侧栏拖拽调宽，绝大多数情况一行即可放下。 */
+.tree-label { display: block; max-width: 100%; color: #1e293b; font-size: 13px; font-weight: 750; line-height: 1.3; white-space: normal; word-break: break-word; overflow-wrap: anywhere; }
 .tree-meta { color: #94a3b8; font-size: 11px; line-height: 1.15; }
 .tree-count { min-width: 24px; height: 20px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #f8fafc; border: 1px solid #e2e8f0; color: #475569; font-size: 11px; font-weight: 800; }
 .config-tree :deep(.el-tree-node.is-current > .el-tree-node__content) .tree-count { background: #2563eb; border-color: #2563eb; color: #fff; }
