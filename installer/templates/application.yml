@@ -8,7 +8,14 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://127.0.0.1:3306/wms-new?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
     username: root
-    password: CCshenda889
+    # ★ 2026-11-04 安全改造：口令**不再写在本文件里**。
+    #   本文件随发布包分发、且现场是 644 全局可读 —— 明文口令等于对所有本地用户公开。
+    #   改为从环境变量注入：
+    #     - 值来源：/etc/default/camera-detection 的 MYSQL_PASSWORD（640 root:root）
+    #     - 注入方式：systemd unit 的 EnvironmentFile= 传给 JVM 进程
+    #   Spring 的 ${...} 会读取环境变量，优先级低于本文件但高于 JAR 内置配置。
+    #   未设置该变量时启动会失败（这是刻意设计：宁可起不来，也不要用默认弱口令连库）。
+    password: ${MYSQL_PASSWORD}
     type: com.alibaba.druid.pool.DruidDataSource
     druid:
       initial-size: 5
@@ -56,7 +63,10 @@ mybatis-plus:
       logic-not-delete-value: 0
 
 jwt:
-  secret: mySecretKey123456789012345678901234567890
+  # ★ 2026-11-04 安全改造：JWT 签名密钥改为环境变量注入，模板不再内置固定密钥。
+  #   内置固定密钥意味着任何拿到发布包的人都能伪造登录令牌。
+  #   现场首次安装时由 install.sh 生成随机密钥写入 /etc/default/camera-detection（640 root）。
+  secret: ${JWT_SECRET}
   expiration: 86400000
 
 app:
