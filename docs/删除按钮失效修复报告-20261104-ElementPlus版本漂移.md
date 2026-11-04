@@ -327,7 +327,7 @@ JAR SHA256 1851520f5cdde22254d4efb18b0882f017b043fb0f0eac1c21e41c9af490de22（�
 ## 七、回滚方式
 
 ```bash
-echo "Pass@1234" | sudo -S bash -c '
+echo "<SSH 口令>" | sudo -S bash -c '
   systemctl stop camera-detection
   cp -a /opt/camera-detection-system/app/time-bucket-demo.jar.bak-20261104_095400 \
         /opt/camera-detection-system/app/time-bucket-demo.jar
