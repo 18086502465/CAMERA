@@ -1,0 +1,211 @@
+name: CI
+
+# ============================================================
+# 产线缺陷在线AI检测系统 —— 持续集成
+# ============================================================
+# 目标：把「构建与测试全靠人工」变成「每次提交自动验证」。
+#   本仓库此前没有任何 CI，任何一次提交都可能带病上线。
+#
+# 触发时机：
+#   - push 到 main：完整验证（测试 + 构建 + 静态检查）
+#   - pull_request：验证改动不破坏既有功能
+#   - 手动触发（workflow_dispatch）：可指定分支
+#
+# 说明：
+#   本仓库的发布产物（tar.gz / JAR）仍入库在 dist-release/，
+#   等 Release 工作流落地后再改为 Artifacts 分发。
+# ============================================================
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # 同一分支的新提交取消旧的未完成构建，避免浪费配额
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端构建与测试
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+
+      - name: Maven 构建（跳过测试）
+        run: mvn -B -ntp -DskipTests clean package
+        working-directory: fact-product
+
+      - name: 运行单元测试
+        run: mvn -B -ntp test
+        working-directory: fact-product
+
+      - name: 上传 JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: fact-product/target/time-bucket-demo.jar
+          retention-days: 7
+
+  frontend:
+    name: 前端构建
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # ★ 用 npm ci 而不是 npm install：
+      #   npm ci 严格按 package-lock.json 安装，能保证 CI 与本地构建产物一致；
+      #   npm install 可能静默更新 lock，导致"昨天还好好的"。
+      - name: 安装依赖
+        run: npm ci
+        working-directory: frontend
+
+      - name: 构建（含 element-plus guard 检查）
+        run: npx vite build
+        working-directory: frontend
+
+      - name: 上传前端产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+
+  static-check:
+    name: 静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 硬编码口令检查
+        run: |
+          # 仓库里不允许出现明文口令（数据库口令、服务器 SSH 口令等）。
+          # 注意：历史已跟踪文件里仍有遗留，此处只检查**本次改动涉及的文件**，
+          # 避免把历史问题变成永久阻塞。
+          echo "::group::扫描本次变更中的明文口令"
+          CHANGED=$(git diff --name-only --diff-filter=ACMR HEAD~1 HEAD 2>/dev/null || true)
+          if [ -z "$CHANGED" ]; then CHANGED=$(git ls-files); fi
+          FOUND=0
+          for f in $CHANGED; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              *.png|*.jpg|*.jar|*.tar.gz) continue ;;
+            esac
+            if grep -lE "(CCshenda889|Pass@1234)" "$f" 2>/dev/null | grep -q .; then
+              echo "❌ $f 含明文口令"
+              FOUND=1
+            fi
+          done
+          echo "::endgroup::"
+          if [ "$FOUND" -ne 0 ]; then
+            echo "::error::检测到明文口令，请改用环境变量读取"
+            exit 1
+          fi
+          echo "✅ 未发现明文口令"
+
+      - name: Shell 脚本行尾检查
+        run: |
+          # Windows 上写的 .sh 传到 Linux 会报 "set: pipefail: invalid option name"，
+          # 必须在提交前拦住 CRLF。
+          echo "::group::检查 shell 脚本行尾"
+          BAD=0
+          for f in $(git ls-files '*.sh'); do
+            if grep -qU $'\r' "$f" 2>/dev/null; then
+              echo "❌ $f 是 CRLF 行尾"
+              BAD=1
+            fi
+          done
+          echo "::endgroup::"
+          if [ "$BAD" -ne 0 ]; then
+            echo "::error::存在 CRLF 行尾的 shell 脚本"
+            exit 1
+          fi
+          echo "✅ shell 脚本行尾均为 LF"
+
+      - name: 前端禁止残留 TODO 假数据
+        run: |
+          # 假数据会让现场把模拟结果当成真实数据判读。
+          echo "::group::检查前端假数据残留"
+          if grep -rn "TODO: 替换为真实 API" frontend/src/ 2>/dev/null; then
+            echo "::error::前端仍有使用模拟数据的 TODO，请接入真实 API"
+            exit 1
+          fi
+          echo "✅ 无假数据 TODO"
+
+  verify:
+    name: 产物一致性校验
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: maven
+
+      - name: 下载前端产物
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+      - name: 同步前端产物到后端静态资源
+        run: |
+          rm -rf fact-product/src/main/resources/static
+          mkdir -p fact-product/src/main/resources/static
+          cp -r frontend/dist/* fact-product/src/main/resources/static/
+          echo "静态资源文件数: $(ls fact-product/src/main/resources/static/assets | wc -l)"
+
+      - name: 重新打包（验证产物可正常构建）
+        run: mvn -B -ntp -DskipTests clean package
+        working-directory: fact-product
+
+      - name: 校验 JAR 内前端产物已更新
+        run: |
+          python3 - <<'PY'
+          import zipfile, re, sys
+          z = zipfile.ZipFile('fact-product/target/time-bucket-demo.jar')
+          names = z.namelist()
+          idx = [n for n in names if n.endswith('static/index.html')]
+          if not idx:
+              print('❌ JAR 内缺少 static/index.html'); sys.exit(1)
+          html = z.read(idx[0]).decode('utf-8')
+          entry = re.findall(r'assets/index-[A-Za-z0-9_-]+\.js', html)
+          if not entry:
+              print('❌ index.html 未引用入口 chunk'); sys.exit(1)
+          target = 'BOOT-INF/classes/static/assets/' + entry[0]
+          if target not in names:
+              print(f'❌ 入口 chunk 未打进 JAR: {target}'); sys.exit(1)
+          print(f'✅ 入口 {entry[0]} 已正确打进 JAR')
+          PY
+
+      - name: 上传最终 JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: camera-detection-jar
+          path: fact-product/target/time-bucket-demo.jar
+          retention-days: 14

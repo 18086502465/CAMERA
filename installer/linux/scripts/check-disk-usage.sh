@@ -22,13 +22,16 @@
 # 可配置环境变量：
 #   THRESHOLD   水位阈值百分比（默认 85）
 #   ALERT_FILE  告警文件路径（默认 /var/log/camera-detection-disk-alert.log）
-#   MOUNTS      要检查的分区，空格分隔（默认 "/var /data"）
+#   MOUNTS      要检查的分区，空格分隔（默认 "/ /var /data"）
 # ==============================================================================
 set -uo pipefail
 
 THRESHOLD="${THRESHOLD:-85}"
 ALERT_FILE="${ALERT_FILE:-/var/log/camera-detection-disk-alert.log}"
-MOUNTS="${MOUNTS:-/var /data}"
+# ★ 2026-11-04：加入 "/" —— JAR 备份（app/*.bak-*）与发布包都落在 / 分区，
+#   而 / 只有 40G（实测备份曾涨到 1.3GB）。原先只巡检 /var 与 /data，
+#   / 被撑满时没有任何告警。
+MOUNTS="${MOUNTS:-/ /var /data}"
 
 RC=0
 for MOUNT in $MOUNTS; do

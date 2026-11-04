@@ -91,6 +91,42 @@ chmod -R u+rwX,g+rX,o+rX "$INSTALL_DIR"
 chmod -R u+rwX,g+rwX "$WORK_DIR"
 ok "文件同步完成"
 
+# --- 3b. 捕获现场既有配置值（必须在第 4 节覆盖之前读取）-----------------
+# ⚠️ 第 4 节是「整份文件一次性重写」（mv -f），会抹掉所有既有键值。
+#   这三个键必须提前捕获并回写，否则：
+#     - MYSQL_PASSWORD 丢失 → 数据库认证失败、清理/备份脚本拿不到口令
+#     - ADMIN_PASSWORD 丢失 → 管理员口令被重装冲掉（reset-password.sh 写的）
+#   第 8c 节注释声称「保留现场已有的 ADMIN_USER / ADMIN_PASSWORD」，
+#   但实现上第 4 节已先抹掉 —— 这里补上真正的保留逻辑。
+read_cfg_value() {
+  # 从 /etc/default/camera-detection 读取指定键的值（剥掉引号）
+  [[ -f "$DEFAULT_CONFIG" ]] || return 0
+  sed -n "s/^$1=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}\$/\1/p" \
+    "$DEFAULT_CONFIG" 2>/dev/null | head -1 | tr -d "\r"
+}
+
+EXISTING_MYSQL_PASSWORD=""
+EXISTING_ADMIN_USER=""
+EXISTING_ADMIN_PASSWORD=""
+if [[ -f "$DEFAULT_CONFIG" ]]; then
+  EXISTING_MYSQL_PASSWORD="$(read_cfg_value MYSQL_PASSWORD)"
+  EXISTING_ADMIN_USER="$(read_cfg_value ADMIN_USER)"
+  EXISTING_ADMIN_PASSWORD="$(read_cfg_value ADMIN_PASSWORD)"
+  # 占位符形态（${XXX}）不是真实口令，不能采信
+  for _v in EXISTING_MYSQL_PASSWORD EXISTING_ADMIN_PASSWORD; do
+    if [[ "${!_v}" =~ ^\$\{.*\}$ ]]; then
+      log "检测到 ${_v} 仍是占位符，视为未配置"
+      printf -v "$_v" '%s' ""
+    fi
+  done
+  if [[ -n "$EXISTING_MYSQL_PASSWORD" ]]; then
+    log "已捕获现场既有数据库口令（重装保留）"
+  fi
+  if [[ -n "$EXISTING_ADMIN_PASSWORD" ]]; then
+    log "已捕获现场既有管理员口令（重装保留）"
+  fi
+fi
+
 # --- 4. 集中配置文件 --------------------------------------------------------
 # ⚠️ 幂等性要求（2026-10-31 实机发现并修复）：
 #   本文件会被 run.sh 用 `source` 读取，且**不允许出现重复段落**。
@@ -110,6 +146,52 @@ ok "文件同步完成"
 #   若安装中途失败，口令会短暂以 0644 暴露。现在统一在最后 chmod 640。
 log "下发 ${DEFAULT_CONFIG}"
 DEFAULT_CONFIG_TMP="$(mktemp)"
+
+# --- JWT 密钥生成（2026-11-04 安全改造）---------------------------------
+#   改造前：application.yml 里内置固定密钥 mySecretKey1234...
+#   问题：该文件随发布包分发且现场是 644 全局可读 ——
+#         拿到包的人就能伪造登录令牌；DB 口令同理。
+#   现在：密钥统一放本文件（640 root:root），由 systemd EnvironmentFile 注入 JVM。
+#
+#   已有密钥时**保留**（重装不失效现场已签发的令牌）；
+#   没有时生成 64 位随机十六进制串（256 bit 熵，满足 HS256 要求）。
+#
+#   为什么放在第 4 节而不是第 8c 节：
+#   第 8c 节只在「已安装过数据库」分支里执行，
+#   而第 4 节是**每次安装必经**的主路径 —— 密钥必须在主路径就绪。
+if grep -qE '^JWT_SECRET=' "$DEFAULT_CONFIG" 2>/dev/null; then
+  log "保留已存在的 JWT_SECRET（不使现场已签发的令牌失效）"
+else
+  JWT_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  log "已生成新的 JWT 密钥（256 bit）"
+fi
+
+# --- 数据库口令来源（2026-11-04 修正，阻断性缺陷）-------------------------
+#   改造后 application.yml 里是 `password: ${MYSQL_PASSWORD}` 占位符，
+#   **不能再用 sed 从 application.yml 提取口令** —— 那会把占位符本身
+#   当成真实口令（实测提取结果就是字符串 "${MYSQL_PASSWORD}"），
+#   导致新机安装后服务启动即 DB 认证失败，且报 "Access denied" 极难归因。
+#
+#   正确顺序：环境变量 → 现场既有 /etc/default → 交互式输入。
+if [[ -z "${MYSQL_PASSWORD:-}" ]]; then
+  MYSQL_PASSWORD="$EXISTING_MYSQL_PASSWORD"
+fi
+if [[ "${MYSQL_PASSWORD:-}" =~ ^\$\{.*\}$ ]]; then
+  log "检测到 MYSQL_PASSWORD 仍是占位符，视为未配置"
+  MYSQL_PASSWORD=""
+fi
+if [[ -z "${MYSQL_PASSWORD:-}" ]]; then
+  if [[ -t 0 ]]; then
+    read -r -s -p "请输入 MySQL root 口令（留空则稍后手工补）: " MYSQL_PASSWORD
+    echo
+  else
+    log "非交互式执行：请用 MYSQL_PASSWORD='xxx' 指定数据库口令"
+  fi
+fi
+if [[ -z "${MYSQL_PASSWORD:-}" ]]; then
+  log "警告：未获得数据库口令，清理与备份脚本需手工补 MYSQL_PASSWORD"
+fi
+
 cat > "$DEFAULT_CONFIG_TMP" <<EOF
 # 产线缺陷在线AI检测系统 —— 运行参数
 # 改这个文件即可，无需改 systemd unit。改完执行：systemctl restart ${SERVICE_NAME}
@@ -131,11 +213,33 @@ JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 
 # 外部配置文件
 CONFIG_FILE=${INSTALL_DIR}/config/application.yml
+
+# ---- 数据库口令（application.yml 用 \${MYSQL_PASSWORD} 引用此处）----
+# ⚠️ 这是**明文口令**，因此本文件权限必须是 640 root:root。
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
+
+# ---- 管理员口令（reset-password.sh 会改写这里）----
+ADMIN_USER="${EXISTING_ADMIN_USER:-admin}"
+ADMIN_PASSWORD="${EXISTING_ADMIN_PASSWORD:-}"
+
+# ---- 密钥（唯一来源，权限 640 root:root，勿提交到仓库）----
+# JWT 签名密钥：application.yml 用 ${JWT_SECRET} 引用此处。
+# 轮换方式：改本文件后 systemctl restart camera-detection（会使旧令牌失效）。
+JWT_SECRET="${JWT_SECRET}"
 EOF
 mv -f "$DEFAULT_CONFIG_TMP" "$DEFAULT_CONFIG"
 chmod 0640 "$DEFAULT_CONFIG"
 chown root:root "$DEFAULT_CONFIG"
 ok "配置已写入 ${DEFAULT_CONFIG}"
+
+# --- 4b. 外部配置文件权限收紧（2026-11-04 安全改造）---------------------
+#   改造前：application.yml 里含 DB 明文口令，权限是 644（全局可读）。
+#   改造后：口令已改为 ${MYSQL_PASSWORD} 占位，由 /etc/default 注入，
+#           文件本身不再含凭据；但仍收紧为 640（仅属主可读），纵深防御。
+if [[ -f "${INSTALL_DIR}/config/application.yml" ]]; then
+  chmod 0640 "${INSTALL_DIR}/config/application.yml" 2>/dev/null || true
+  chown "${SERVICE_USER}:${SERVICE_GROUP}" "${INSTALL_DIR}/config/application.yml" 2>/dev/null || true
+fi
 
 # --- 5. systemd 服务 --------------------------------------------------------
 log "安装 systemd 服务"
@@ -258,24 +362,38 @@ EOF
   ok "logrotate 规则已写入"
 fi
 
+# --- 7b. journald 限额（2026-11-04 补充）---------------------------------
+#   logrotate 只管业务日志文件，**管不到 systemd journal**。
+#   实测 journald 已占 302.8MB，而 / 分区只有 40G；
+#   且设备上传中断的 EOFException 每分钟刷屏（既有现象），
+#   没有上限时 journal 能把 / 撑满，直接导致服务写不进去。
+#
+#   SystemMaxUse=200M  → 归档+活跃日志总量上限
+#   RuntimeMaxUse=50M  → 运行时日志（/run）上限，重启即释放
+#   MaxRetentionSec=30day → 最长保留 30 天
+#
+#   写完需要 systemctl restart systemd-journald 才生效。
+if [[ -f /etc/systemd/journald.conf ]]; then
+  log "配置 journald 磁盘限额（200M / 运行 50M / 保留 30 天）"
+  # 用 drop-in 方式，不动系统原文件，便于回滚
+  mkdir -p /etc/systemd/journald.conf.d
+  cat > /etc/systemd/journald.conf.d/10-camera-detection.conf <<'EOF'
+[Journal]
+SystemMaxUse=200M
+RuntimeMaxUse=50M
+MaxRetentionSec=30day
+EOF
+  systemctl restart systemd-journald >/dev/null 2>&1 || true
+  ok "journald 限额已写入 /etc/systemd/journald.conf.d/10-camera-detection.conf"
+else
+  log "未找到 /etc/systemd/journald.conf，跳过 journald 限额配置"
+fi
+
 # --- 8. 缺陷图片清理（磁盘 + 库记录）----------------------------------------
 # 应用自带的定时任务只清理「兼容表」camera_images；新版缺陷图片表
 # （defect_image_file / _box / _batch）与其磁盘文件没有任何定时任务清理
 # → 磁盘只增不减、库记录永久堆积。
 # 本脚本补齐这个缺口，且严格「先删库记录、再删磁盘文件」，避免产生孤儿记录。
-
-# 数据库口令：从已安装的 application.yml 的 datasource.password 读取。
-# 不依赖 shell 环境变量 —— 安装脚本运行时 MYSQL_PASSWORD 通常不存在，
-# 会导致 cron 与备份脚本拿到空口令而静默失败。
-# 改一处（application.yml），清理与备份脚本自动跟随。
-# 注意：放在 if 块外，第 8c 节（备份）也要用到。
-if [[ -z "${MYSQL_PASSWORD:-}" ]]; then
-  MYSQL_PASSWORD=$(sed -n 's/.*password:[[:space:]]*\([^[:space:]#]*\).*/\1/p' \
-    "${INSTALL_DIR}/config/application.yml" 2>/dev/null | head -1 | tr -d "\r\"'")
-fi
-if [[ -z "${MYSQL_PASSWORD:-}" ]]; then
-  log "警告：未能从 application.yml 读到数据库口令，清理与备份脚本需手工补 MYSQL_PASSWORD"
-fi
 
 if [[ -f "${SOURCE_DIR}/scripts/cleanup-defect-images.sh" ]]; then
   log "安装缺陷图片清理脚本"
@@ -365,9 +483,15 @@ if [[ -f "${SOURCE_DIR}/systemd/camera-detection-backup.service" && \
   #
   #   同时保留现场已有的 ADMIN_USER / ADMIN_PASSWORD（reset-password.sh 写的），
   #   不因为重装安装而把管理员口令清掉。
+  #
+  # ⚠️ 2026-11-04 修正（阻断性缺陷）：
+  #   这条 sed 会把 JWT_SECRET 一并删掉，但下面的 heredoc **只写回了 MYSQL_PASSWORD**，
+  #   JWT_SECRET 就此丢失 → 重装后 application.yml 里的 ${JWT_SECRET} 无值可注入 →
+  #   JwtUtil 因无兜底默认值而启动失败（"Could not resolve placeholder 'JWT_SECRET'"）。
+  #   现在把 JWT_SECRET 一并写回，保证「删了就要补上」。
   sed -i '/^# ---- 备份相关（供 camera-detection-backup.service 使用）----$/d' \
     /etc/default/camera-detection 2>/dev/null || true
-  sed -i '/^MYSQL_PASSWORD=/d; /^BACKUP_DIR=/d; /^KEEP_FULL_DAYS=/d; /^MAX_DISK_USE=/d' \
+  sed -i '/^MYSQL_PASSWORD=/d; /^BACKUP_DIR=/d; /^KEEP_FULL_DAYS=/d; /^MAX_DISK_USE=/d; /^JWT_SECRET=/d' \
     /etc/default/camera-detection 2>/dev/null || true
   # 折叠因删除而产生的连续空行（最多留一个）
   awk 'BEGIN{blank=0} {if ($0=="") {blank++; if (blank>1) next} else {blank=0} print}' \
@@ -380,6 +504,10 @@ MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 BACKUP_DIR="${BACKUP_BASE}/db"
 KEEP_FULL_DAYS=14
 MAX_DISK_USE=85
+
+# ---- JWT 签名密钥（application.yml 用 \${JWT_SECRET} 引用）----
+# 被上面 sed 删除后在此写回，缺了会导致服务启动失败。
+JWT_SECRET="${JWT_SECRET}"
 EOF
   chmod 640 /etc/default/camera-detection
   chown root:root /etc/default/camera-detection
