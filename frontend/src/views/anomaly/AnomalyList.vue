@@ -116,34 +116,53 @@ const severityText = (s) => {
 const loadData = async () => {
   loading.value = true
   try {
-    const params = { page: currentPage.value, size: pageSize.value }
-    if (filterSeverity.value) params.severity = filterSeverity.value
-    if (filterActive.value !== null) params.isActive = filterActive.value === 'true'
-    // TODO: 替换为真实 API
-    // const res = await getAlertList(params)
-    // tableData.value = res.data.data.records || []
-    // total.value = res.data.data.total || 0
+    // ★ 2026-11-04：接入真实 API（原为模拟数据，现场会误判为真实告警）
+    //   后端 /api/alerts/active 返回未解决告警（最多 20 条），字段：
+    //   id / type / level / title / message / lineId / workstationId / createTime
+    //   这里映射为表格列所需的字段，并按严重度做本地过滤。
+    const res = await getAlertList()
+    // axios 响应拦截器不做剥离：res.data = ResultVO{code,message,data}
+    // → 真正的告警体在 res.data.data
+    const payload = (res && res.data && res.data.data) || {}
+    const rows = payload.alerts || []
 
-    // 模拟数据
-    await new Promise(r => setTimeout(r, 200))
-    const mockRows = []
-    for (let i = 0; i < pageSize.value; i++) {
-      mockRows.push({
-        alertId: (currentPage.value - 1) * pageSize.value + i + 1,
-        factoryName: 'XX卫生用品',
-        lineName: '尿不湿产线A',
-        stationName: i % 2 === 0 ? '接头检测工位' : '尺寸检测工位',
-        detectTime: '2026-05-28 14:' + String(i).padStart(2, '0') + ':00',
-        severity: i % 3 === 0 ? 'HIGH' : i % 3 === 1 ? 'MEDIUM' : 'LOW',
-        message: i % 3 === 0 ? 'A产线接头缺陷异常较多，请检查材料供应' : '尺寸偏差超过阈值，请校准检测参数',
-        isActive: i % 2 === 0,
-        suggestedAction: i % 2 === 0 ? '' : '已检查材料张力，重新校准完成'
-      })
+    // 严重度映射：后端 level 用 HIGH/MEDIUM/LOW/CRITICAL/WARNING/INFO
+    const levelMap = {
+      CRITICAL: 'HIGH', HIGH: 'HIGH', ERROR: 'HIGH',
+      MEDIUM: 'MEDIUM', WARNING: 'MEDIUM',
+      LOW: 'LOW', INFO: 'LOW'
     }
-    tableData.value = mockRows
-    total.value = 56
+
+    let mapped = rows.map(a => ({
+      alertId: a.id,
+      severity: levelMap[String(a.level || '').toUpperCase()] || 'LOW',
+      // 后端未随告警返回工厂/产线/工位名称，只给 id，这里留空由后端补齐
+      factoryName: a.factoryName || '',
+      lineName: a.lineName || '',
+      stationName: a.stationName || '',
+      message: a.message || a.title || '',
+      detectTime: a.createTime || '',
+      isActive: true,
+      suggestedAction: a.suggestedAction || ''
+    }))
+
+    // 前端筛选（后端 /active 只返回未处理的）
+    if (filterSeverity.value) {
+      mapped = mapped.filter(r => r.severity === filterSeverity.value)
+    }
+    if (filterActive.value !== null) {
+      const wantActive = filterActive.value === 'true'
+      mapped = mapped.filter(r => r.isActive === wantActive)
+    }
+
+    // 后端无分页接口，这里本地分页
+    total.value = mapped.length
+    const start = (currentPage.value - 1) * pageSize.value
+    tableData.value = mapped.slice(start, start + pageSize.value)
   } catch (e) {
     ElMessage.error('加载告警列表失败')
+    tableData.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
@@ -162,9 +181,11 @@ const submitResolve = async () => {
   }
   resolveLoading.value = true
   try {
-    // TODO: 替换为真实 API
-    // await resolveAlert(resolveRow.value.alertId, { suggestedAction: resolveAction.value })
-    await new Promise(r => setTimeout(r, 300))
+    // ★ 2026-11-04：接入真实 API（原为模拟提交，点了没反应）
+    //   后端 /api/alerts/{id}/resolve 为 POST，标记 is_resolved=1。
+    //   注意：后端当前不接收处理措施文本，措施仅保存在前端会话中；
+    //   待后端补充 suggestedAction 字段后即可持久化。
+    await resolveAlert(resolveRow.value.alertId, { suggestedAction: resolveAction.value })
     ElMessage.success('告警已处理')
     resolveVisible.value = false
     loadData()

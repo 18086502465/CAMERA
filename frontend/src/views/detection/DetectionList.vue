@@ -46,18 +46,40 @@
         <el-table-column prop="startTime" label="开始时间" width="160" sortable />
         <el-table-column prop="productName" label="产品名称" min-width="140" />
         <el-table-column prop="cameraName" label="相机名称" width="120" />
-        <el-table-column prop="totalCount" label="总数" width="80" align="right" sortable />
-        <el-table-column prop="okCount" label="OK" width="80" align="right" sortable />
+        <el-table-column prop="totalCount" label="缺陷图数" width="90" align="right" sortable />
+        <el-table-column label="OK" width="80" align="right">
+          <template #default="{ row }">
+            <!-- 该通道无良品样本，OK 数不可计算 → 显示「—」而非 0 -->
+            <span v-if="row.okCount == null" style="color: #94a3b8">—</span>
+            <span v-else>{{ row.okCount }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="ngCount" label="NG" width="80" align="right" sortable />
         <el-table-column label="良率" width="90" align="center">
           <template #default="{ row }">
-            <span :style="{ color: row.totalCount > 0 && (row.okCount / row.totalCount) >= 0.95 ? '#67c23a' : '#f56c6c' }">
+            <!-- 无良品样本 → 良率不可计算，显示「—」并给出说明 -->
+            <el-tooltip
+              v-if="row.okCount == null"
+              content="当前数据源只上报缺陷图片，没有良品样本，良率无法计算"
+              placement="top"
+            >
+              <span style="color: #94a3b8">—</span>
+            </el-tooltip>
+            <span
+              v-else
+              :style="{ color: row.totalCount > 0 && (row.okCount / row.totalCount) >= 0.95 ? '#67c23a' : '#f56c6c' }"
+            >
               {{ row.totalCount > 0 ? ((row.okCount / row.totalCount) * 100).toFixed(1) : '0.0' }}%
             </span>
           </template>
         </el-table-column>
         <el-table-column prop="incrementalTotal" label="增量总数" width="100" align="right" />
-        <el-table-column prop="incrementalOk" label="增量OK" width="100" align="right" />
+        <el-table-column label="增量OK" width="100" align="right">
+          <template #default="{ row }">
+            <span v-if="row.incrementalOk == null" style="color: #94a3b8">—</span>
+            <span v-else>{{ row.incrementalOk }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="incrementalNg" label="增量NG" width="100" align="right" />
       </el-table>
 
@@ -80,6 +102,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from '@/utils/message.js'
+import { getDefectImageHistory } from '../../api/camera'
 
 const activeTab = ref('realtime')
 const cameraName = ref('')
@@ -92,49 +115,55 @@ const tableData = ref([])
 const loading = ref(false)
 const lineOptions = ref([])
 
-// 模拟数据（后端 DetectionRecordController 完成后替换为真实 API）
-const mockData = () => {
-  const rows = []
-  for (let i = 0; i < pageSize.value; i++) {
-    const total = Math.floor(Math.random() * 200) + 50
-    const ok = Math.floor(total * (0.9 + Math.random() * 0.1))
-    rows.push({
-      startTime: '2026-05-28 16:' + String(i).padStart(2, '0') + ':00',
-      productName: '008小护-K8',
-      cameraName: i % 2 === 0 ? '正面检测' : '背面检测',
-      totalCount: total,
-      okCount: ok,
-      ngCount: total - ok,
-      incrementalTotal: Math.floor(Math.random() * 20) + 1,
-      incrementalOk: Math.floor(Math.random() * 18) + 1,
-      incrementalNg: Math.floor(Math.random() * 5)
-    })
-  }
-  return rows
+// 时间格式化为后端要求的 "yyyy-MM-dd HH:mm:ss"
+const formatTime = (d) => {
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} `
+    + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
 const loadData = async () => {
   loading.value = true
   try {
-    // TODO: 替换为真实 API
-    // const params = { page: currentPage.value, size: pageSize.value }
-    // if (cameraName.value) params.cameraName = cameraName.value
-    // if (filterLine.value) params.lineId = filterLine.value
-    // if (timeRange.value) {
-    //   params.startTime = timeRange.value[0].toISOString()
-    //   params.endTime = timeRange.value[1].toISOString()
-    // }
-    // const res = await getDetectionRecords(params)
-    // tableData.value = res.data.data.records || []
-    // total.value = res.data.data.total || 0
+    // ★ 2026-11-04：接入真实 API（原为模拟数据）
+    //   数据源选择：现场设备实际走 `defect-images/upload` 通道，写的是
+    //   `defect_image_file`（实测 189,391 行）；而 `product_detection_history`
+    //   （前端原 defect.js 指向的表）**实测 0 行** —— 那是冻结契约的
+    //   batch-upload 通道，现场未启用。若接那个接口，页面会从"有数据"变成"空表"。
+    //   因此改用现场真实通道 GET /api/v1/defect-images/history。
+    const params = { page: currentPage.value, size: pageSize.value }
+    if (cameraName.value) params.cameraName = cameraName.value
+    if (filterLine.value) params.lineId = filterLine.value
+    if (timeRange.value && timeRange.value.length === 2) {
+      params.startTime = formatTime(timeRange.value[0])
+      params.endTime = formatTime(timeRange.value[1])
+    }
 
-    // 模拟延迟
-    await new Promise(r => setTimeout(r, 300))
-    tableData.value = mockData()
-    total.value = 987
+    const res = await getDefectImageHistory(params)
+    // axios 响应拦截器不做剥离：res.data = ResultVO → 真正的分页体在 res.data.data
+    const payload = (res && res.data && res.data.data) || {}
+    const records = payload.records || []
+
+    // 该通道只上报**缺陷图**，没有良品样本 → OK数与良率不可计算。
+    // 按项目口径：显示「—」并说明，绝不显示误导性的 0%。
+    tableData.value = records.map(r => ({
+      ...r,
+      startTime: r.captureTime || r.uploadTime || r.createTime || '',
+      productName: r.productName || '',
+      cameraName: r.cameraName || r.cameraId || '',
+      totalCount: r.defectCount != null ? r.defectCount : 0,
+      okCount: null,
+      ngCount: r.defectCount != null ? r.defectCount : 0,
+      incrementalTotal: r.defectCount != null ? r.defectCount : 0,
+      incrementalOk: null,
+      incrementalNg: r.defectCount != null ? r.defectCount : 0
+    }))
+    total.value = payload.total || 0
   } catch (e) {
     console.error('加载检测记录失败:', e)
     ElMessage.error('数据加载失败')
+    tableData.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
