@@ -155,40 +155,41 @@ const rules = {
   role: [{ required: true, message: '请选择角色', trigger: 'change' }]
 }
 
-// 模拟数据（后端 UserController 完成后替换为真实 API）
-const mockUsers = () => {
-  const rows = []
-  for (let i = 0; i < pageSize.value; i++) {
-    rows.push({
-      userId: (currentPage.value - 1) * pageSize.value + i + 1,
-      username: i === 0 ? 'admin' : `user${i}`,
-      realName: i === 0 ? '管理员' : `用户${i}`,
-      role: i === 0 ? 'ADMIN' : 'USER',
-      factoryName: i % 2 === 0 ? 'XX卫生用品' : 'YY纸业',
-      factoryId: i % 2 === 0 ? 1 : 2,
-      isDisabled: i === 2 ? 1 : 0,
-      lastLoginAt: i === 0 ? '2026-05-28 14:30:00' : ''
-    })
-  }
-  return rows
-}
-
 const loadData = async () => {
   loading.value = true
   try {
-    // TODO: 替换为真实 API
-    // const params = { page: currentPage.value, size: pageSize.value }
-    // if (keyword.value) params.keyword = keyword.value
-    // if (filterRole.value) params.role = filterRole.value
-    // const res = await getUserList(params)
-    // tableData.value = res.data.data.records || []
-    // total.value = res.data.data.total || 0
+    // ★ 2026-11-04：接入真实 API（原为模拟数据，现场会误判为真实用户）
+    //   后端 GET /api/user?page&size&keyword&role&factoryId 返回分页数据。
+    //   注意：后端 role 是**数字**（0=工人，1=管理员），
+    //   表格按字符串 'ADMIN'/'USER' 渲染，这里做一次映射。
+    const params = { page: currentPage.value, size: pageSize.value }
+    if (keyword.value) params.keyword = keyword.value
+    if (filterRole.value) params.role = filterRole.value === 'ADMIN' ? 1 : 0
 
-    await new Promise(r => setTimeout(r, 200))
-    tableData.value = mockUsers()
-    total.value = 25
+    const res = await getUserList(params)
+    // axios 响应拦截器不做剥离：res.data = ResultVO{code,message,data}
+    // → 真正的分页体在 res.data.data
+    const payload = (res && res.data && res.data.data) || {}
+    const records = payload.records || []
+
+    // 工厂 id → 名称（后端用户接口只返回 factoryId）
+    const factoryNameOf = (fid) => {
+      if (fid == null) return ''
+      const f = factoryOptions.value.find(x => x.factoryId === fid)
+      return f ? (f.factoryName || '') : ''
+    }
+
+    tableData.value = records.map(u => ({
+      ...u,
+      role: Number(u.role) === 1 ? 'ADMIN' : 'USER',
+      factoryName: u.factoryName || factoryNameOf(u.factoryId),
+      lastLoginAt: u.lastLoginAt || ''
+    }))
+    total.value = payload.total || 0
   } catch (e) {
     ElMessage.error('加载用户列表失败')
+    tableData.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
@@ -283,9 +284,12 @@ const handlePageChange = (page) => {
   loadData()
 }
 
-onMounted(() => {
-  loadFactories()
-  loadData()
+onMounted(async () => {
+  // ★ 2026-11-04：改为串行加载 —— 表格的「所属工厂」列依赖 factoryOptions 做
+  //   id→名称映射，若两个请求并发，loadData 可能先执行完，此时工厂列表还是空的，
+  //   导致工厂列全部空白。
+  await loadFactories()
+  await loadData()
 })
 </script>
 
