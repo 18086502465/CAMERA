@@ -3,7 +3,9 @@
   [int]$Port = 3306,
   [string]$Database = 'wms-new',
   [string]$User = 'root',
-  [string]$Password = 'CCshenda889',
+  # ★ 2026-11-04 安全改造：不再硬编码数据库口令（脚本会随仓库分发）。
+  #   改为从环境变量 MYSQL_PASSWORD 读取；未设置时回落到同名参数，便于命令行传入。
+  [string]$Password = $(if ($env:MYSQL_PASSWORD) { $env:MYSQL_PASSWORD } else { '' }),
   [string]$SqlFile,
   [switch]$Yes
 )

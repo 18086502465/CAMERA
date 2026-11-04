@@ -27,6 +27,10 @@ work/
 fact-product/uploads/
 uploads/
 
+# ---- Python 缓存 ----
+__pycache__/
+*.pyc
+
 # ---- WorkBuddy 工作区数据（非项目产物）----
 .workbuddy/
 

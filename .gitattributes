@@ -1,0 +1,58 @@
+# ==============================================================================
+# 行尾策略
+#
+# 为什么需要显式声明：全局 core.autocrlf=true 时，Windows 上 checkout 会把
+# LF 转成 CRLF。而部署到 Linux 服务器的 shell 脚本一旦是 CRLF，运行会报
+#   set: pipefail: invalid option name
+# 直接导致安装 / 部署脚本全部失败（记忆里已踩过两次）。
+#
+# 因此：所有脚本类文件强制 LF；文本类文件按平台自动；二进制禁止任何转换。
+# ==============================================================================
+
+# ---- 必须保持 LF 的脚本（部署到 Linux 执行）----
+*.sh            text eol=lf
+*.bash          text eol=lf
+*.py            text eol=lf
+*.service       text eol=lf
+*.timer         text eol=lf
+*.sql           text eol=lf
+
+# ---- 前端/后端源码与配置：仓库内统一 LF，检出时按平台自动 ----
+*.js            text
+*.cjs           text
+*.mjs           text
+*.ts            text
+*.vue           text
+*.java          text
+*.xml           text
+*.yml           text
+*.yaml          text
+*.json          text
+*.html          text
+*.css           text
+*.md            text
+*.properties    text
+*.conf          text
+*.txt           text
+
+# ---- Windows 专用脚本：保持 CRLF ----
+*.ps1           text eol=crlf
+*.cmd           text eol=crlf
+*.bat           text eol=crlf
+
+# ---- 二进制：禁止行尾转换 ----
+*.jar           binary
+*.war           binary
+*.zip           binary
+*.gz            binary
+*.tgz           binary
+*.tar           binary
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.pdf           binary
+*.xlsx          binary
+*.docx          binary
+*.pptx          binary

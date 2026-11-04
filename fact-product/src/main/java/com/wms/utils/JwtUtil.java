@@ -14,7 +14,21 @@ import java.util.Date;
 @Component
 public class JwtUtil {
 
-    @Value("${jwt.secret:mySecretKey123456789012345678901234567890}")
+    /**
+     * JWT 签名密钥。
+     *
+     * <p><b>2026-11-04 安全改造</b>：原为
+     * {@code @Value("${jwt.secret:mySecretKey123456789012345678901234567890}")}，
+     * 内置的兜底默认值会随 JAR 一起分发 ——
+     * 任何拿到发布包的人都能用它伪造登录令牌，等同于没有密钥。
+     *
+     * <p>现改为**无默认值**：必须由外部配置或环境变量
+     * （{@code /etc/default/camera-detection} 的 {@code JWT_SECRET}，
+     * 由 systemd 的 {@code EnvironmentFile} 注入）显式提供。
+     * 未提供时启动直接失败 —— 这是刻意设计：
+     * 宁可起不来，也不能悄悄用一把公开的密钥保护生产系统。
+     */
+    @Value("${jwt.secret}")
     private String secret;
 
     @Value("${jwt.expiration:86400000}")

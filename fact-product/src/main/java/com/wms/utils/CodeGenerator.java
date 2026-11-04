@@ -15,7 +15,15 @@ public class CodeGenerator {
         // ======================== 【需要修改的4处配置 - 必改】 ========================
         String url = "jdbc:mysql://localhost:3306/wms-new?serverTimezone=Asia/Shanghai&useUnicode=true&characterEncoding=utf8";
         String username = "root"; // 你的数据库账号
-        String password = "CCshenda8899"; // 你的数据库密码
+        // ★ 2026-11-04 安全改造：不再硬编码数据库口令（会随 JAR 分发）。
+        //   改为从环境变量读取：MYSQL_PASSWORD=xxx 运行本生成器。
+        String password = System.getenv("MYSQL_PASSWORD");
+        if (password == null || password.trim().isEmpty()) {
+            System.err.println("请先设置环境变量 MYSQL_PASSWORD，例如：");
+            System.err.println("  Windows : set MYSQL_PASSWORD=<你的数据库口令>");
+            System.err.println("  Linux   : MYSQL_PASSWORD=<你的数据库口令> mvn exec:java ...");
+            return;
+        }
         String author = "45344"; // 作者名（生成在注释里）
 
         // ======================== 【生成代码执行核心】 ========================

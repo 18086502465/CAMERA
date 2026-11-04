@@ -8,7 +8,17 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/wms-new?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
     username: root
-    password: CCshenda889
+    # ★ 2026-11-04 安全改造：不再内置真实数据库口令。
+    #   本文件会被打进 JAR 并随发布包分发，内置明文口令等于公开凭据。
+    #   改为环境变量注入：值来自 /etc/default/camera-detection（640 root:root），
+    #   由 systemd 的 EnvironmentFile 传给 JVM。
+    #
+    #   ⚠️ 2026-11-04 二次修正：原先写成 ${MYSQL_PASSWORD:}（带空默认值），
+    #   那样环境变量缺失时应用**能启动但连不上库**，表现为
+    #   "服务 active 但业务全错"，极难排查。
+    #   现在改成 ${MYSQL_PASSWORD}（**无默认值**）—— 缺失即启动失败，
+    #   在日志里明确报 "Could not resolve placeholder 'MYSQL_PASSWORD'"。
+    password: ${MYSQL_PASSWORD}
     type: com.alibaba.druid.pool.DruidDataSource
     druid:
       initial-size: 10
@@ -52,7 +62,10 @@ mybatis-plus:
       logic-not-delete-value: 0
 
 jwt:
-  secret: mySecretKey123456789012345678901234567890
+  # ★ 2026-11-04 安全改造：不再内置固定 JWT 密钥（打进 JAR 等于公开）。
+  #   现场由 install.sh 生成随机值写入 /etc/default/camera-detection（JWT_SECRET）。
+  #   ⚠️ 无默认值：环境变量缺失时启动即失败，避免用公开密钥保护生产。
+  secret: ${JWT_SECRET}
   expiration: 86400000
 
 app:
