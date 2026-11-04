@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { getToken } from '../utils/auth'
 import { useUserStore } from '../stores/user'
+import { handleResourceLoadError } from '../utils/resource-version'
 
 const routes = [
   {
@@ -227,6 +228,20 @@ router.beforeEach((to, from, next) => {
   }
 
   next()
+})
+
+// ============================================================
+// 路由错误兜底：动态 import 失败（2026-11-04）
+// ============================================================
+// 现场故障：页面是部署前打开的旧版本，懒加载的 chunk 已被新构建替换，
+// 请求 404 → "Failed to fetch dynamically imported module" →
+// vue-router 的导航 Promise 被 reject → **导航静默中断**。
+// 表现为点击【图像记录】【系统配置】URL 完全不变、页面不刷新、也没有后端请求。
+//
+// 这里统一捕获并交给版本守卫自愈（刷新页面后即可拿到新 chunk）。
+router.onError((error, to) => {
+  console.warn('[router] 路由加载失败：', to?.fullPath, error)
+  handleResourceLoadError(error)
 })
 
 export default router
