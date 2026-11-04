@@ -16,6 +16,7 @@
           <el-input v-model="form.password" type="password" placeholder="请输入密码" size="large" show-password />
         </el-form-item>
 
+        <div v-if="noticeMsg" class="notice-msg show">{{ noticeMsg }}</div>
         <div v-if="errorMsg" class="error-msg show">{{ errorMsg }}</div>
         <el-button type="primary" size="large" :loading="loading" class="login-btn" native-type="submit">登录</el-button>
       </el-form>
@@ -27,14 +28,20 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '../../stores/user'
+import { takeLoginContext, peekLoginContext, isSafeRedirect } from '@/utils/auth-redirect'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
 const loginFormRef = ref(null)
 const form = reactive({ username: 'admin', password: '' })
 const errorMsg = ref('')
+// ★ 2026-11-04：登录态失效提示（区别于"账号密码错误"）
+const noticeMsg = ref('')
+// 登录成功后要回跳的路由（由拦截器在跳转前保存）
+const redirectPath = ref('')
 const loading = ref(false)
 
 const rules = {
@@ -50,6 +57,21 @@ const rules = {
 
 onMounted(() => {
   userStore.logout()
+
+  // 1) 从 URL 读取拦截器传来的原因（?reason=...）
+  const reason = route.query.reason
+  if (reason) {
+    noticeMsg.value = String(reason)
+  }
+
+  // 2) 读取待回跳的上下文（只查看不清除 —— 真正登录成功时才 take）
+  const ctx = peekLoginContext()
+  if (ctx && isSafeRedirect(ctx.path)) {
+    redirectPath.value = ctx.path
+    if (!noticeMsg.value) {
+      noticeMsg.value = '请重新登录以继续之前的操作'
+    }
+  }
 })
 
 const handleLogin = async () => {
@@ -64,7 +86,14 @@ const handleLogin = async () => {
   errorMsg.value = ''
   try {
     await userStore.login(form.username, form.password)
-    router.replace('/camera-status')
+    // ★ 2026-11-04：登录成功后回跳原页面（上下文用后即焚）
+    const ctx = takeLoginContext()
+    const target = (ctx && isSafeRedirect(ctx.path)) ? ctx.path : redirectPath.value
+    if (target && isSafeRedirect(target)) {
+      router.replace(target)
+    } else {
+      router.replace('/camera-status')
+    }
   } catch (e) {
     errorMsg.value = e.response?.data?.message || '登录失败，请检查用户名和密码'
   } finally {
@@ -87,6 +116,8 @@ const handleLogin = async () => {
 .field-label { display: block; font-size: 13px; font-weight: 600; color: #1e293b; margin-bottom: 6px; }
 .custom-item :deep(.el-form-item__error) { position: static; padding-top: 4px; }
 .error-msg { padding: 10px 14px; background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; border-radius: 8px; font-size: 13px; text-align: center; margin-bottom: 12px; animation: shake .3s ease-in-out; }
+/* 登录态失效提示（与"账号密码错误"区分：橙色警示而非红色报错） */
+.notice-msg { padding: 10px 14px; background: #fffbeb; color: #b45309; border: 1px solid #fde68a; border-radius: 8px; font-size: 13px; text-align: center; margin-bottom: 12px; }
 @keyframes shake { 0%,100% { transform:translateX(0) } 25% { transform:translateX(-6px) } 75% { transform:translateX(6px) } }
 .login-btn { width: 100%; height: 44px; font-size: 16px; font-weight: 600; border-radius: 10px; }
 .version { text-align: center; margin-top: 20px; font-size: 11px; color: #94a3b8; }

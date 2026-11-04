@@ -12,12 +12,15 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import javax.servlet.http.HttpServletResponse;
 import java.util.Arrays;
 
 /**
@@ -285,12 +288,79 @@ public class SecurityConfig {
                 // 其余一律要求登录
                 .anyRequest().authenticated()
             .and()
-            .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS);
+            .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+            .and()
+            // ==============================================================
+            // ★ 2026-11-04：区分「未认证」与「权限不足」
+            // ==============================================================
+            // 实测发现（服务器 10.2.77.72）：
+            //   无 token / 伪造 token 访问需认证端点 → **403**
+            //   已认证但角色不足 → **也是 403**
+            //   两者的响应体完全相同：{"status":403,"error":"Forbidden","path":"/api/..."}
+            //   且响应头里**没有 WWW-Authenticate**（Spring Security 2.7 默认行为）。
+            //
+            //   后果：前端拿到 403 无法判断该跳登录页还是提示"权限不足"，
+            //   只能一律跳登录 —— 管理员点了个 ADMIN 端点就被踢出登录，误打断操作。
+            //
+            //   现在按 Spring Security 的标准语义拆开：
+            //   - AuthenticationEntryPoint：**未认证**（无 token / token 无效 / token 过期）
+            //     → 401 Unauthorized，body 带 reason=AUTHENTICATION_REQUIRED
+            //   - AccessDeniedHandler：**已认证但权限不足**（角色不匹配）
+            //     → 403 Forbidden，body 带 reason=ACCESS_DENIED
+            //
+            //   前端据此精确分流：401 与 403+未登录 → 跳登录；403+权限不足 → 只提示不跳转。
+            .exceptionHandling()
+                .authenticationEntryPoint(restAuthenticationEntryPoint())
+                .accessDeniedHandler(restAccessDeniedHandler())
+            .and();
 
         // 将 JWT 过滤器添加到 UsernamePasswordAuthenticationFilter 之前
         http.addFilterBefore(jwtRequestFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    /**
+     * 未认证处理器：返回 **401** + reason=AUTHENTICATION_REQUIRED。
+     *
+     * <p>Spring Security 2.7 默认对未认证请求返回 403（因为没有配置 WWW-Authenticate），
+     * 与「权限不足」的 403 无法区分。这里显式改为 401 并带上语义标记。
+     */
+    @Bean
+    public AuthenticationEntryPoint restAuthenticationEntryPoint() {
+        return (request, response, authException) -> {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write(
+                    "{\"code\":401,\"message\":\"登录状态已失效，请重新登录\","
+                            + "\"reason\":\"AUTHENTICATION_REQUIRED\",\"path\":\""
+                            + safePath(request.getRequestURI()) + "\"}");
+        };
+    }
+
+    /**
+     * 权限不足处理器：返回 **403** + reason=ACCESS_DENIED。
+     *
+     * <p>与未认证区分开，前端据此**不跳转**、只提示，避免打断管理员的正常操作。
+     */
+    @Bean
+    public AccessDeniedHandler restAccessDeniedHandler() {
+        return (request, response, accessDeniedException) -> {
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write(
+                    "{\"code\":403,\"message\":\"没有访问权限，请使用具备相应角色的账号登录\","
+                            + "\"reason\":\"ACCESS_DENIED\",\"path\":\""
+                            + safePath(request.getRequestURI()) + "\"}");
+        };
+    }
+
+    /**
+     * 回写响应体时避免 JSON 注入（路径里理论上不会有引号，但不做无谓的风险假设）。
+     */
+    private static String safePath(String path) {
+        if (path == null) return "";
+        return path.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     @Bean
