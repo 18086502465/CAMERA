@@ -73,3 +73,6 @@ dist-release/installer/install-verify.log
 .env
 .env.local
 application-local.yml
+
+# ---- 临时脚本 ----
+*.timestamp-*.mjs
