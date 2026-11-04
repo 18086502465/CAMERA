@@ -95,7 +95,7 @@
     <el-dialog v-model="previewVisible" :title="previewTitle" width="820px" destroy-on-close>
       <div v-if="previewImageData" class="preview-content">
         <div class="preview-box" :class="{ invalid: isInvalidImage(previewImageData) }">
-          <img v-if="previewImageData.imageUrl && !isInvalidImage(previewImageData)" :src="previewImageData.imageUrl" alt="最近图像" @error="markImageError(previewImageData)" />
+          <img v-if="previewImageData.imageUrl && !isInvalidImage(previewImageData)" :src="previewImageData.imageUrl" alt="最近图像" @error="markImageError(previewImageData)" @dblclick="openZoomViewer" />
           <div v-else class="preview-empty">
             <strong>{{ imageFailureReason(previewImageData) }}</strong>
             <span>{{ imageFailureAdvice(previewImageData) }}</span>
@@ -105,6 +105,9 @@
               <li>确认图片宽高大于 2px，且文件未被传输截断。</li>
             </ul>
           </div>
+          <el-button v-if="previewImageData.imageUrl && !isInvalidImage(previewImageData)" class="preview-zoom" plain size="small" @click.stop="openZoomViewer">
+            <span class="preview-zoom-icon">⤢</span> 放大查看
+          </el-button>
         </div>
         <div class="preview-meta">
           <div><span>文件名</span><strong>{{ previewImageData.fileName }}</strong></div>
@@ -123,6 +126,15 @@
         </el-table>
       </div>
     </el-dialog>
+
+    <ImageViewer
+      :visible="zoomVisible"
+      :index="0"
+      :images="zoomImages"
+      :title="zoomTitle"
+      :subtitle="zoomSubtitle"
+      @update:visible="zoomVisible = $event"
+    />
   </div>
 </template>
 
@@ -132,6 +144,7 @@ import { useRouter } from 'vue-router'
 import { getCameraList, getDefectImageCameraSummaries } from '@/api/camera'
 import EmptyState from '@/components/EmptyState.vue'
 import BasePagination from '@/components/common/BasePagination.vue'
+import ImageViewer from '@/components/common/ImageViewer.vue'
 import { useCameraStatusTable } from './useCameraStatusTable'
 
 const router = useRouter()
@@ -142,6 +155,7 @@ const rows = ref([])
 const recentImages = ref([])
 const previewVisible = ref(false)
 const previewImageData = ref(null)
+const zoomVisible = ref(false)
 const tablePage = ref(1)
 const tablePageSize = ref(10)
 const searchKeyword = ref('')
@@ -375,6 +389,23 @@ const openPreview = (row) => {
   previewVisible.value = true
 }
 
+/* ---- 全屏放大查看 ---- */
+const zoomImages = computed(() => {
+  const img = previewImageData.value
+  if (!img?.imageUrl) return []
+  return [{ url: img.imageUrl, name: img.fileName || '最近图像', key: img.imageId || img.fileName || 'latest' }]
+})
+const zoomTitle = computed(() => `${previewImageData.value?.cameraName || '相机'} - 放大查看`)
+const zoomSubtitle = computed(() => {
+  const img = previewImageData.value
+  if (!img) return ''
+  return [img.fileName, img.captureTimeText].filter(Boolean).join('  ')
+})
+const openZoomViewer = () => {
+  if (!zoomImages.value.length) return
+  zoomVisible.value = true
+}
+
 const goImageRecords = (row) => {
   const cameraId = row.cameraCode && row.cameraCode !== '-' ? row.cameraCode : (row.cameraId || row.deviceId || '')
   router.push({
@@ -436,8 +467,11 @@ onBeforeUnmount(() => { if (timer) window.clearInterval(timer) })
 .metric-pill.is-danger { color: #b91c1c; background: #fee2e2; }
 .metric-pill.is-empty { color: #64748b; background: #f1f5f9; }
 .preview-content { display: flex; flex-direction: column; gap: 14px; }
-.preview-box { min-height: 320px; max-height: 520px; border-radius: 12px; background: #0f172a; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-.preview-box img { max-width: 100%; max-height: 520px; object-fit: contain; }
+.preview-box { position: relative; min-height: 320px; max-height: 520px; border-radius: 12px; background: #0f172a; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.preview-box img { max-width: 100%; max-height: 520px; object-fit: contain; cursor: zoom-in; }
+.preview-zoom { position: absolute; right: 14px; top: 12px; z-index: 3; background: rgba(255,255,255,.94); border-color: rgba(148,163,184,.6); color: #0f172a; font-weight: 600; box-shadow: 0 4px 12px rgba(15,23,42,.2); }
+.preview-zoom:hover { background: #fff; color: #2563eb; border-color: #2563eb; }
+.preview-zoom-icon { font-size: 14px; line-height: 1; margin-right: 2px; }
 .preview-empty { min-height: 320px; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 28px; color: #64748b; text-align: center; background: #f8fafc; }
 .failure-checklist { margin: 8px 0 0; text-align: left; line-height: 1.8; }
 .preview-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }

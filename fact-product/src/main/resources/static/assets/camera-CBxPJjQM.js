@@ -1,1 +1,0 @@
-import{H as a}from"./index-vBlv1VaY.js";const s=e=>a({url:"/cameras",method:"get",params:e}),r=(e,t=5)=>a({url:`/v1/camera/images/${encodeURIComponent(e)}`,method:"get",params:{limit:t}}),o=(e={})=>a({url:"/v1/defect-images/camera-summaries",method:"get",params:e}),g=(e={})=>a({url:"/v1/defect-images/history",method:"get",params:e});export{s as a,o as b,g as c,r as g};

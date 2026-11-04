@@ -1,1 +1,0 @@
-import{H as r}from"./index-LfyjqCNz.js";function o(t){return r.post("/auth/login",t)}function u(t){return r.post("/auth/register",t)}function n(){return r.get("/auth/me")}function s(t){return r.put("/profile/password",t)}export{n as g,o as l,u as r,s as u};

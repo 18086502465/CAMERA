@@ -10,6 +10,7 @@ import com.wms.service.IDimProductionLineService;
 import com.wms.service.IDimWorkstationService;
 import com.wms.vo.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
@@ -284,6 +285,12 @@ public class CameraDashboardController {
      *       <b>现在逻辑删除可恢复</b>（{@code PUT} 允许把 {@code is_active=0} 的相机重新启用）。</li>
      * </ol>
      */
+    /**
+     * <p><b>2026-11-04 修正</b>：原方法<b>缺少 {@code @PreAuthorize("hasRole('ADMIN')")}</b>，
+     * 而同类的产线/工位/工厂删除接口都有 —— 导致任何已登录用户都能删相机。
+     * 这是权限漏洞，本次补齐。
+     */
+    @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     @Transactional
     public ResultVO<String> delete(@PathVariable Long id) {

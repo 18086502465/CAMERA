@@ -106,7 +106,7 @@
       <div v-if="previewData" class="preview-content">
         <div class="preview-img-wrap">
           <el-button class="preview-nav prev" circle :disabled="!hasPrevImage" @click.stop="switchPreview(-1)">‹</el-button>
-          <img v-if="previewData.imageUrl && !isInvalidImage(previewData)" :src="previewData.imageUrl" alt="缺陷图预览" @error="markImageError(previewData)" />
+          <img v-if="previewData.imageUrl && !isInvalidImage(previewData)" :src="previewData.imageUrl" alt="缺陷图预览" @error="markImageError(previewData)" @dblclick="openZoomViewer" />
           <div v-else class="preview-empty">
             <strong>{{ imageFailureReason(previewData) }}</strong>
             <span>{{ imageFailureAdvice(previewData) }}</span>
@@ -117,6 +117,9 @@
             </ul>
           </div>
           <el-button class="preview-nav next" circle :disabled="!hasNextImage" @click.stop="switchPreview(1)">›</el-button>
+          <el-button class="preview-zoom" plain size="small" @click.stop="openZoomViewer">
+            <span class="preview-zoom-icon">⤢</span> 放大查看
+          </el-button>
           <div v-if="previewList.length" class="preview-counter">{{ previewIndex + 1 }} / {{ previewList.length }}</div>
         </div>
         <div class="preview-info-grid">
@@ -138,6 +141,16 @@
         </el-table>
       </div>
     </el-dialog>
+
+    <ImageViewer
+      :visible="zoomVisible"
+      :index="zoomIndex"
+      :images="zoomImages"
+      :title="zoomTitle"
+      :subtitle="zoomSubtitle"
+      @update:visible="zoomVisible = $event"
+      @update:index="syncZoomIndex"
+    />
   </section>
 </template>
 
@@ -147,6 +160,7 @@ import { useRoute } from 'vue-router'
 import { getCameraList, getDefectImageCameraSummaries, getDefectImageHistory } from '@/api/camera'
 import EmptyState from '@/components/EmptyState.vue'
 import BasePagination from '@/components/common/BasePagination.vue'
+import ImageViewer from '@/components/common/ImageViewer.vue'
 
 const props = defineProps({
   embedded: { type: Boolean, default: false },
@@ -170,6 +184,8 @@ const previewData = ref(null)
 const previewList = ref([])
 const previewIndex = ref(-1)
 const previewCamera = ref(null)
+const zoomVisible = ref(false)
+const zoomIndex = ref(0)
 const historyPageSize = ref(10)
 const filterParams = inject('filterParams', ref({ factoryId: null, lineIds: [], stationIds: [] }))
 const filterLabels = inject('filterLabels', ref({ factoryName: '', lineNames: [], stationNames: [] }))
@@ -501,6 +517,34 @@ const switchPreview = delta => {
   if (nextIndex < 0 || nextIndex >= previewList.value.length) return
   previewIndex.value = nextIndex
   setPreviewData(previewCamera.value, previewList.value[nextIndex])
+  if (zoomVisible.value) zoomIndex.value = nextIndex
+}
+/* ---- 全屏放大查看（与弹窗预览双向同步） ---- */
+const zoomImages = computed(() => previewList.value.map((img, i) => ({
+  url: img?.imageUrl || '',
+  name: img?.fileName || `第 ${i + 1} 张`,
+  key: img?.imageId || img?.fileName || i
+})))
+const zoomTitle = computed(() => {
+  const name = previewCamera.value?.name || previewData.value?.cameraName || '缺陷图片'
+  return `${name} - 放大查看`
+})
+const zoomSubtitle = computed(() => {
+  const fileName = previewData.value?.fileName
+  return fileName ? `${fileName}（${previewIndex.value + 1}/${previewList.value.length}）` : ''
+})
+const openZoomViewer = () => {
+  if (!previewList.value.length && !previewData.value) return
+  if (previewIndex.value < 0) previewIndex.value = 0
+  zoomIndex.value = previewIndex.value
+  zoomVisible.value = true
+}
+/** 放大查看中切换图片时，反向同步弹窗预览 */
+const syncZoomIndex = index => {
+  zoomIndex.value = index
+  if (index < 0 || index >= previewList.value.length) return
+  previewIndex.value = index
+  setPreviewData(previewCamera.value, previewList.value[index])
 }
 onMounted(loadData)
 watch(filterParams, loadData, { deep: true })
@@ -518,5 +562,5 @@ defineExpose({ reload: loadData })
 </script>
 
 <style scoped>
-.image-records{display:flex;flex-direction:column;gap:16px}.page-header,.section-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.page-header h2,.section-header h3{margin:0 0 6px;color:#111827}.page-header h2{font-size:22px}.section-header h3{font-size:18px}.page-header p,.section-header p{margin:0;color:#6b7280;font-size:13px}.filter-hint,.more-link{font-size:13px;color:#2563eb;background:#eff6ff;padding:6px 12px;border-radius:999px;text-decoration:none;white-space:nowrap}.records-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:12px 14px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 1px 3px rgba(15,23,42,.04)}.toolbar-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}.image-search{width:320px;max-width:100%}.toolbar-summary{display:flex;align-items:center;gap:8px;color:#64748b;font-size:12px;white-space:nowrap}.toolbar-summary span,.image-total{padding:4px 10px;border-radius:999px;background:#f8fafc;border:1px solid #e5e7eb}.cam-col{margin-bottom:16px}.cam-card{background:#fff;border-radius:12px;border:1px solid #e5e7eb;box-shadow:0 1px 3px rgba(15,23,42,.05);overflow:hidden;transition:box-shadow .2s}.cam-card:hover{box-shadow:0 8px 20px rgba(15,23,42,.08)}.cam-hd{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 18px;cursor:pointer;border-bottom:1px solid #f1f5f9}.cam-hd:hover{background:#f8fafc}.cam-hd-left,.cam-hd-right{display:flex;align-items:center;gap:10px;min-width:0}.cam-hd-left{flex:1}.cam-name{color:#111827;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.cam-station,.cam-expand-icon,.image-total{color:#64748b;font-size:12px;white-space:nowrap}.cam-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap}.st-dot{width:6px;height:6px;border-radius:50%}.st-running{color:#15803d;background:#dcfce7}.st-running .st-dot{background:#22c55e}.st-stopped{color:#475569;background:#f1f5f9}.st-stopped .st-dot{background:#64748b}.st-standby{color:#b45309;background:#fef3c7}.st-standby .st-dot{background:#f59e0b}.st-fault{color:#b91c1c;background:#fee2e2}.st-fault .st-dot{background:#ef4444}.st-offline{color:#64748b;background:#f1f5f9}.st-offline .st-dot{background:#94a3b8}.severity-pill{font-size:12px;padding:2px 8px;border-radius:999px;font-weight:700}.severity-pill.high{color:#b91c1c;background:#fee2e2}.severity-pill.medium{color:#b45309;background:#fef3c7}.severity-pill.low{color:#1d4ed8;background:#dbeafe}.cam-body{padding:14px 18px}.thumb-label{color:#64748b;font-size:12px;margin-bottom:10px}.thumb-row{display:flex;gap:8px;flex-wrap:wrap}.thumb-item{cursor:pointer}.thumb-img-wrap{width:96px;height:72px;border-radius:8px;border:1px solid #e5e7eb;background:#f8fafc;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#cbd5e1}.thumb-img-wrap img{width:100%;height:100%;object-fit:cover;transition:transform .2s}.thumb-img-wrap:hover img{transform:scale(1.08)}.thumb-placeholder{font-size:12px;color:#94a3b8}.thumb-placeholder.invalid{color:#b45309;background:#fffbeb;width:100%;height:100%;display:flex;align-items:center;justify-content:center}.thumb-severity{position:absolute;right:4px;bottom:4px;color:#fff;font-size:11px;line-height:1;padding:3px 6px;border-radius:4px}.thumb-severity.high{background:#ef4444}.thumb-severity.medium{background:#f59e0b}.thumb-severity.low{background:#3b82f6}.empty-thumb{cursor:default;font-size:20px}.cam-history{padding:0 18px 16px}.history-divider{height:1px;background:#f1f5f9;margin-bottom:14px}.history-title{font-size:13px;font-weight:700;color:#374151;margin-bottom:10px}.history-title span{color:#94a3b8;font-weight:400}.hist-thumb{width:42px;height:32px;border-radius:6px;overflow:hidden;border:1px solid #e5e7eb;background:#f8fafc;display:flex;align-items:center;justify-content:center;cursor:pointer}.hist-thumb img{width:100%;height:100%;object-fit:cover}.pager{margin-top:12px;justify-content:center}.preview-content{display:flex;flex-direction:column;gap:16px}.preview-img-wrap{position:relative;min-height:320px;max-height:520px;background:#0f172a;border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center}.preview-img-wrap img{max-width:100%;max-height:520px;object-fit:contain}.preview-nav{position:absolute;top:50%;z-index:2;transform:translateY(-50%);width:40px;height:40px;border:none;background:rgba(255,255,255,.9);color:#0f172a;font-size:24px;font-weight:800;box-shadow:0 6px 18px rgba(15,23,42,.22)}.preview-nav.prev{left:14px}.preview-nav.next{right:14px}.preview-counter{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:2;padding:4px 10px;border-radius:999px;background:rgba(15,23,42,.72);color:#fff;font-size:12px;font-weight:700}.preview-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:32px;color:#64748b;text-align:center;background:#f8fafc;width:100%;min-height:320px}.preview-empty strong{color:#334155;font-size:15px}.preview-empty span{max-width:520px;font-size:13px;line-height:1.6}.preview-info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.info-item{display:flex;gap:8px;padding:9px 12px;background:#f8fafc;border-radius:8px;min-width:0}.info-item span{color:#64748b;font-size:12px;flex:none}.info-item strong{color:#111827;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.defect-table{margin-top:2px}@media (max-width:1280px){.cam-hd{align-items:flex-start;flex-direction:column}.preview-info-grid{grid-template-columns:1fr}}@media (max-width:720px){.records-toolbar{align-items:stretch;flex-direction:column}.toolbar-filters{align-items:stretch;flex-direction:column}.image-search{width:100%}.toolbar-summary{justify-content:flex-start}}
+.image-records{display:flex;flex-direction:column;gap:16px}.page-header,.section-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.page-header h2,.section-header h3{margin:0 0 6px;color:#111827}.page-header h2{font-size:22px}.section-header h3{font-size:18px}.page-header p,.section-header p{margin:0;color:#6b7280;font-size:13px}.filter-hint,.more-link{font-size:13px;color:#2563eb;background:#eff6ff;padding:6px 12px;border-radius:999px;text-decoration:none;white-space:nowrap}.records-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:12px 14px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 1px 3px rgba(15,23,42,.04)}.toolbar-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}.image-search{width:320px;max-width:100%}.toolbar-summary{display:flex;align-items:center;gap:8px;color:#64748b;font-size:12px;white-space:nowrap}.toolbar-summary span,.image-total{padding:4px 10px;border-radius:999px;background:#f8fafc;border:1px solid #e5e7eb}.cam-col{margin-bottom:16px}.cam-card{background:#fff;border-radius:12px;border:1px solid #e5e7eb;box-shadow:0 1px 3px rgba(15,23,42,.05);overflow:hidden;transition:box-shadow .2s}.cam-card:hover{box-shadow:0 8px 20px rgba(15,23,42,.08)}.cam-hd{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 18px;cursor:pointer;border-bottom:1px solid #f1f5f9}.cam-hd:hover{background:#f8fafc}.cam-hd-left,.cam-hd-right{display:flex;align-items:center;gap:10px;min-width:0}.cam-hd-left{flex:1}.cam-name{color:#111827;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.cam-station,.cam-expand-icon,.image-total{color:#64748b;font-size:12px;white-space:nowrap}.cam-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap}.st-dot{width:6px;height:6px;border-radius:50%}.st-running{color:#15803d;background:#dcfce7}.st-running .st-dot{background:#22c55e}.st-stopped{color:#475569;background:#f1f5f9}.st-stopped .st-dot{background:#64748b}.st-standby{color:#b45309;background:#fef3c7}.st-standby .st-dot{background:#f59e0b}.st-fault{color:#b91c1c;background:#fee2e2}.st-fault .st-dot{background:#ef4444}.st-offline{color:#64748b;background:#f1f5f9}.st-offline .st-dot{background:#94a3b8}.severity-pill{font-size:12px;padding:2px 8px;border-radius:999px;font-weight:700}.severity-pill.high{color:#b91c1c;background:#fee2e2}.severity-pill.medium{color:#b45309;background:#fef3c7}.severity-pill.low{color:#1d4ed8;background:#dbeafe}.cam-body{padding:14px 18px}.thumb-label{color:#64748b;font-size:12px;margin-bottom:10px}.thumb-row{display:flex;gap:8px;flex-wrap:wrap}.thumb-item{cursor:pointer}.thumb-img-wrap{width:96px;height:72px;border-radius:8px;border:1px solid #e5e7eb;background:#f8fafc;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#cbd5e1}.thumb-img-wrap img{width:100%;height:100%;object-fit:cover;transition:transform .2s}.thumb-img-wrap:hover img{transform:scale(1.08)}.thumb-placeholder{font-size:12px;color:#94a3b8}.thumb-placeholder.invalid{color:#b45309;background:#fffbeb;width:100%;height:100%;display:flex;align-items:center;justify-content:center}.thumb-severity{position:absolute;right:4px;bottom:4px;color:#fff;font-size:11px;line-height:1;padding:3px 6px;border-radius:4px}.thumb-severity.high{background:#ef4444}.thumb-severity.medium{background:#f59e0b}.thumb-severity.low{background:#3b82f6}.empty-thumb{cursor:default;font-size:20px}.cam-history{padding:0 18px 16px}.history-divider{height:1px;background:#f1f5f9;margin-bottom:14px}.history-title{font-size:13px;font-weight:700;color:#374151;margin-bottom:10px}.history-title span{color:#94a3b8;font-weight:400}.hist-thumb{width:42px;height:32px;border-radius:6px;overflow:hidden;border:1px solid #e5e7eb;background:#f8fafc;display:flex;align-items:center;justify-content:center;cursor:pointer}.hist-thumb img{width:100%;height:100%;object-fit:cover}.pager{margin-top:12px;justify-content:center}.preview-content{display:flex;flex-direction:column;gap:16px}.preview-img-wrap{position:relative;min-height:320px;max-height:520px;background:#0f172a;border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center}.preview-img-wrap img{max-width:100%;max-height:520px;object-fit:contain}.preview-nav{position:absolute;top:50%;z-index:2;transform:translateY(-50%);width:40px;height:40px;border:none;background:rgba(255,255,255,.9);color:#0f172a;font-size:24px;font-weight:800;box-shadow:0 6px 18px rgba(15,23,42,.22)}.preview-nav.prev{left:14px}.preview-nav.next{right:14px}.preview-zoom{position:absolute;right:14px;top:12px;z-index:3;background:rgba(255,255,255,.94);border-color:rgba(148,163,184,.6);color:#0f172a;font-weight:600;box-shadow:0 4px 12px rgba(15,23,42,.2)}.preview-zoom:hover{background:#fff;color:#2563eb;border-color:#2563eb}.preview-zoom-icon{font-size:14px;line-height:1;margin-right:2px}.preview-img-wrap img{cursor:zoom-in}.preview-counter{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:2;padding:4px 10px;border-radius:999px;background:rgba(15,23,42,.72);color:#fff;font-size:12px;font-weight:700}.preview-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:32px;color:#64748b;text-align:center;background:#f8fafc;width:100%;min-height:320px}.preview-empty strong{color:#334155;font-size:15px}.preview-empty span{max-width:520px;font-size:13px;line-height:1.6}.preview-info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.info-item{display:flex;gap:8px;padding:9px 12px;background:#f8fafc;border-radius:8px;min-width:0}.info-item span{color:#64748b;font-size:12px;flex:none}.info-item strong{color:#111827;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.defect-table{margin-top:2px}@media (max-width:1280px){.cam-hd{align-items:flex-start;flex-direction:column}.preview-info-grid{grid-template-columns:1fr}}@media (max-width:720px){.records-toolbar{align-items:stretch;flex-direction:column}.toolbar-filters{align-items:stretch;flex-direction:column}.image-search{width:100%}.toolbar-summary{justify-content:flex-start}}
 </style>

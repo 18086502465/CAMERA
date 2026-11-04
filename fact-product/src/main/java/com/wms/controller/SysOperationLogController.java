@@ -4,6 +4,7 @@ import com.wms.dto.log.OperationLogQueryDTO;
 import com.wms.repository.log.OperationLogRepository;
 import com.wms.vo.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -121,12 +122,19 @@ public class SysOperationLogController {
         return ResultVO.success(operationLogRepository.detail(id));
     }
 
+    /**
+     * <p><b>2026-11-04 修正</b>：补 {@code @PreAuthorize("hasRole('ADMIN')")}。
+     * 路径级 {@code SecurityConfig} 已有 {@code /api/logs/operation/** → ADMIN} 保护，
+     * 这里补方法级注解做双保险（与其它删除接口保持一致）。
+     */
+    @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/clear")
     public ResultVO<String> clear() {
         operationLogRepository.clear();
         return ResultVO.success("清空成功");
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     public ResultVO<String> delete(@PathVariable Long id) {
         operationLogRepository.delete(id);

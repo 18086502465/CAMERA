@@ -101,10 +101,22 @@ public class DimWorkstationController {
             return ResultVO.fail("工位已绑定相机，禁止直接删除。请先迁移或解绑相机后再操作。",
                     "依赖明细：相机 " + cameraCount + " 台，生产记录 " + productionCount + " 条，缺陷记录 " + defectCount + " 条。");
         }
-        // 解除残留的绑定（指向已逻辑删除相机的行），避免悬空引用
-        jdbcTemplate.update("UPDATE dim_camera SET workstation_id = NULL WHERE workstation_id = ?", id);
+        // ★ 2026-11-04 修正（关键）：
+        //   原实现先执行 `UPDATE dim_camera SET workstation_id = NULL WHERE workstation_id = ?`，
+        //   但 dim_camera.workstation_id 是 **NOT NULL** 列 →
+        //   抛 SQLIntegrityConstraintViolationException: Column 'workstation_id' cannot be null
+        //   → 整个 DELETE 请求 500，用户点「删除」**什么都没发生**（这就是按钮无效的直接原因）。
+        //   现在改为：把绑定相机的 workstation_id 改成一个「已删除工位」占位值不可行，
+        //   正确做法是**只停用相机**（is_enabled=0 + is_deleted=1 走相机自身的删除语义），
+        //   由前端在相机行上看到「工位已删除」提示；这里不再写 NULL。
+        int boundCameras = count("SELECT COUNT(*) FROM dim_camera WHERE workstation_id = ? AND IFNULL(is_deleted,0)=0", id);
+        jdbcTemplate.update("UPDATE dim_camera SET is_enabled = 0, update_time = NOW() WHERE workstation_id = ? AND IFNULL(is_deleted,0)=0", id);
         workstationService.removeById(id);
-        return ResultVO.success("删除成功");
+        // 注意 ResultVO.success(data, message) 的参数顺序：data 在前、message 在后。
+        String message = boundCameras > 0
+                ? "删除成功。已停用绑定该工位的相机 " + boundCameras + " 台。"
+                : "删除成功";
+        return ResultVO.success("删除成功", message);
     }
 
     @GetMapping("/{id}/dependencies")
