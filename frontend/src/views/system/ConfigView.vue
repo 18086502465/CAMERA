@@ -45,7 +45,16 @@
                 <span class="tree-label" :title="data.label">{{ data.label }}</span>
                 <span class="tree-meta">{{ treeTypeLabel(data.type) }}</span>
               </span>
-              <span v-if="data.count != null" class="tree-count">{{ data.count }}</span>
+              <!--
+                ★ 2026-11-04：徽标数字必须说明「数的是什么」。
+                  原实现工厂/产线/工位三种层级都只显示一个裸数字，
+                  而数字含义各不相同（产线数 / 工位数 / 相机数），
+                  导致现场把「产线徽标=2（2 个工位）」误读成「下面有 2 个相机」。
+                  现在统一显示为「2 工位」「2 相机」，鼠标悬停给出完整说明。
+              -->
+              <span v-if="data.count != null" class="tree-count" :title="treeCountTitle(data)">
+                {{ data.count }}<i class="tree-count-unit">{{ treeCountUnit(data) }}</i>
+              </span>
             </span>
           </template>
         </el-tree>
@@ -96,13 +105,29 @@
         <OperationLog v-if="activeMenu === 'operationLog'" />
         <div v-else class="content-panel">
           <div v-if="isConfigContext" class="delivery-summary">
-            <div class="summary-card"><span>工厂</span><strong>{{ factoryList.length }}</strong></div>
-            <div class="summary-card"><span>产线</span><strong>{{ lineList.length }}</strong></div>
-            <div class="summary-card"><span>工位</span><strong>{{ stationList.length }}</strong></div>
-            <div class="summary-card"><span>相机</span><strong>{{ cameraList.length }}</strong></div>
-            <div class="summary-card warn"><span>有产线无工位</span><strong>{{ linesWithoutStations }}</strong></div>
-            <div class="summary-card warn"><span>有工位无相机</span><strong>{{ stationsWithoutCameras }}</strong></div>
-            <div class="summary-card danger"><span>相机未绑定工位</span><strong>{{ camerasWithoutStation }}</strong></div>
+            <div class="summary-group">
+              <span class="summary-group-title">配置规模</span>
+              <div class="summary-cards">
+                <div class="summary-card"><span>工厂</span><strong>{{ factoryList.length }}</strong></div>
+                <div class="summary-card"><span>产线</span><strong>{{ lineList.length }}</strong></div>
+                <div class="summary-card"><span>工位</span><strong>{{ stationList.length }}</strong></div>
+                <div class="summary-card"><span>相机</span><strong>{{ cameraList.length }}</strong></div>
+              </div>
+            </div>
+            <div class="summary-group">
+              <span class="summary-group-title">完整性检查</span>
+              <div class="summary-cards">
+                <div class="summary-card warn" :class="{ 'is-clear': linesWithoutStations === 0 }">
+                  <span>有产线无工位</span><strong>{{ linesWithoutStations }}</strong>
+                </div>
+                <div class="summary-card warn" :class="{ 'is-clear': stationsWithoutCameras === 0 }">
+                  <span>有工位无相机</span><strong>{{ stationsWithoutCameras }}</strong>
+                </div>
+                <div class="summary-card danger" :class="{ 'is-clear': camerasWithoutStation === 0 }">
+                  <span>相机未绑定工位</span><strong>{{ camerasWithoutStation }}</strong>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="panel-toolbar">
             <el-button v-if="addTargetType" type="primary" size="default" @click="openDialog(addTargetType)">
@@ -418,20 +443,52 @@ const stationCountByFactory = computed(() => stationList.value.reduce((acc, s) =
   if (line?.factoryId != null) acc[line.factoryId] = (acc[line.factoryId] || 0) + 1
   return acc
 }, {}))
-const cameraCountByStation = computed(() => cameraList.value.reduce((acc, c) => {
-  const id = c.workstationId
-  if (id != null) acc[id] = (acc[id] || 0) + 1
+/**
+ * 工位 → 相机数。
+ *
+ * ★ 2026-11-04 修正口径：
+ *   相机与工位的**绑定关系真实来源是 dim_camera**（后端 /api/cascade/all 已按它统计并下发
+ *   station.cameraCount），而 camera_status 只是**设备上报的状态快照**。
+ *   原实现只按 camera_status 统计，导致：
+ *     ① 新绑定但尚未上报心跳的相机不计数 → 工位显示「0 台相机」，与实际配置不符；
+ *     ② 页面「相机数」列与「工位相机绑定」实际状态对不上。
+ *   现在优先用后端下发的绑定数；后端未提供时（老接口）才退化为 camera_status 统计。
+ */
+const cameraCountByStation = computed(() => {
+  const acc = {}
+  // 1) 绑定真源（dim_camera）
+  stationList.value.forEach(s => {
+    if (s.boundCameraCount != null) {
+      acc[s.workstationId] = s.boundCameraCount
+    }
+  })
+  // 2) 后端未下发绑定数时，退化为 camera_status 快照统计
+  const missing = stationList.value.filter(s => s.boundCameraCount == null)
+  if (missing.length) {
+    cameraList.value.forEach(c => {
+      const id = c.workstationId
+      if (id == null) return
+      if (!missing.some(s => sameId(s.workstationId, id))) return
+      acc[id] = (acc[id] || 0) + 1
+    })
+  }
   return acc
-}, {}))
-const cameraCountByLine = computed(() => cameraList.value.reduce((acc, c) => {
-  if (c.lineId != null) acc[c.lineId] = (acc[c.lineId] || 0) + 1
+})
+const cameraCountByLine = computed(() => {
+  const acc = {}
+  cameraList.value.forEach(c => {
+    if (c.lineId != null) acc[c.lineId] = (acc[c.lineId] || 0) + 1
+  })
   return acc
-}, {}))
-const cameraCountByFactory = computed(() => cameraList.value.reduce((acc, c) => {
-  const line = lineList.value.find(l => sameId(l.lineId, c.lineId))
-  if (line?.factoryId != null) acc[line.factoryId] = (acc[line.factoryId] || 0) + 1
+})
+const cameraCountByFactory = computed(() => {
+  const acc = {}
+  cameraList.value.forEach(c => {
+    const line = lineList.value.find(l => sameId(l.lineId, c.lineId))
+    if (line?.factoryId != null) acc[line.factoryId] = (acc[line.factoryId] || 0) + 1
+  })
   return acc
-}, {}))
+})
 const linesWithoutStations = computed(() => lineList.value.filter(l => !(stationCountByLine.value[l.lineId] > 0)).length)
 const stationsWithoutCameras = computed(() => stationList.value.filter(s => !(cameraCountByStation.value[s.workstationId] > 0)).length)
 const camerasWithoutStation = computed(() => cameraList.value.filter(c => !c.workstationId).length)
@@ -448,6 +505,26 @@ const factoryNameByCamera = (row) => {
 }
 const treeIcon = (type) => ({ root: '总', factory: '厂', line: '线', workstation: '位', camera: '机' }[type] || '•')
 const treeTypeLabel = (type) => ({ root: '全部范围', factory: '工厂', line: '产线', workstation: '工位', camera: '相机' }[type] || '配置项')
+/**
+ * 徽标数字的单位与完整说明。
+ *
+ * ★ 2026-11-04：三种层级徽标的数字含义完全不同，必须显式标注，
+ *   否则「产线徽标=2」会被误读成「这条产线下有 2 个相机」。
+ */
+const treeCountUnit = (data) => {
+  if (data.type === 'root') return '厂'
+  if (data.type === 'factory') return '线'
+  if (data.type === 'line') return '位'
+  if (data.type === 'workstation') return '机'
+  return ''
+}
+const treeCountTitle = (data) => {
+  if (data.type === 'root') return `共 ${data.count} 个工厂`
+  if (data.type === 'factory') return `该工厂下共 ${data.count} 条产线`
+  if (data.type === 'line') return `该产线下共 ${data.count} 个工位`
+  if (data.type === 'workstation') return `该工位下共 ${data.count} 台相机`
+  return String(data.count)
+}
 const configTreeData = computed(() => [{
   key: 'root',
   type: 'root',
@@ -672,7 +749,17 @@ const fetchAll = async () => {
     ;(f.lines || []).forEach(l => {
       lines.push({ lineId: l.lineId, lineName: l.lineName, lineCode: l.lineCode, factoryId: f.factoryId, stationCount: (l.stations || []).length })
       ;(l.stations || []).forEach(s => {
-        stations.push({ workstationId: s.workstationId || s.stationId, stationId: s.stationId || s.workstationId, stationName: s.stationName, stationCode: s.stationCode, lineId: l.lineId, description: s.description || '' })
+        stations.push({
+          workstationId: s.workstationId || s.stationId,
+          stationId: s.stationId || s.workstationId,
+          stationName: s.stationName,
+          stationCode: s.stationCode,
+          lineId: l.lineId,
+          description: s.description || '',
+          // ★ 2026-11-04：后端按 dim_camera（绑定关系真实来源）返回的相机数。
+          //   缺失时置 null，前端会退化为按 camera_status 统计。
+          boundCameraCount: typeof s.cameraCount === 'number' ? s.cameraCount : null
+        })
       })
     })
   })
@@ -955,6 +1042,82 @@ onMounted(fetchAll)
 .import-upload :deep(.el-upload-dragger) { border-radius: 14px; background: #f8fafc; }
 .upload-icon { font-size: 34px; margin: 12px 0 4px; }
 .import-result { margin-top: 16px; padding: 14px; border-radius: 14px; border: 1px solid #e5e7eb; background: #fff; }
+
+/* ===================================================================
+ * 配置摘要区（delivery-summary）
+ *
+ * ★ 2026-11-04 修复：本区块的模板写的是 .delivery-summary / .summary-card，
+ *   但组件自身的 <style> 里**从未定义**这两个类名 ——
+ *   于是退化成浏览器默认的行内流布局，表现为截图里的「裸文本一行行堆叠」：
+ *     标签与数字挤在一起、没有卡片、没有间距、数字与文字同字号同颜色。
+ *   现在补齐完整样式，并与同目录 OperationLog.vue 的 .summary-card 保持一致：
+ *     圆角 16px、1px 浅边框、白色底、极轻阴影、数字 24px 加粗。
+ *
+ * 设计要点：
+ *   1. 拆成「配置规模」与「完整性检查」两个语义组，用组标题+分隔线区隔，
+ *      避免 7 张卡片平铺时用户分不清哪几个是规模、哪几个是问题；
+ *   2. 告警类卡片数值归零时降级为中性绿并显示「正常」语义色，
+ *      避免「0 个问题」仍显示成刺眼的橙/红（现场常态是 0，不该天天报警）；
+ *   3. 规模类卡片用蓝色系主色，告警类用橙/红，与左侧树的层级配色呼应；
+ *   4. 卡片等宽平铺（repeat(auto-fit, minmax)），窄屏自动折行，不出现挤压。
+ * =================================================================== */
+.delivery-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 18px 24px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #f8fafc 0%, #ffffff 100%);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, .04);
+}
+.summary-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 0 0 auto; }
+.summary-group + .summary-group { padding-left: 24px; border-left: 1px dashed #e2e8f0; }
+.summary-group-title {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  line-height: 1;
+  padding-left: 2px;
+}
+/* ★ 卡片横向流动。
+   注意：不能用 repeat(auto-fit, minmax(84px,1fr)) ——
+   .summary-group 是 flex item，宽度按内容收缩，
+   auto-fit 在收缩容器里会塌陷成单列（实测卡片竖着排，占满竖向空间）。
+   改用 grid-auto-flow: column 让卡片始终横向展开，列宽由 minmax 兜底。 */
+.summary-cards { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(84px, 1fr); gap: 10px; }
+
+.summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 84px;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, .05);
+  transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+}
+.summary-card:hover { transform: translateY(-1px); box-shadow: 0 6px 14px rgba(15, 23, 42, .08); border-color: #dbe3ef; }
+.summary-card span { color: #64748b; font-size: 12px; line-height: 1.2; white-space: nowrap; }
+.summary-card strong { color: #1d4ed8; font-size: 22px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+
+/* 告警语义：橙（缺配置）/ 红（绑定异常） */
+.summary-card.warn { border-color: #fde68a; background: #fffbeb; }
+.summary-card.warn strong { color: #d97706; }
+.summary-card.warn:hover { border-color: #fbbf24; }
+.summary-card.danger { border-color: #fecaca; background: #fff1f2; }
+.summary-card.danger strong { color: #dc2626; }
+.summary-card.danger:hover { border-color: #f87171; }
+
+/* 数值为 0 时回到中性态：现场常态是 0，不应长期显示告警色 */
+.summary-card.is-clear { border-color: #d1fae5; background: #ecfdf5; }
+.summary-card.is-clear strong { color: #059669; }
+.summary-card.is-clear:hover { border-color: #6ee7b7; }
 .result-title { font-size: 14px; font-weight: 800; color: #0f172a; margin-bottom: 10px; }
 .result-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; margin-bottom: 12px; }
 .result-grid div { padding: 10px; border-radius: 12px; background: #f8fafc; border: 1px solid #eef2f7; }
@@ -979,6 +1142,15 @@ onMounted(fetchAll)
   .import-intro { flex-direction: column; }
   .result-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .pager-row { flex-direction: column; align-items: flex-start; }
+  /* 摘要区窄屏：两个语义组改为上下堆叠，去掉左侧竖线 */
+  .delivery-summary { flex-direction: column; gap: 14px; }
+  .summary-group + .summary-group { padding-left: 0; border-left: none; padding-top: 14px; border-top: 1px dashed #e2e8f0; }
+}
+
+@media (max-width: 560px) {
+  .summary-cards { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-columns: auto; }
+  .summary-card { padding: 9px 12px; }
+  .summary-card strong { font-size: 20px; }
 }
 
 .tree-tools { display: flex; gap: 8px; margin: 10px 2px 12px; }
@@ -1002,7 +1174,9 @@ onMounted(fetchAll)
    现在允许换行完整展示；配合侧栏拖拽调宽，绝大多数情况一行即可放下。 */
 .tree-label { display: block; max-width: 100%; color: #1e293b; font-size: 13px; font-weight: 750; line-height: 1.3; white-space: normal; word-break: break-word; overflow-wrap: anywhere; }
 .tree-meta { color: #94a3b8; font-size: 11px; line-height: 1.15; }
-.tree-count { min-width: 24px; height: 20px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #f8fafc; border: 1px solid #e2e8f0; color: #475569; font-size: 11px; font-weight: 800; }
+.tree-count { min-width: 24px; height: 20px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; gap: 1px; border-radius: 999px; background: #f8fafc; border: 1px solid #e2e8f0; color: #475569; font-size: 11px; font-weight: 800; }
+/* ★ 2026-11-04：徽标单位（厂/线/位/机），消除「数字含义不明」导致的误读 */
+.tree-count-unit { font-style: normal; font-size: 10px; font-weight: 700; opacity: 0.75; }
 .config-tree :deep(.el-tree-node.is-current > .el-tree-node__content) .tree-count { background: #2563eb; border-color: #2563eb; color: #fff; }
 .sidebar-tools { margin-top: 12px; padding-top: 12px; border-top: 1px dashed #dbe3ef; }
 .sidebar-tools .nav-item { margin: 0 2px; border-left: none; border-radius: 12px; padding: 10px 12px; }

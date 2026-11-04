@@ -31,6 +31,9 @@ public class CascadeController {
     @Autowired
     private IDimShiftService shiftService;
 
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
     /**
      * 返回前端级联筛选所需的全量数据
      */
@@ -41,6 +44,14 @@ public class CascadeController {
         List<DimWorkstation> workstations = workstationService.list();
         List<DimProductBrand> brands = brandService.list();
         List<DimShift> shifts = shiftService.list();
+
+        // ★ 2026-11-04：附带每个工位「绑定的相机数」。
+        //   口径说明：相机与工位的**绑定关系真实来源是 dim_camera**（is_deleted=0），
+        //   而 camera_status 只是设备上报的**状态快照**（is_active=1 且可能尚未上报心跳）。
+        //   配置页「工位 → 相机数」若按 camera_status 统计，会出现
+        //   「刚绑定好、还没上报心跳的相机不计数」的偏差，
+        //   也无法反映 dim_camera 中真实存在的绑定关系。此处统一以 dim_camera 为准。
+        Map<Integer, Integer> cameraCountByStation = countCamerasByStation();
 
         // 构建树形级联结构：工厂 → 产线 → 工位
         List<Map<String, Object>> factoryTree = factories.stream().map(f -> {
@@ -57,7 +68,7 @@ public class CascadeController {
                 lineMap.put("lineName", l.getLineName());
                 lineMap.put("lineCode", l.getLineCode());
                 lineMap.put("stations", lineStations.stream()
-                    .map(this::buildStationMap)
+                    .map(w -> buildStationMap(w, cameraCountByStation.get(w.getStationId())))
                     .collect(Collectors.toList()));
                 return lineMap;
             }).collect(Collectors.toList());
@@ -92,7 +103,7 @@ public class CascadeController {
         }).collect(Collectors.toList()));
         result.put("flattenedLines", result.get("lines"));
         result.put("workstations", workstations.stream()
-            .map(this::buildStationMap)
+            .map(w -> buildStationMap(w, cameraCountByStation.get(w.getStationId())))
             .collect(Collectors.toList()));
         result.put("flattenedWorkstations", result.get("workstations"));
 
@@ -117,7 +128,32 @@ public class CascadeController {
         return ResultVO.success(result);
     }
 
-    private Map<String, Object> buildStationMap(DimWorkstation w) {
+    /**
+     * 统计各工位「有效绑定相机数」（{@code dim_camera} 中 {@code is_deleted=0}）。
+     *
+     * <p>用单条 GROUP BY 一次取回，避免逐工位查询产生 N+1。
+     */
+    private Map<Integer, Integer> countCamerasByStation() {
+        Map<Integer, Integer> result = new HashMap<>();
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT workstation_id, COUNT(*) AS cnt FROM dim_camera "
+                    + "WHERE IFNULL(is_deleted,0)=0 AND workstation_id IS NOT NULL GROUP BY workstation_id");
+            for (Map<String, Object> row : rows) {
+                Object wsId = row.get("workstation_id");
+                Object cnt = row.get("cnt");
+                if (wsId instanceof Number && cnt instanceof Number) {
+                    result.put(((Number) wsId).intValue(), ((Number) cnt).intValue());
+                }
+            }
+        } catch (Exception e) {
+            // 统计失败不应影响级联数据返回，退化为「前端按 camera_status 统计」
+            return new HashMap<>();
+        }
+        return result;
+    }
+
+    private Map<String, Object> buildStationMap(DimWorkstation w, Integer cameraCount) {
         Map<String, Object> sm = new LinkedHashMap<>();
         sm.put("stationId", w.getStationId());
         sm.put("workstationId", w.getStationId());
@@ -125,6 +161,7 @@ public class CascadeController {
         sm.put("stationCode", w.getStationCode());
         sm.put("stationName", w.getStationName());
         sm.put("stationLabel", buildStationLabel(w.getStationCode(), w.getStationName()));
+        sm.put("cameraCount", cameraCount == null ? 0 : cameraCount);
         return sm;
     }
 

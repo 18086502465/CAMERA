@@ -20,35 +20,66 @@
     </section>
 
     <section class="filter-card">
-      <el-date-picker v-model="timeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" value-format="YYYY-MM-DD HH:mm:ss" style="width:380px" @change="loadData" />
-      <el-select v-model="filters.productId" clearable filterable placeholder="全部产品" style="width:180px" @change="loadData">
+      <!--
+        ★ 2026-11-04：时间范围快捷选项。
+        原来只有日期时间选择器，默认「今天 00:00 → 现在」，
+        现场想看「昨天全天」或「近 7 天」必须手工改两次时间。
+        这里补一组快捷按钮，并记忆用户上次选择。
+      -->
+      <el-button-group class="range-shortcuts">
+        <el-button v-for="r in rangePresets" :key="r.key" size="small" :plain="activeRangeKey !== r.key" :type="activeRangeKey === r.key ? 'primary' : undefined" @click="applyRangePreset(r)">{{ r.label }}</el-button>
+      </el-button-group>
+      <el-date-picker v-model="timeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" value-format="YYYY-MM-DD HH:mm:ss" class="range-picker" @change="onTimeRangeChange" />
+      <el-select v-model="filters.productId" clearable filterable placeholder="全部产品" class="filter-ctrl" @change="loadData">
         <el-option v-for="p in metadata.products" :key="p.productId" :label="p.productName" :value="p.productId" />
       </el-select>
-      <el-select v-model="filters.shiftId" clearable placeholder="全部班次" style="width:140px" @change="loadData">
+      <el-select v-model="filters.shiftId" clearable placeholder="全部班次" class="filter-ctrl narrow" @change="loadData">
         <el-option v-for="s in metadata.shifts" :key="s.shiftId" :label="s.shiftName" :value="s.shiftId" />
       </el-select>
-      <el-select v-model="filters.cameraId" clearable filterable placeholder="全部相机" style="width:220px" @change="loadData">
+      <el-select v-model="filters.cameraId" clearable filterable placeholder="全部相机" class="filter-ctrl" @change="loadData">
         <el-option v-for="c in filteredCameras" :key="c.cameraId" :label="cameraOptionLabel(c)" :value="c.cameraId" />
       </el-select>
-      <el-select v-model="filters.defectTypeId" clearable filterable placeholder="全部缺陷类型" style="width:220px" @change="loadData">
+      <el-select v-model="filters.defectTypeId" clearable filterable placeholder="全部缺陷类型" class="filter-ctrl" @change="loadData">
         <el-option v-for="d in filteredDefectTypes" :key="d.defectTypeId" :label="d.defectName" :value="d.defectTypeId" />
       </el-select>
-      <el-select v-model="filters.severity" clearable placeholder="全部严重度" style="width:150px" @change="loadData">
-        <el-option label="HIGH" value="HIGH" />
-        <el-option label="MEDIUM" value="MEDIUM" />
-        <el-option label="LOW" value="LOW" />
+      <el-select v-model="filters.severity" clearable placeholder="全部严重度" class="filter-ctrl narrow" @change="loadData">
+        <el-option v-for="s in severityOptions" :key="s.value" :label="s.label" :value="s.value" />
       </el-select>
       <el-button plain @click="resetFilters">重置筛选</el-button>
       <el-tag :type="summary.aggregationLevel === 'DAY' ? 'warning' : 'info'">{{ summary.aggregationLevel === 'DAY' ? '日聚合' : '30分钟聚合' }}</el-tag>
     </section>
 
     <section class="kpi-grid" v-loading="loading">
-      <div class="kpi-card"><span>检测总数</span><strong>{{ number(summary.kpi.totalCount) }}</strong><small>{{ isDefectImageSource ? '缺陷图片张数（检测事件）' : '增量批次累计' }}</small></div>
-      <div class="kpi-card ok"><span>OK数</span><strong>{{ isDefectImageSource ? '—' : number(summary.kpi.okCount) }}</strong><small>{{ isDefectImageSource ? '当前数据源无良品样本' : '良品数量' }}</small></div>
-      <div class="kpi-card ng"><span>NG数</span><strong>{{ number(summary.kpi.ngCount) }}</strong><small>{{ isDefectImageSource ? '检出缺陷的图片数' : '异常数量' }}</small></div>
-      <div class="kpi-card yield"><span>良率</span><strong>{{ isDefectImageSource ? '—' : percent(summary.kpi.yieldRate) }}</strong><small>{{ isDefectImageSource ? '无良品样本，无法计算' : 'OK / 检测总数' }}</small></div>
-      <div class="kpi-card warn"><span>缺陷数</span><strong>{{ number(summary.kpi.defectCount) }}</strong><small>{{ isDefectImageSource ? '缺陷框总数' : '映射后的缺陷计数' }}</small></div>
-      <div class="kpi-card high"><span>高危缺陷</span><strong>{{ number(summary.kpi.highCount) }}</strong><small>{{ isDefectImageSource ? '严重度 HIGH 占比 ' + percent(summary.kpi.highCount && summary.kpi.defectCount ? summary.kpi.highCount * 100 / summary.kpi.defectCount : 0) : 'HIGH 等级缺陷' }}</small></div>
+      <!--
+        ★ 2026-11-04 指标卡重排。
+        原实现固定 6 张卡，其中「OK数」「良率」在缺陷图片通道下**恒为「—」**
+        （现场设备只上报缺陷图，没有良品样本，结构上就算不出良率），
+        导致最显眼的黄金位置有 1/3 是无效占位。
+        现在按数据源自适应：
+          · 有良品样本（走质量聚合表）→ 保持 6 张，OK数与良率照常显示；
+          · 无良品样本（走缺陷图片事实表）→ 合并为 1 张「良品样本」状态卡，
+            让 4 个真实指标（检测总数 / NG数 / 缺陷数 / 高危缺陷）占据主位，
+            良率缺口用一张明确的状态卡说明原因，而不是留两个「—」让人猜。
+      -->
+      <template v-if="!isDefectImageSource">
+        <div class="kpi-card"><span>检测总数</span><strong>{{ number(summary.kpi.totalCount) }}</strong><small>增量批次累计</small></div>
+        <div class="kpi-card ok"><span>OK数</span><strong>{{ number(summary.kpi.okCount) }}</strong><small>良品数量</small></div>
+        <div class="kpi-card ng"><span>NG数</span><strong>{{ number(summary.kpi.ngCount) }}</strong><small>异常数量</small></div>
+        <div class="kpi-card yield"><span>良率</span><strong>{{ percent(summary.kpi.yieldRate) }}</strong><small>OK / 检测总数</small></div>
+        <div class="kpi-card warn"><span>缺陷数</span><strong>{{ number(summary.kpi.defectCount) }}</strong><small>映射后的缺陷计数</small></div>
+        <div class="kpi-card high"><span>高危缺陷</span><strong>{{ number(summary.kpi.highCount) }}</strong><small>HIGH 等级缺陷</small></div>
+      </template>
+      <template v-else>
+        <div class="kpi-card"><span>检测总数</span><strong>{{ number(summary.kpi.totalCount) }}</strong><small>缺陷图片张数（检测事件）</small></div>
+        <div class="kpi-card ng"><span>NG数</span><strong>{{ number(summary.kpi.ngCount) }}</strong><small>检出缺陷的图片数</small></div>
+        <div class="kpi-card warn"><span>缺陷数</span><strong>{{ number(summary.kpi.defectCount) }}</strong><small>缺陷框总数</small></div>
+        <div class="kpi-card high"><span>高危缺陷</span><strong>{{ number(summary.kpi.highCount) }}</strong><small>严重度「高危」占比 {{ percent(summary.kpi.highCount && summary.kpi.defectCount ? summary.kpi.highCount * 100 / summary.kpi.defectCount : 0) }}</small></div>
+        <div class="kpi-card pending">
+          <span>良品样本</span>
+          <strong>未接入</strong>
+          <small>设备仅上报缺陷图，无良品样本 → 良率无法计算</small>
+        </div>
+      </template>
     </section>
 
     <div v-if="summary.dataSourceMessage" class="source-hint" :class="'src-' + String(summary.dataSource || '').toLowerCase()">
@@ -272,7 +303,7 @@
           </div>
           <div class="form-row">
             <el-form-item label="独立缺陷" class="row-item"><el-select v-model="widgetForm.filterDefectTypeId" clearable filterable placeholder="全部缺陷类型"><el-option v-for="d in metadata.defectTypes" :key="d.defectTypeId" :label="d.defectName" :value="d.defectTypeId" /></el-select></el-form-item>
-            <el-form-item label="独立严重度" class="row-item"><el-select v-model="widgetForm.filterSeverity" clearable placeholder="全部严重度"><el-option label="HIGH" value="HIGH" /><el-option label="MEDIUM" value="MEDIUM" /><el-option label="LOW" value="LOW" /></el-select></el-form-item>
+            <el-form-item label="独立严重度" class="row-item"><el-select v-model="widgetForm.filterSeverity" clearable placeholder="全部严重度"><el-option v-for="s in severityOptions" :key="s.value" :label="s.label" :value="s.value" /></el-select></el-form-item>
           </div>
         </div>
       </el-form>
@@ -518,6 +549,22 @@ const fallbackWidgetTypes = [
 const fallbackDimensions = [
   { code: 'time', name: '时间' }, { code: 'line', name: '产线' }, { code: 'workstation', name: '工位' }, { code: 'camera', name: '相机' }, { code: 'product', name: '产品' }, { code: 'defectType', name: '缺陷类型' }, { code: 'shift', name: '班次' }
 ]
+
+/**
+ * 严重度选项（★ 2026-11-04 中文显示）。
+ *
+ * 原来两处筛选器（顶部全局筛选 + 图表独立筛选）都直接硬编码
+ * `<el-option label="HIGH" value="HIGH" />`，
+ * 界面把 HIGH / MEDIUM / LOW 三个英文枚举裸露给现场用户。
+ * 现场是中文环境，应显示「高危 / 中等 / 轻微」，
+ * **value 保持英文不变** —— 后端 severity 字段存的就是英文枚举。
+ */
+const severityOptions = [
+  { label: '高危', value: 'HIGH' },
+  { label: '中等', value: 'MEDIUM' },
+  { label: '轻微', value: 'LOW' }
+]
+const severityText = (v) => severityOptions.find(o => o.value === String(v || '').toUpperCase())?.label || v || '-'
 const metricOptions = [
   { label: '工厂总览（厂长视角）', value: 'plantOverview' },
   { label: '核心质量指标', value: 'quality' },
@@ -563,7 +610,7 @@ watch(() => injectedFilters.value, async () => { currentDashboardId.value = null
 watch([visibleWidgets, () => summary.trend, () => summary.defectRanking, () => summary.defectPareto, () => summary.severityDistribution, () => summary.defectTrend, () => summary.stationRanking, () => summary.cameraRanking, () => summary.defectPivot], () => renderAllCharts(), { deep: true })
 watch([() => widgetDialogVisible.value, () => widgetForm.widgetType, () => widgetForm.metric, () => widgetForm.width, () => widgetForm.height, () => summary.trend, () => summary.defectRanking, () => summary.defectPareto, () => summary.severityDistribution, () => summary.defectTrend, () => summary.stationRanking, () => summary.cameraRanking], () => renderPreviewChart(), { deep: true })
 
-onMounted(async () => { await loadMetadata(); await loadDashboards(); await loadDashboard(); await loadData(); await loadAggregationJobs(); await loadAggregationSchedule(); window.addEventListener('resize', resizeCharts) })
+onMounted(async () => { restoreRangePreset(); await loadMetadata(); await loadDashboards(); await loadDashboard(); await loadData(); await loadAggregationJobs(); await loadAggregationSchedule(); window.addEventListener('resize', resizeCharts) })
 onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); window.removeEventListener('mousemove', onResizeMove); window.removeEventListener('mouseup', endResize); chartInstances.forEach(i => i.dispose()); chartInstances.clear(); disposePresentationCharts(); disposePreviewChart() })
 
 async function loadMetadata(){ try{ const data=(await getAnalyticsMetadata()).data?.data||{}; Object.assign(metadata,{products:data.products||[],defectTypes:data.defectTypes||[],positions:data.positions||[],cameras:data.cameras||[],shifts:data.shifts||[],widgetTypes:data.widgetTypes||[],dimensions:data.dimensions||[]}) }catch(e){ ElMessage.error('加载统计元数据失败：'+errorMessage(e)) } }
@@ -738,8 +785,69 @@ function paretoOption(rows){
 function pivotColumnsFor(w){ const d=summaryFor(w); const src=(d.defectPivot||[]).map(r=>({defectTypeId:r.defectTypeId,defectName:r.defectName})); const source=src.length?src:filteredDefectTypes.value; const map=new Map(); source.forEach(x=>map.set(x.defectTypeId,x)); return Array.from(map.values()).slice(0,30) }
 function pivotRowsFor(w){ const d=summaryFor(w); const productMap=new Map(metadata.products.map(p=>[p.productId,p.productName])); const rows=new Map(); (d.defectPivot||[]).forEach(item=>{ const pid=item.productId||filters.productId||0; if(!rows.has(pid)) rows.set(pid,{productId:pid,productName:productMap.get(pid)||item.productName||'当前产品'}); rows.get(pid)[item.defectTypeId]=item.defectCount }); if(!rows.size&&filters.productId) rows.set(filters.productId,{productId:filters.productId,productName:productMap.get(filters.productId)||'当前产品'}); return Array.from(rows.values()) }
 
-function resetFilters(){ timeRange.value=defaultRange(); Object.assign(filters,{productId:null,shiftId:null,cameraId:null,defectTypeId:null,severity:null}); loadData() }
+function resetFilters(){ timeRange.value=defaultRange(); activeRangeKey.value='today'; Object.assign(filters,{productId:null,shiftId:null,cameraId:null,defectTypeId:null,severity:null}); loadData() }
 function defaultRange(){ const now=new Date(), start=new Date(now.getFullYear(),now.getMonth(),now.getDate(),0,0,0); return [formatDate(start),formatDate(now)] }
+
+/**
+ * ★ 2026-11-04：时间范围快捷选项。
+ *
+ * 现场常用「昨天全天」「近 7 天」这类口径，原来只能手工改两次时间。
+ * 这里提供 5 个快捷档位，并把用户最后选择记到 localStorage，
+ * 下次进入页面直接恢复（现场看板是每日固定打开的）。
+ */
+const RANGE_PRESET_KEY = 'camera-analytics-range-preset'
+const rangePresets = [
+  { key: 'today', label: '今天' },
+  { key: 'yesterday', label: '昨天' },
+  { key: 'last7', label: '近7天' },
+  { key: 'last30', label: '近30天' },
+  { key: 'thisMonth', label: '本月' }
+]
+const activeRangeKey = ref('today')
+
+function rangeOfPreset(key){
+  const now = new Date()
+  const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0)
+  if (key === 'yesterday') {
+    const y = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+    return [formatDate(dayStart(y)), formatDate(new Date(y.getFullYear(), y.getMonth(), y.getDate(), 23, 59, 59))]
+  }
+  if (key === 'last7') {
+    const s = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)
+    return [formatDate(dayStart(s)), formatDate(now)]
+  }
+  if (key === 'last30') {
+    const s = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29)
+    return [formatDate(dayStart(s)), formatDate(now)]
+  }
+  if (key === 'thisMonth') {
+    return [formatDate(new Date(now.getFullYear(), now.getMonth(), 1)), formatDate(now)]
+  }
+  return defaultRange()
+}
+
+function applyRangePreset(preset){
+  activeRangeKey.value = preset.key
+  timeRange.value = rangeOfPreset(preset.key)
+  try { localStorage.setItem(RANGE_PRESET_KEY, preset.key) } catch (e) { /* 隐私模式忽略 */ }
+  loadData()
+}
+
+/** 手工改时间后，快捷按钮不再高亮（避免"看起来是近7天其实不是"） */
+function onTimeRangeChange(){
+  activeRangeKey.value = ''
+  loadData()
+}
+
+/** 恢复上次使用的快捷档位 */
+function restoreRangePreset(){
+  let key = ''
+  try { key = localStorage.getItem(RANGE_PRESET_KEY) || '' } catch (e) { key = '' }
+  if (rangePresets.some(r => r.key === key)) {
+    activeRangeKey.value = key
+    timeRange.value = rangeOfPreset(key)
+  }
+}
 function formatDate(d){ const pad=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds()) }
 function parseJsonField(v,f){ if(v==null||v==='') return f; if(typeof v==='object') return v; try{return JSON.parse(v)}catch{return f} }
 function widgetMetric(w){ return parseJsonField(w?.metricJson,{}).metric||defaultMetricByType(w?.widgetType) }
@@ -754,7 +862,7 @@ function defaultMetricByType(t){ return {KPI:'quality',LINE:'trend',BAR:'station
 function defaultDimensionsByMetric(m){ return {plantOverview:['time'],quality:['time'],trend:['time'],defectTrend:['time'],defectPareto:['defectType'],defectRanking:['defectType'],severityDistribution:['severity'],stationRanking:['workstation'],cameraRanking:['camera'],stackDefectBySeverity:['defectType','severity'],defectPivot:['product','defectType'],mappingExceptions:['camera','product','defectType']}[m]||[] }
 function widgetSort(a,b){ return Number(a.sortOrder||0)-Number(b.sortOrder||0)||Number(a.widgetId||0)-Number(b.widgetId||0) }
 function cameraOptionLabel(c){ return (c.cameraName||c.cameraCode||'未命名相机')+(c.cameraCode?'（'+c.cameraCode+'）':'') }
-function independentFilterText(w){ const f=parseJsonField(w.filterJson,{}), names=[]; if(f.productId) names.push('产品='+idName(metadata.products,'productId','productName',f.productId)); if(f.cameraId) names.push('相机='+idName(metadata.cameras,'cameraId','cameraName',f.cameraId)); if(f.defectTypeId) names.push('缺陷='+idName(metadata.defectTypes,'defectTypeId','defectName',f.defectTypeId)); if(f.severity) names.push('严重度='+f.severity); return names.length?names.join(' / '):'独立筛选：全部范围' }
+function independentFilterText(w){ const f=parseJsonField(w.filterJson,{}), names=[]; if(f.productId) names.push('产品='+idName(metadata.products,'productId','productName',f.productId)); if(f.cameraId) names.push('相机='+idName(metadata.cameras,'cameraId','cameraName',f.cameraId)); if(f.defectTypeId) names.push('缺陷='+idName(metadata.defectTypes,'defectTypeId','defectName',f.defectTypeId)); if(f.severity) names.push('严重度='+severityText(f.severity)); return names.length?names.join(' / '):'独立筛选：全部范围' }
 function idName(list,idKey,nameKey,id){ return list.find(x=>String(x[idKey])===String(id))?.[nameKey]||id }
 function compactObject(obj){ const out={}; Object.keys(obj).forEach(k=>{ if(obj[k]!==null&&obj[k]!==undefined&&obj[k]!=='') out[k]=obj[k] }); return out }
 function assertSuccess(res){ const body=res?.data||{}; if(body.code&&Number(body.code)!==200) throw new Error(body.message||'接口返回失败') }
@@ -775,8 +883,21 @@ function triggerSourceText(s){ return {MANUAL:'手动执行',SCHEDULE:'夜间自
 .hero-card h2{margin:0 0 8px;font-size:24px;color:#0f172a}.hero-card p{margin:0;color:#64748b;line-height:1.7}
 .hero-actions,.filter-card,.ops-actions,.canvas-actions,.card-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.hero-actions{justify-content:flex-end}
 .filter-card,.ops-card{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:16px;border-radius:16px;background:#fff;border:1px solid #e5e7eb;box-shadow:0 1px 4px rgba(15,23,42,.06)}.ops-card{justify-content:space-between}.ops-card h3{margin:0 0 4px;color:#0f172a;font-size:16px}.ops-card p{margin:0;color:#64748b;font-size:13px}
+/* ★ 2026-11-04：时间范围快捷按钮组 + 日期选择器响应式宽度 */
+.range-shortcuts{display:inline-flex;flex-shrink:0}
+.range-picker{width:380px;max-width:100%}
+/* ★ 2026-11-04：筛选控件自适应宽度（原为固定 px，窄屏必然溢出/换行错乱） */
+.filter-ctrl{flex:1 1 180px;min-width:150px;max-width:220px}
+.filter-ctrl.narrow{flex:0 1 140px;min-width:120px;max-width:150px}
 .aggregation-card{align-items:flex-start;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 58%,#f8fafc 100%);border-color:#dbeafe}.aggregation-copy{max-width:860px}.ops-title-row,.panel-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}.job-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.job-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;background:#f1f5f9;border:1px solid #e2e8f0;color:#475569;font-size:12px}.job-chip b{color:#0f172a}.job-chip em{font-style:normal;font-weight:800}.job-chip .status-success{color:#16a34a}.job-chip .status-running{color:#d97706}.job-chip .status-failed{color:#dc2626}.schedule-line{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;color:#64748b;font-size:12px}.schedule-line b{color:#2563eb}
-.kpi-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}.kpi-card{padding:16px;border-radius:16px;background:#fff;border:1px solid #e5e7eb;box-shadow:0 1px 4px rgba(15,23,42,.06)}.kpi-card span{display:block;color:#64748b;font-size:13px;font-weight:700;margin-bottom:8px}.kpi-card strong{display:block;color:#0f172a;font-size:26px;line-height:1}.kpi-card small{display:block;margin-top:9px;color:#94a3b8}.kpi-card.ok strong{color:#16a34a}.kpi-card.ng strong,.kpi-card.warn strong{color:#dc2626}.kpi-card.yield strong{color:#2563eb}.kpi-card.high strong{color:#b91c1c}.source-hint{display:flex;align-items:center;gap:10px;margin:-4px 0 4px;padding:9px 14px;border-radius:10px;font-size:12px;line-height:1.5;border:1px solid #dbeafe;background:#eff6ff;color:#1d4ed8}.source-hint b{font-weight:700;white-space:nowrap}.source-hint.src-defect_image{border-color:#fed7aa;background:#fff7ed;color:#c2410c}.plant-overview-grid{grid-template-columns:repeat(7,minmax(0,1fr))}.plant-overview-grid b.high{color:#dc2626}.plant-overview-grid b.top{color:#c2410c;font-size:16px}.plant-overview-grid small{display:block;margin-top:4px;color:#94a3b8;font-size:11px;font-weight:400}.presentation-quality-grid.plant-overview-grid{grid-template-columns:repeat(7,minmax(0,1fr))}.presentation-quality-grid b.high{color:#dc2626}.presentation-quality-grid b.top{color:#c2410c;font-size:22px}.presentation-quality-grid small{display:block;margin-top:6px;color:#94a3b8;font-size:12px;font-weight:400}
+/* ★ 2026-11-04：指标卡网格改为自适应列数。
+   原来固定 repeat(6,1fr)，在「无良品样本」形态下只有 5 张卡 → 末尾留一格空白。
+   改用 auto-fit + minmax，卡片数量变化时自动均分铺满，不留空位。 */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px}.kpi-card{padding:16px;border-radius:16px;background:#fff;border:1px solid #e5e7eb;box-shadow:0 1px 4px rgba(15,23,42,.06)}.kpi-card span{display:block;color:#64748b;font-size:13px;font-weight:700;margin-bottom:8px}.kpi-card strong{display:block;color:#0f172a;font-size:26px;line-height:1}.kpi-card small{display:block;margin-top:9px;color:#94a3b8}.kpi-card.ok strong{color:#16a34a}.kpi-card.ng strong,.kpi-card.warn strong{color:#dc2626}.kpi-card.yield strong{color:#2563eb}.kpi-card.high strong{color:#b91c1c}
+/* ★ 2026-11-04：良品样本未接入的状态卡（灰色中性态，与其它彩色指标卡区分） */
+.kpi-card.pending{border-style:dashed;border-color:#cbd5e1;background:#f8fafc}
+.kpi-card.pending strong{color:#64748b;font-size:20px;line-height:1.3}
+.kpi-card.pending small{color:#94a3b8;line-height:1.5}.source-hint{display:flex;align-items:center;gap:10px;margin:-4px 0 4px;padding:9px 14px;border-radius:10px;font-size:12px;line-height:1.5;border:1px solid #dbeafe;background:#eff6ff;color:#1d4ed8}.source-hint b{font-weight:700;white-space:nowrap}.source-hint.src-defect_image{border-color:#fed7aa;background:#fff7ed;color:#c2410c}.plant-overview-grid{grid-template-columns:repeat(7,minmax(0,1fr))}.plant-overview-grid b.high{color:#dc2626}.plant-overview-grid b.top{color:#c2410c;font-size:16px}.plant-overview-grid small{display:block;margin-top:4px;color:#94a3b8;font-size:11px;font-weight:400}.presentation-quality-grid.plant-overview-grid{grid-template-columns:repeat(7,minmax(0,1fr))}.presentation-quality-grid b.high{color:#dc2626}.presentation-quality-grid b.top{color:#c2410c;font-size:22px}.presentation-quality-grid small{display:block;margin-top:6px;color:#94a3b8;font-size:12px;font-weight:400}
 .builder-layout{display:grid;grid-template-columns:220px minmax(0,1fr) 260px;gap:16px;align-items:start}.widget-palette,.config-panel,.canvas{border-radius:18px;background:#fff;border:1px solid #e5e7eb;box-shadow:0 1px 4px rgba(15,23,42,.06)}.widget-palette,.config-panel{padding:16px;position:sticky;top:140px}.canvas{padding:16px;min-width:0}.widget-palette h3,.config-panel h3{margin:0 0 12px;font-size:16px;color:#0f172a}.panel-tip{margin:-4px 0 12px;color:#64748b;font-size:12px;line-height:1.6}
 .widget-btn{width:100%;border:1px solid #e5e7eb;background:#f8fafc;border-radius:14px;padding:12px;text-align:left;margin-bottom:10px;cursor:pointer;transition:.15s}.widget-btn:hover{border-color:#93c5fd;background:#eff6ff;transform:translateY(-1px)}.widget-btn b{display:block;color:#0f172a;margin-bottom:4px}.widget-btn span{color:#64748b;font-size:12px;line-height:1.5}
 .canvas-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}.canvas-head h3{margin:0 0 4px;color:#0f172a}.canvas-head p{margin:0;color:#64748b;font-size:13px}.chart-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
@@ -792,7 +913,7 @@ function triggerSourceText(s){ return {MANUAL:'手动执行',SCHEDULE:'夜间自
 :global(.analytics-config-dialog .el-dialog__body){overflow:auto;max-height:calc(92vh - 126px);padding-bottom:14px}
 :global(.analytics-config-dialog .el-dialog__footer){position:sticky;bottom:0;z-index:2;background:#fff;border-top:1px solid #eef2f7;padding:12px 20px}
 .presentation-dialog :deep(.el-dialog__header){display:none}.presentation-dialog :deep(.el-dialog__body){height:100vh;padding:0;background:#08111f}.presentation-shell{min-height:100vh;padding:22px;background:linear-gradient(135deg,#08111f 0%,#0f172a 54%,#111827 100%);color:#e5e7eb}.presentation-head{display:flex;justify-content:space-between;gap:20px;margin-bottom:16px;padding:16px 18px;border:1px solid rgba(148,163,184,.22);border-radius:20px;background:rgba(15,23,42,.72)}.presentation-head h2{margin:0 0 6px;font-size:26px;color:#fff}.presentation-head p{margin:0;color:#94a3b8}.presentation-actions{display:flex;gap:10px;flex-wrap:wrap}.presentation-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:16px}.presentation-kpis div{padding:15px 16px;border-radius:18px;background:rgba(255,255,255,.08);border:1px solid rgba(148,163,184,.18)}.presentation-kpis span{display:block;color:#94a3b8;font-size:12px;margin-bottom:8px}.presentation-kpis strong{font-size:28px;color:#fff}.presentation-kpis .ok{color:#4ade80}.presentation-kpis .ng,.presentation-kpis .warn{color:#fb7185}.presentation-kpis .yield{color:#60a5fa}.presentation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.presentation-grid.single{grid-template-columns:1fr}.presentation-card{padding:16px;border-radius:20px;background:rgba(255,255,255,.96);border:1px solid rgba(226,232,240,.9);min-height:360px;overflow:hidden;box-shadow:0 18px 36px rgba(0,0,0,.18)}.presentation-card.wide{grid-column:span 2}.presentation-card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}.presentation-card-head h3{margin:0;color:#0f172a}.presentation-card-head p{margin:4px 0 0;color:#64748b;font-size:12px}.presentation-echart{width:100%;height:var(--chart-height,330px)}.presentation-table-wrap{height:var(--chart-height,330px);min-height:260px}.presentation-quality-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.presentation-quality-grid div{padding:18px;border-radius:16px;background:#f8fafc;border:1px solid #e2e8f0}.presentation-quality-grid span{display:block;color:#64748b;font-size:13px;margin-bottom:10px}.presentation-quality-grid b{font-size:30px;color:#0f172a}.presentation-quality-grid b.ok{color:#16a34a}.presentation-quality-grid b.ng{color:#dc2626}.presentation-quality-grid b.yield{color:#2563eb}
-@media(max-width:1500px){.plant-overview-grid,.presentation-quality-grid.plant-overview-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:1280px){.builder-layout{grid-template-columns:1fr}.widget-palette,.config-panel{position:static}.kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.presentation-grid{grid-template-columns:1fr}.presentation-card.wide{grid-column:span 1}}@media(max-width:760px){.hero-card,.canvas-head,.presentation-head,.schedule-title,.job-table-head,.schedule-footer{flex-direction:column}.chart-grid,.form-row,.widget-guide{grid-template-columns:1fr}.metric-hint{margin-left:0}.chart-card.wide{grid-column:span 1}.quality-mini-grid,.presentation-quality-grid{grid-template-columns:1fr}.presentation-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1500px){.plant-overview-grid,.presentation-quality-grid.plant-overview-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:1280px){.builder-layout{grid-template-columns:1fr}.widget-palette,.config-panel{position:static}.kpi-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.presentation-grid{grid-template-columns:1fr}.presentation-card.wide{grid-column:span 1}}@media(max-width:760px){.hero-card,.canvas-head,.presentation-head,.schedule-title,.job-table-head,.schedule-footer{flex-direction:column}.chart-grid,.form-row,.widget-guide{grid-template-columns:1fr}.metric-hint{margin-left:0}.chart-card.wide{grid-column:span 1}.quality-mini-grid,.presentation-quality-grid{grid-template-columns:1fr}.presentation-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .wizard-presets { display: grid; grid-template-columns: 150px repeat(4, minmax(0, 1fr)); gap: 10px; align-items: stretch; margin: 12px 0 16px; padding: 12px; border: 1px solid #dbeafe; border-radius: 14px; background: #f8fbff; }
 .preset-copy { display: flex; flex-direction: column; justify-content: center; gap: 4px; }

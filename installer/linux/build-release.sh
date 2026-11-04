@@ -176,8 +176,13 @@ if tar -tvzf "$TARBALL" | grep -q '\\'; then
   die "产物里出现了反斜杠路径 —— 打包逻辑有问题，中止"
 fi
 SH_MODE=$(tar -tvzf "$TARBALL" | grep 'scripts/install.sh' | awk '{print $1}')
-if [[ "$SH_MODE" != "rwxr-xr-x" ]]; then
-  die "scripts/install.sh 权限是 ${SH_MODE}，应为 rwxr-xr-x —— 解压后无法执行"
+# ★ 2026-11-04 修正：`tar -tv` 输出的权限位是 **10 个字符**（含文件类型位），
+#   例如 `-rwxr-xr-x`。原实现拿它与 9 字符的 `rwxr-xr-x` 比较，
+#   永远不相等 → 打包在最后一步误报失败（产物本身权限是正确的）。
+#   现在改成去掉首位文件类型位后再比较。
+SH_MODE_PERM="${SH_MODE: -9}"
+if [[ "$SH_MODE_PERM" != "rwxr-xr-x" ]]; then
+  die "scripts/install.sh 权限是 ${SH_MODE}（权限位 ${SH_MODE_PERM}），应为 rwxr-xr-x —— 解压后无法执行"
 fi
 ok "产物权限自检通过（install.sh 为 755，无反斜杠路径）"
 
