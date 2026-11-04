@@ -35,15 +35,125 @@ cd "$ROOT_DIR"
 log "① 前端构建"
 cd "$FRONTEND_DIR"
 [[ -d node_modules ]] || npm install
+# ★ 必须先清空 dist/assets —— vite build **不清空**输出目录，
+#   会把上一次的 chunk 一起留在 dist 里。后果有两个：
+#     1) 打进 JAR 的产物里混着陈旧 chunk（JAR 体积虚增、来源不明）
+#     2) 「当前入口是哪个」无法判定 —— dist 里有多个 index-*.js，
+#        版本识别会出错，历史 chunk 保留机制形同虚设。
+rm -rf "${FRONTEND_DIR}/dist/assets"
+mkdir -p "${FRONTEND_DIR}/dist/assets"
 npm run build
 ok "前端产物：frontend/dist"
+NEW_ENTRY=$(grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' "${FRONTEND_DIR}/dist/index.html" 2>/dev/null | head -1 | sed -E 's#assets/index-([A-Za-z0-9_-]+)\.js#\1#')
+ok "本次构建的入口版本：${NEW_ENTRY:-未知}"
 
 # --- ② 前端产物并入后端 ------------------------------------------------------
 log "② 同步前端产物到后端 static 目录"
 # 这两份是同一份 Vite 产物的两份拷贝，必须一致，否则 JAR 里的页面会与 dist 不符
-rm -rf "${BACKEND_DIR}/src/main/resources/static/assets"
-cp -r "${FRONTEND_DIR}/dist/assets" "${BACKEND_DIR}/src/main/resources/static/assets"
-cp "${FRONTEND_DIR}/dist/index.html" "${BACKEND_DIR}/src/main/resources/static/index.html"
+#
+# ★ 2026-11-04：保留**上一版**的静态资源（与新版本共存于同一目录）
+#   原因（现场故障复现）：Vite 产物的 chunk 文件名带内容哈希，
+#   每次构建**全部改名**。用户浏览器里开着部署前打开的页面时，
+#   它的路由懒加载仍指向旧 chunk 名（如 ImagesView-3Im0_kdo.js），
+#   而新构建已把旧文件替换掉 → 404 →
+#     "Failed to fetch dynamically imported module" →
+#   vue-router 导航 Promise 被 reject → **点击完全没反应**（URL 不变、无后端请求）。
+#
+#   解法：把历史 chunk 保留在 static/assets/ 下（文件名带哈希，不会与新版本冲突），
+#   旧页面便仍能命中旧 chunk —— 现场不必强制刷新页面。
+#   代价：JAR 体积增加（每版约 +1.5MB），保留版数由 KEEP_STATIC_VERSIONS 控制（默认 3）。
+#
+#   实现：先把旧 assets 移到临时目录 → 写入新 assets → 再把旧的**平铺**拷回，
+#   并用一个 .versions 清单记录每个 chunk 属于哪一版，便于按版清理。
+KEEP_STATIC_VERSIONS="${KEEP_STATIC_VERSIONS:-3}"
+STATIC_DIR="${BACKEND_DIR}/src/main/resources/static"
+STATIC_ASSETS="${STATIC_DIR}/assets"
+
+OLD_ASSETS_TMP=""
+if [[ -d "${STATIC_ASSETS}" ]]; then
+  # ★ 上一版的入口 chunk 名：
+  #   static/assets 是**上一轮**同步进来的产物，其 index.html 指向的入口就是上一版入口。
+  #   取它，而不是扫描 assets 里任意一个 index-*.js ——
+  #   因为 static/assets 里可能并存多个历史版本的入口文件。
+  PREV_ENTRY_NAME=$(grep -oE 'assets/index-[A-Za-z0-9_-]+\.js' "${STATIC_DIR}/index.html" 2>/dev/null | head -1 | sed -E 's#assets/index-([A-Za-z0-9_-]+)\.js#\1#')
+  # 若 index.html 指向的入口不在 static 里（首次构建 / 已被覆盖），
+  # 退而求其次：取 assets 里与本次入口**不同**的那个 index-*.js
+  if [[ -z "$PREV_ENTRY_NAME" || ! -f "${STATIC_ASSETS}/index-${PREV_ENTRY_NAME}.js" ]]; then
+    PREV_ENTRY_NAME=""
+    while IFS= read -r cand; do
+      h=$(basename "$cand" | sed -E 's#index-([A-Za-z0-9_-]+)\.js#\1#')
+      if [[ "$h" != "$NEW_ENTRY" ]]; then PREV_ENTRY_NAME="$h"; break; fi
+    done < <(find "${STATIC_ASSETS}" -maxdepth 1 -type f -name 'index-*.js' 2>/dev/null | sort)
+  fi
+  OLD_ENTRY="$PREV_ENTRY_NAME"
+  if [[ -n "$OLD_ENTRY" ]]; then
+    OLD_ASSETS_TMP="$(mktemp -d)"
+    cp -r "${STATIC_ASSETS}/." "$OLD_ASSETS_TMP/" 2>/dev/null || true
+    ok "已暂存上一版静态资源（版本 ${OLD_ENTRY}）"
+  else
+    ok "无可保留的上一版静态资源（首次构建）"
+  fi
+fi
+
+rm -rf "${STATIC_ASSETS}"
+mkdir -p "${STATIC_ASSETS}"
+cp -r "${FRONTEND_DIR}/dist/assets/." "${STATIC_ASSETS}/"
+cp "${FRONTEND_DIR}/dist/index.html" "${STATIC_DIR}/index.html"
+if [[ -n "$OLD_ASSETS_TMP" && -d "$OLD_ASSETS_TMP" ]]; then
+  # 先读入已有清单
+  declare -A STATIC_VERSIONS=()
+  if [[ -f "${STATIC_ASSETS}/.versions" ]]; then
+    while IFS='=' read -r fname ver; do
+      [[ -n "$fname" ]] && STATIC_VERSIONS["$fname"]="$ver"
+    done < "${STATIC_ASSETS}/.versions"
+  fi
+  # 历史文件：文件名 → 版本
+  # ⚠️ 顺序很关键：必须**先**标当前版本（只针对本次 dist 的文件），
+  #    **再**标历史版本。否则历史文件会被后面的"标 current"覆盖成 current，
+  #    导致版本统计恒为 0、淘汰逻辑失效。
+  # 新版本文件（只取本次构建产物 dist 里的）
+  while IFS= read -r f; do
+    b=$(basename "$f")
+    STATIC_VERSIONS["$b"]="current"
+  done < <(find "${FRONTEND_DIR}/dist/assets" -maxdepth 1 -type f \( -name '*.js' -o -name '*.css' \) 2>/dev/null)
+
+  # 历史文件：文件名 → 版本（不覆盖已是 current 的）
+  while IFS= read -r f; do
+    b=$(basename "$f")
+    case "$b" in .versions) continue ;; esac
+    [[ -f "${FRONTEND_DIR}/dist/assets/$b" ]] && continue   # 本次产物里已有同名（哈希相同）
+    [[ -n "${STATIC_VERSIONS[$b]:-}" ]] && continue        # 已在清单里（更早的版本），保留原标记
+    install -m 0644 "$f" "${STATIC_ASSETS}/$b" 2>/dev/null || true
+    STATIC_VERSIONS["$b"]="${OLD_ENTRY}"
+  done < <(find "$OLD_ASSETS_TMP" -maxdepth 1 -type f \( -name '*.js' -o -name '*.css' \) 2>/dev/null)
+
+  # 按版本保留最近 N 版（current 永远保留）
+  if [[ "${#STATIC_VERSIONS[@]}" -gt 0 ]]; then
+    mapfile -t ALL_VERSIONS < <(printf '%s\n' "${STATIC_VERSIONS[@]}" | sort -u)
+    # 找出需要淘汰的版本（从旧到新）
+    mapfile -t HIST_VERSIONS < <(printf '%s\n' "${ALL_VERSIONS[@]}" | grep -v '^current$' | sort -u)
+    if [[ "${#HIST_VERSIONS[@]}" -gt "$KEEP_STATIC_VERSIONS" ]]; then
+      DROP_VERSIONS=("${HIST_VERSIONS[@]:0:$(( ${#HIST_VERSIONS[@]} - KEEP_STATIC_VERSIONS ))}")
+      for v in "${DROP_VERSIONS[@]}"; do
+        for fname in "${!STATIC_VERSIONS[@]}"; do
+          if [[ "${STATIC_VERSIONS[$fname]}" == "$v" ]]; then
+            rm -f "${STATIC_ASSETS}/${fname}"
+            unset "STATIC_VERSIONS[$fname]"
+          fi
+        done
+        ok "清理过旧静态版本: ${v}"
+      done
+    fi
+    # 写清单
+    : > "${STATIC_ASSETS}/.versions"
+    for fname in "${!STATIC_VERSIONS[@]}"; do
+      echo "${fname}=${STATIC_VERSIONS[$fname]}" >> "${STATIC_ASSETS}/.versions"
+    done
+    ok "静态资源历史版本保留数: ${#HIST_VERSIONS[@]}（上限 ${KEEP_STATIC_VERSIONS}）"
+  fi
+  rm -rf "$OLD_ASSETS_TMP"
+fi
+
 ok "已同步到 fact-product/src/main/resources/static"
 
 # --- ③ 后端打包 -------------------------------------------------------------
