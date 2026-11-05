@@ -10,6 +10,7 @@ import com.wms.device.infra.mapper.CameraStatusMapper;
 import com.wms.masterdata.infra.mapper.DimFactoryMapper;
 import com.wms.masterdata.infra.mapper.DimProductionLineMapper;
 import com.wms.masterdata.infra.mapper.DimWorkstationMapper;
+import com.wms.system.infra.repository.ConfigImportRepository;
 import com.wms.shared.common.ResultVO;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
@@ -25,7 +26,6 @@ import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -63,7 +63,7 @@ public class ConfigImportController {
     @Autowired private DimProductionLineMapper lineMapper;
     @Autowired private DimWorkstationMapper workstationMapper;
     @Autowired private CameraStatusMapper cameraStatusMapper;
-    @Autowired private JdbcTemplate jdbcTemplate;
+    @Autowired private ConfigImportRepository configImportRepository;
 
     @GetMapping("/template")
     public void downloadTemplate(HttpServletResponse response) throws Exception {
@@ -205,17 +205,7 @@ public class ConfigImportController {
             };
             writeRow(sheet.createRow(0), headers);
 
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                    "SELECT f.factory_code factoryCode, f.factory_name factoryName, f.address factoryAddress, " +
-                            "l.line_code lineCode, l.line_name lineName, " +
-                            "w.station_code stationCode, w.station_name stationName, " +
-                            "c.camera_code cameraCode, c.camera_name cameraName " +
-                            "FROM camera_status c " +
-                            "LEFT JOIN dim_workstation w ON c.workstation_id = w.workstation_id " +
-                            "LEFT JOIN dim_production_line l ON c.line_id = l.line_id " +
-                            "LEFT JOIN dim_factory f ON l.factory_id = f.factory_id " +
-                            "WHERE COALESCE(c.is_active, 1) = 1 " +
-                            "ORDER BY f.factory_code, l.line_code, w.station_code, c.camera_code");
+            List<Map<String, Object>> rows = configImportRepository.queryExportRows();
             int rowIndex = 1;
             for (Map<String, Object> row : rows) {
                 writeRow(sheet.createRow(rowIndex++), new Object[] {
@@ -449,43 +439,26 @@ public class ConfigImportController {
 
     private void syncDimCamerasForLine(DimProductionLine line) {
         if (line == null || line.getLineId() == null || line.getFactoryId() == null) return;
-        jdbcTemplate.update(
-                "UPDATE dim_camera SET factory_id=? WHERE line_id=? AND IFNULL(is_deleted,0)=0",
-                line.getFactoryId(), line.getLineId());
-        jdbcTemplate.update(
-                "UPDATE cfg_camera_defect_mapping m JOIN dim_camera c ON m.camera_id=c.camera_id " +
-                        "SET m.factory_id=c.factory_id, m.line_id=c.line_id, m.workstation_id=c.workstation_id, m.camera_code=c.camera_code " +
-                        "WHERE c.line_id=? AND IFNULL(c.is_deleted,0)=0",
-                line.getLineId());
+        // DDD P3 批次②：SQL 下沉到 ConfigImportRepository（SQL 文本原样搬运）
+        configImportRepository.syncCameraFactoryByLine(line.getFactoryId(), line.getLineId());
+        configImportRepository.remapDefectMappingByLine(line.getLineId());
     }
 
     private void syncCamerasForWorkstation(DimWorkstation workstation, DimProductionLine line) {
         if (workstation == null || workstation.getStationId() == null || line == null || line.getLineId() == null) return;
-        jdbcTemplate.update(
-                "UPDATE camera_status SET line_id=?, update_time=NOW() WHERE workstation_id=?",
-                line.getLineId(), workstation.getStationId());
-        jdbcTemplate.update(
-                "UPDATE dim_camera SET factory_id=?, line_id=?, workstation_id=? WHERE workstation_id=? AND IFNULL(is_deleted,0)=0",
-                line.getFactoryId(), line.getLineId(), workstation.getStationId(), workstation.getStationId());
-        jdbcTemplate.update(
-                "UPDATE cfg_camera_defect_mapping m JOIN dim_camera c ON m.camera_id=c.camera_id " +
-                        "SET m.factory_id=c.factory_id, m.line_id=c.line_id, m.workstation_id=c.workstation_id, m.camera_code=c.camera_code " +
-                        "WHERE c.workstation_id=? AND IFNULL(c.is_deleted,0)=0",
-                workstation.getStationId());
+        // DDD P3 批次②：SQL 下沉到 ConfigImportRepository（SQL 文本原样搬运）
+        configImportRepository.touchCameraStatusOnWorkstationMove(line.getLineId(), workstation.getStationId());
+        configImportRepository.syncCameraLocation(line.getFactoryId(), line.getLineId(), workstation.getStationId());
+        configImportRepository.remapDefectMappingByStation(workstation.getStationId());
     }
 
     private void syncDimCamera(CameraStatus camera, DimProductionLine line) {
         if (camera == null || camera.getId() == null || line == null || line.getLineId() == null) return;
-        jdbcTemplate.update(
-                "INSERT INTO dim_camera(camera_id, factory_id, line_id, workstation_id, camera_code, camera_name, device_id, is_enabled, is_deleted) " +
-                        "VALUES (?,?,?,?,?,?,?,1,0) " +
-                        "ON DUPLICATE KEY UPDATE factory_id=VALUES(factory_id), line_id=VALUES(line_id), workstation_id=VALUES(workstation_id), " +
-                        "camera_code=VALUES(camera_code), camera_name=VALUES(camera_name), device_id=VALUES(device_id), is_enabled=1, is_deleted=0",
-                camera.getId(), line.getFactoryId(), line.getLineId(), camera.getWorkstationId(),
-                camera.getCameraCode(), camera.getCameraName(), camera.getCameraCode());
-        jdbcTemplate.update(
-                "UPDATE cfg_camera_defect_mapping SET factory_id=?, line_id=?, workstation_id=?, camera_code=? WHERE camera_id=?",
-                line.getFactoryId(), line.getLineId(), camera.getWorkstationId(), camera.getCameraCode(), camera.getId());
+        // DDD P3 批次②：SQL 下沉到 ConfigImportRepository（SQL 文本原样搬运）
+        configImportRepository.upsertDimCamera(camera.getId(), line.getFactoryId(), line.getLineId(),
+                camera.getWorkstationId(), camera.getCameraCode(), camera.getCameraName());
+        configImportRepository.syncMappingLocation(line.getFactoryId(), line.getLineId(),
+                camera.getWorkstationId(), camera.getCameraCode(), camera.getId());
     }
 
     private void disableCamerasNotInFile(Set<String> importedCodes, ConfigImportResultDTO result) {

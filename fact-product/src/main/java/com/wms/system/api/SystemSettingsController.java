@@ -1,8 +1,8 @@
 package com.wms.system.api;
 
 import com.wms.shared.common.ResultVO;
+import com.wms.system.infra.repository.SystemSettingsRepository;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,33 +22,31 @@ import java.util.Map;
  *
  * 说明：运行参数先落到 sys_system_setting；数据保留策略继续复用
  * sys_data_retention_policy，避免重复维护同一类配置。
+ *
+ * <p>DDD P3 批次②：所有 SQL 已下沉到 {@link SystemSettingsRepository}，
+ * 本类只保留参数校验、分组/摘要组装与响应封装。
  */
 @RestController
 @RequestMapping("/api/v1/system/settings")
 public class SystemSettingsController {
 
     @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private SystemSettingsRepository settingsRepository;
 
     @PostConstruct
     public void init() {
-        ensureSettingTable();
-        seedDefaultSettings();
-        repairCorruptedDefaultSettings();
-        seedDefaultRetentionPolicies();
+        settingsRepository.ensureSettingTable();
+        settingsRepository.seedDefaultSettings();
+        settingsRepository.repairCorruptedDefaultSettings();
+        settingsRepository.seedDefaultRetentionPolicies();
     }
 
     @GetMapping
     public ResultVO<Map<String, Object>> getSettings() {
-        ensureSettingTable();
+        settingsRepository.ensureSettingTable();
+        List<Map<String, Object>> settings = settingsRepository.listSettings();
+        List<Map<String, Object>> policies = settingsRepository.listRetentionPolicies();
         Map<String, Object> data = new HashMap<>();
-        List<Map<String, Object>> settings = jdbcTemplate.queryForList(
-                "SELECT setting_id settingId, setting_key settingKey, setting_name settingName, setting_group settingGroup, " +
-                        "setting_value settingValue, value_type valueType, unit, description, is_editable isEditable, sort_order sortOrder, update_time updateTime " +
-                        "FROM sys_system_setting ORDER BY setting_group, sort_order, setting_id");
-        List<Map<String, Object>> policies = jdbcTemplate.queryForList(
-                "SELECT policy_id policyId, data_type dataType, retention_days retentionDays, action_type actionType, is_enabled isEnabled, update_time updateTime " +
-                        "FROM sys_data_retention_policy ORDER BY policy_id");
         data.put("settings", settings);
         data.put("retentionPolicies", policies);
         data.put("groups", buildGroups(settings));
@@ -61,12 +59,12 @@ public class SystemSettingsController {
     @SuppressWarnings("unchecked")
     @Transactional
     public ResultVO<Map<String, Object>> saveSettings(@RequestBody Map<String, Object> body) {
-        ensureSettingTable();
+        settingsRepository.ensureSettingTable();
         if (body == null) {
             return ResultVO.fail(422, "系统设置保存失败：请求体不能为空", null);
         }
 
-        Map<String, String> proposedSettings = loadCurrentSettingValues();
+        Map<String, String> proposedSettings = settingsRepository.loadCurrentSettingValues();
         List<String> validationErrors = new ArrayList<>();
 
         Object settingsObjForValidate = body.get("settings");
@@ -102,9 +100,7 @@ public class SystemSettingsController {
                 String key = str(row.get("settingKey"));
                 String value = str(row.get("settingValue"));
                 if (key == null || key.trim().isEmpty()) continue;
-                settingUpdated += jdbcTemplate.update(
-                        "UPDATE sys_system_setting SET setting_value=?, update_time=NOW() WHERE setting_key=? AND is_editable=1",
-                        value, key);
+                settingUpdated += settingsRepository.updateSettingValue(value, key);
             }
         }
 
@@ -121,9 +117,7 @@ public class SystemSettingsController {
                 if (dataType == null || dataType.trim().isEmpty() || days == null || days < 1) continue;
                 if (action == null || action.trim().isEmpty()) action = "DELETE";
                 if (enabled == null) enabled = 1;
-                policyUpdated += jdbcTemplate.update(
-                        "UPDATE sys_data_retention_policy SET retention_days=?, action_type=?, is_enabled=?, update_time=NOW() WHERE data_type=?",
-                        days, action, enabled, dataType);
+                policyUpdated += settingsRepository.updateRetentionPolicy(days, action, enabled, dataType);
             }
         }
 
@@ -131,91 +125,6 @@ public class SystemSettingsController {
         result.put("settingUpdated", settingUpdated);
         result.put("policyUpdated", policyUpdated);
         return ResultVO.success(result, "系统设置已保存");
-    }
-
-    private void ensureSettingTable() {
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS sys_system_setting (" +
-                "setting_id BIGINT PRIMARY KEY AUTO_INCREMENT," +
-                "setting_key VARCHAR(100) NOT NULL," +
-                "setting_name VARCHAR(100) NOT NULL," +
-                "setting_group VARCHAR(50) NOT NULL," +
-                "setting_value VARCHAR(500) NOT NULL," +
-                "value_type VARCHAR(20) NOT NULL DEFAULT 'STRING'," +
-                "unit VARCHAR(20) NULL," +
-                "description VARCHAR(500) NULL," +
-                "is_editable TINYINT NOT NULL DEFAULT 1," +
-                "sort_order INT NOT NULL DEFAULT 0," +
-                "update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP," +
-                "UNIQUE KEY uk_setting_key (setting_key)," +
-                "KEY idx_setting_group (setting_group)" +
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统设置中心'");
-        try {
-            jdbcTemplate.execute("ALTER TABLE sys_system_setting MODIFY setting_value TEXT NOT NULL");
-        } catch (Exception ignored) {
-            // 兼容已经是 TEXT 的数据库或非 MySQL 测试环境。
-        }
-    }
-
-    private void seedDefaultSettings() {
-        insertSetting("system.name", "系统名称", "BASIC", "产线缺陷在线AI检测系统", "STRING", null, "登录页和主界面展示的系统名称", 1, 10);
-        insertSetting("system.siteName", "站点名称", "BASIC", "相机检测系统", "STRING", null, "浏览器标题和部署识别名称", 1, 20);
-        insertSetting("heartbeat.onlineSeconds", "在线阈值", "CAMERA", "30", "INTEGER", "秒", "心跳/上传时间小于等于该值视为在线", 1, 10);
-        insertSetting("heartbeat.offlineSeconds", "离线阈值", "CAMERA", "120", "INTEGER", "秒", "心跳/上传时间大于该值视为离线，中间状态为延迟", 1, 20);
-        insertSetting("defectImage.maxBatchImages", "单批图片上限", "UPLOAD", "100", "INTEGER", "张", "缺陷图片上传接口单批最多允许的图片数量", 1, 10);
-        insertSetting("defectImage.maxFileSizeMb", "单图大小上限", "UPLOAD", "10", "INTEGER", "MB", "单张图片建议大小限制，实际上传上限以 application.yml 为准", 1, 20);
-        insertSetting("alert.cpuWarning", "CPU 告警阈值", "ALERT", "90", "DECIMAL", "%", "CPU 使用率超过该值产生 WARNING", 1, 10);
-        insertSetting("alert.memoryWarning", "内存告警阈值", "ALERT", "90", "DECIMAL", "%", "内存使用率超过该值产生 WARNING", 1, 20);
-        insertSetting("alert.temperatureWarning", "温度告警阈值", "ALERT", "70", "DECIMAL", "℃", "设备温度超过该值产生 WARNING", 1, 30);
-        insertSetting("analytics.dailyAggregationTime", "日聚合执行时间", "ANALYTICS", "02:00", "STRING", null, "夜间自动日聚合执行时间，正式调度以日聚合配置为准", 1, 10);
-    }
-
-    private void insertSetting(String key, String name, String group, String value, String type, String unit, String desc, int editable, int order) {
-        Integer count = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM sys_system_setting WHERE setting_key=?", Integer.class, key);
-        if (count != null && count > 0) return;
-        jdbcTemplate.update("INSERT INTO sys_system_setting(setting_key,setting_name,setting_group,setting_value,value_type,unit,description,is_editable,sort_order) VALUES(?,?,?,?,?,?,?,?,?)",
-                key, name, group, value, type, unit, desc, editable, order);
-    }
-
-    private void repairCorruptedDefaultSettings() {
-        repairDefaultIfTooLong("system.name", "产线缺陷在线AI检测系统", 100);
-        repairDefaultIfTooLong("system.siteName", "相机检测系统", 100);
-    }
-
-    private void repairDefaultIfTooLong(String key, String defaultValue, int maxLength) {
-        try {
-            Integer count = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(1) FROM sys_system_setting WHERE setting_key=? AND CHAR_LENGTH(setting_value)>?",
-                    Integer.class, key, maxLength);
-            if (count != null && count > 0) {
-                jdbcTemplate.update("UPDATE sys_system_setting SET setting_value=?, update_time=NOW() WHERE setting_key=?",
-                        defaultValue, key);
-            }
-        } catch (Exception ignored) {
-            // 修复历史乱码/超长默认值失败不影响主流程，后续保存仍由校验兜底。
-        }
-    }
-
-    private void seedDefaultRetentionPolicies() {
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS sys_data_retention_policy (" +
-                "policy_id BIGINT PRIMARY KEY AUTO_INCREMENT," +
-                "data_type VARCHAR(50) NOT NULL," +
-                "retention_days INT NOT NULL," +
-                "action_type VARCHAR(50) NOT NULL DEFAULT 'DELETE'," +
-                "is_enabled TINYINT NOT NULL DEFAULT 1," +
-                "update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP," +
-                "UNIQUE KEY uk_data_type (data_type)" +
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据保留策略'");
-        insertPolicy("DEFECT_IMAGE_FILE", 30, "DELETE");
-        insertPolicy("DEFECT_IMAGE_BOX", 90, "ARCHIVE");
-        insertPolicy("INSPECTION_DETAIL", 90, "ARCHIVE");
-        insertPolicy("AGG_30M", 365, "KEEP");
-        insertPolicy("OPERATION_LOG", 180, "DELETE");
-    }
-
-    private void insertPolicy(String dataType, int days, String action) {
-        Integer count = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM sys_data_retention_policy WHERE data_type=?", Integer.class, dataType);
-        if (count != null && count > 0) return;
-        jdbcTemplate.update("INSERT INTO sys_data_retention_policy(data_type,retention_days,action_type,is_enabled) VALUES(?,?,?,1)", dataType, days, action);
     }
 
     private Map<String, List<Map<String, Object>>> buildGroups(List<Map<String, Object>> settings) {
@@ -254,20 +163,6 @@ public class SystemSettingsController {
             if (value instanceof Number && ((Number) value).intValue() == 1) count++;
         }
         return count;
-    }
-
-    private Map<String, String> loadCurrentSettingValues() {
-        Map<String, String> values = new HashMap<>();
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT setting_key settingKey, setting_value settingValue FROM sys_system_setting");
-        for (Map<String, Object> row : rows) {
-            String key = str(row.get("settingKey"));
-            String value = str(row.get("settingValue"));
-            if (key != null) {
-                values.put(key, value);
-            }
-        }
-        return values;
     }
 
     private void validateSettings(Map<String, String> settings, List<String> errors) {
