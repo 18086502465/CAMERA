@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.HandlerMapping;
@@ -30,6 +31,10 @@ public class DefectImageController {
 
     @Autowired
     private IDefectImageService defectImageService;
+
+    /** 归档任务（手动触发放这里，便于运维与验证；日常由 @Scheduled 驱动） */
+    @Autowired
+    private com.wms.defect.infra.task.DefectImageArchiveTask defectImageArchiveTask;
 
     @Value("${defect-image.max-batch-images:100}")
     private int maxBatchImages;
@@ -205,6 +210,18 @@ public class DefectImageController {
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
         return ResultVO.success(defectImageService.listHistoryPage(page, size, cameraId, cameraName, factoryId, lineId, stationId,
                 keyword, severity, defectType, startTime, endTime));
+    }
+
+    /**
+     * POST /api/v1/defect-images/archive/run
+     * 手动触发一轮图片月度归档（运维/验证用；日常由 DefectImageArchiveTask 每日 02:30 执行）。
+     * <p>把超过 hot-days（默认 31 天）的图片与缺陷框按月搬入 hist_YYYYMM 月表，
+     * 使主表恒定轻量。返回归档行数、超期删除的月表等统计。</p>
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping("/archive/run")
+    public ResultVO<Map<String, Object>> runArchive() {
+        return ResultVO.success(defectImageArchiveTask.runOnce());
     }
 
     /**

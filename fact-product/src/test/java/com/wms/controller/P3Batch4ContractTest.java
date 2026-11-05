@@ -26,6 +26,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -80,6 +81,19 @@ class P3Batch4ContractTest {
         return kpi;
     }
 
+    /** 空的图片事实表 KPI（图片通道无数据） */
+    private Map<String, Object> emptyImageKpi() {
+        Map<String, Object> kpi = new LinkedHashMap<>();
+        kpi.put("imageCount", 0);
+        kpi.put("defectCount", 0);
+        kpi.put("highCount", 0);
+        kpi.put("mediumCount", 0);
+        kpi.put("lowCount", 0);
+        kpi.put("cameraCount", 0);
+        kpi.put("workstationCount", 0);
+        return kpi;
+    }
+
     // ---------------- 元数据 ----------------
 
     @Test
@@ -107,8 +121,18 @@ class P3Batch4ContractTest {
     // ---------------- 产线汇总：数据源兜底与良率语义 ----------------
 
     @Test
-    @DisplayName("line-summary: 聚合表有数据 → dataSource=AGGREGATION")
+    @DisplayName("line-summary: 图片事实表无数据、聚合表有数据 → dataSource=AGGREGATION")
     void lineSummaryAggregationSource() throws Exception {
+        // ★ 2026-11-05 起「缺陷图片事实表」优先，聚合表是兜底。
+        //   本用例覆盖「图片表无数据」的场景 → 落到聚合表。
+        when(queryRepository.queryDefectImageKpi(anyString(), anyString(), any())).thenReturn(emptyImageKpi());
+        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageRanking(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageStationRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageCameraRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImagePivot(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageSeverityDistribution(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+
         Map<String, Object> kpi = emptyKpi();
         kpi.put("totalCount", 100);
         kpi.put("okCount", 90);
@@ -136,16 +160,66 @@ class P3Batch4ContractTest {
     }
 
     @Test
-    @DisplayName("line-summary: 聚合表无数据 → 兜底切缺陷图片表，良率为 null 且 yieldRateAvailable=false")
-    void lineSummaryDefectImageFallback() throws Exception {
-        when(queryRepository.queryKpi(anyString(), anyString(), any())).thenReturn(emptyKpi());
-        when(queryRepository.queryTrend(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
-        when(queryRepository.queryDefectRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
-        when(queryRepository.queryStationRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
-        when(queryRepository.queryCameraRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
-        when(queryRepository.queryDefectPivot(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+    @DisplayName("line-summary: 图片表与聚合表都有数据 → 必须用图片表（现场实测的「子集比全集大」回归）")
+    void lineSummaryPrefersDefectImageOverAggregation() throws Exception {
+        // ★ 2026-11-05 现场 bug 回归：
+        //   旧实现「聚合表完全无数据才兜底」→ 聚合表里残留几条**孤儿行**
+        //   （产线已删除的历史数据）时，不筛选产线会显示聚合表的 4 条，
+        //   而筛选产线却显示图片表的 3041 条 → **子集比全集还大**。
+        //   现在图片事实表优先，两者都有数据时必须取图片表。
+        Map<String, Object> imgKpi = new LinkedHashMap<>();
+        imgKpi.put("imageCount", 3041);
+        imgKpi.put("defectCount", 3041);
+        imgKpi.put("highCount", 100);
+        imgKpi.put("mediumCount", 200);
+        imgKpi.put("lowCount", 300);
+        imgKpi.put("cameraCount", 2);
+        imgKpi.put("workstationCount", 2);
+        when(queryRepository.queryDefectImageKpi(anyString(), anyString(), any())).thenReturn(imgKpi);
+        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageRanking(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageStationRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageCameraRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImagePivot(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageSeverityDistribution(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
         when(queryRepository.queryOpenMappingExceptions()).thenReturn(Collections.emptyList());
-        // 兜底路径：图片事实表有数据
+
+        // 聚合表也有数据（孤儿行）—— 但不应被采用。
+        // ★ 用 lenient()：图片表优先后这些 stub 不会被调用，
+        //   而它们的存在正是本用例要验证的前提（"聚合表也有数据"）。
+        Map<String, Object> aggKpi = emptyKpi();
+        aggKpi.put("totalCount", 4);
+        aggKpi.put("okCount", 0);
+        aggKpi.put("ngCount", 4);
+        aggKpi.put("defectCount", 4);
+        lenient().when(queryRepository.queryKpi(anyString(), anyString(), any())).thenReturn(aggKpi);
+        lenient().when(queryRepository.queryTrend(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        lenient().when(queryRepository.queryDefectRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        lenient().when(queryRepository.queryStationRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        lenient().when(queryRepository.queryCameraRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        lenient().when(queryRepository.queryDefectPivot(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        lenient().when(queryRepository.querySeverityDistribution(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+
+        MockMvc mvc = mvc();
+        mvc.perform(get("/api/v1/analytics/line-summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.dataSource").value("DEFECT_IMAGE"))
+                .andExpect(jsonPath("$.data.kpi.totalCount").value(3041))
+                .andExpect(jsonPath("$.data.kpi.ngCount").value(3041))
+                // 良率不可计算，绝不是 0 或 100
+                .andExpect(jsonPath("$.data.kpi.yieldRate").doesNotExist())
+                .andExpect(jsonPath("$.data.kpi.yieldRateAvailable").value(false));
+    }
+
+    @Test
+    @DisplayName("line-summary: 图片事实表有数据 → dataSource=DEFECT_IMAGE，良率为 null 且 yieldRateAvailable=false")
+    void lineSummaryDefectImageFallback() throws Exception {
+        // ★ 2026-11-05 起图片事实表是**主数据源**（不是兜底）——
+        //   现场设备走 defect-images/upload 通道，只写 defect_image_*，不写 agg_*。
+        //   聚合表此时根本不会被查询，故不 mock（Mockito 严格模式会报多余 stub）。
+        when(queryRepository.queryOpenMappingExceptions()).thenReturn(Collections.emptyList());
+        // 图片事实表有数据
         Map<String, Object> imgKpi = new LinkedHashMap<>();
         imgKpi.put("imageCount", 50);
         imgKpi.put("defectCount", 8);

@@ -3,6 +3,8 @@ package com.wms.defect.infra.repository;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
+import com.wms.defect.app.ArchiveMonthRange;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
 import org.slf4j.Logger;
@@ -13,14 +15,19 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 缺陷图片仓储（DDD P3 批次⑤ 收敛）。
@@ -48,6 +55,12 @@ public class DefectImageRepository {
     private static final Logger log = LoggerFactory.getLogger(DefectImageRepository.class);
 
     private final JdbcTemplate jdbcTemplate;
+
+    /** 主表热数据天数（与 DefectImageArchiveTask 共用同一配置，保证路由边界与归档一致） */
+    @Value("${app.archive.images.hot-days:31}")
+    private int hotDays;
+
+    private static final DateTimeFormatter MONTH_FMT = DateTimeFormatter.ofPattern("yyyyMM");
 
     public DefectImageRepository(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
@@ -125,7 +138,8 @@ public class DefectImageRepository {
                                     String cameraId, String cameraName,
                                     Integer factoryId, Integer lineId, Integer stationId,
                                     String keyword, String severity, String defectType,
-                                    LocalDateTime startTime, LocalDateTime endTime) {
+                                    LocalDateTime startTime, LocalDateTime endTime,
+                                    String boxSource) {
         if (hasText(cameraId)) {
             sql.append("AND f.camera_id = ? ");
             params.add(cameraId);
@@ -136,11 +150,14 @@ public class DefectImageRepository {
         }
         appendDimensionFilters(sql, params, factoryId, lineId, stationId, keyword);
         if (hasText(severity)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bs WHERE bs.image_id = f.image_id AND UPPER(bs.severity) = ?) ");
+            // 2026-11-05：boxSource 由查询路由提供（历史范围时指向主表+月表的并集）
+            sql.append("AND EXISTS (SELECT 1 FROM ").append(boxSource)
+                    .append(" bs WHERE bs.image_id = f.image_id AND UPPER(bs.severity) = ?) ");
             params.add(severity.trim().toUpperCase(Locale.ROOT));
         }
         if (hasText(defectType)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bt WHERE bt.image_id = f.image_id AND bt.defect_type LIKE ?) ");
+            sql.append("AND EXISTS (SELECT 1 FROM ").append(boxSource)
+                    .append(" bt WHERE bt.image_id = f.image_id AND bt.defect_type LIKE ?) ");
             params.add("%" + defectType.trim() + "%");
         }
         if (startTime != null) {
@@ -629,7 +646,19 @@ public class DefectImageRepository {
         return result;
     }
 
-    /** 图片历史分页 */
+    /**
+     * 图片历史分页。
+     *
+     * <p><b>2026-11-05 归档路由</b>：主表只保留近 {@code app.archive.images.hot-days}
+     * （默认 31）天，更早数据在 {@code defect_image_file_hist_YYYYMM} 月表。
+     * 本方法按查询时间范围自动选表：</p>
+     * <ul>
+     *   <li>无时间范围 / 范围全在热区 → 只查主表（毫秒级，默认查询路径）；</li>
+     *   <li>范围涉及更早 → 主表(仅热区行) UNION ALL 各月月表，再走原有 JOIN/过滤/分页；</li>
+     *   <li>月表不存在（该月无数据）→ 跳过，不报错。</li>
+     * </ul>
+     * <p>返回结构保持不变（records/total/page/size），前端零改造。</p>
+     */
     public Map<String, Object> listHistoryPage(Integer page, Integer size, String cameraId, String cameraName,
                                                Integer factoryId, Integer lineId, Integer stationId,
                                                String keyword, String severity, String defectType,
@@ -639,27 +668,33 @@ public class DefectImageRepository {
         int safeSize = size == null ? 10 : Math.max(1, Math.min(size, 100));
         int offset = (safePage - 1) * safeSize;
 
-        List<Object> countParams = new ArrayList<>();
+        // 表源路由（srcParams 必须在过滤器参数之前绑定）
+        List<String> archiveMonths = archiveMonthsFor(startTime, endTime);
+        List<Object> srcParams = new ArrayList<>();
+        String fileSource = buildFileSource(archiveMonths, srcParams);
+        String boxSource = buildBoxSource(archiveMonths);
+
+        List<Object> countParams = new ArrayList<>(srcParams);
         StringBuilder countSql = new StringBuilder();
-        countSql.append("SELECT COUNT(1) FROM defect_image_file f ")
+        countSql.append("SELECT COUNT(1) FROM ").append(fileSource).append("f ")
                 .append(cameraStatusJoinSql())
                 .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
                 .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
                 .append("WHERE 1=1 ");
         appendImageFilters(countSql, countParams, cameraId, cameraName, factoryId, lineId, stationId,
-                keyword, severity, defectType, startTime, endTime);
+                keyword, severity, defectType, startTime, endTime, boxSource);
         Long total = jdbcTemplate.queryForObject(countSql.toString(), countParams.toArray(), Long.class);
 
-        List<Object> params = new ArrayList<>();
+        List<Object> params = new ArrayList<>(srcParams);
         StringBuilder sql = new StringBuilder();
         sql.append(imageSelectSql())
-                .append("FROM defect_image_file f ")
+                .append("FROM ").append(fileSource).append("f ")
                 .append(cameraStatusJoinSql())
                 .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
                 .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
                 .append("WHERE 1=1 ");
         appendImageFilters(sql, params, cameraId, cameraName, factoryId, lineId, stationId,
-                keyword, severity, defectType, startTime, endTime);
+                keyword, severity, defectType, startTime, endTime, boxSource);
         sql.append("ORDER BY f.create_time DESC, f.upload_time DESC, f.image_id DESC LIMIT ? OFFSET ?");
         params.add(safeSize);
         params.add(offset);
@@ -673,6 +708,70 @@ public class DefectImageRepository {
         pageResult.put("page", safePage);
         pageResult.put("size", safeSize);
         return pageResult;
+    }
+
+    // ==================== 归档路由（2026-11-05） ====================
+
+    /** 主表热数据下界 */
+    private LocalDateTime hotCutoff() {
+        return LocalDateTime.now().minusDays(hotDays);
+    }
+
+    /**
+     * 计算本次查询需要并集的归档月份（只返回真实存在的月表）。
+     * 区间计算本身在 {@link com.wms.defect.app.ArchiveMonthRange}（纯函数，已单测覆盖）。
+     */
+    private List<String> archiveMonthsFor(LocalDateTime startTime, LocalDateTime endTime) {
+        return filterExistingMonths(ArchiveMonthRange.months(startTime, endTime, hotCutoff()));
+    }
+
+    /** 过滤出真实存在的月表月份（缺表跳过，不报错） */
+    private List<String> filterExistingMonths(List<String> months) {
+        if (months.isEmpty()) {
+            return Collections.emptyList();
+        }
+        String prefix = "defect_image_file_hist_";
+        Set<String> existing = new HashSet<>(jdbcTemplate.query(
+                "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE ?",
+                new Object[]{prefix + "%"},
+                (rs, i) -> rs.getString(1).substring(prefix.length())));
+        List<String> result = new ArrayList<>();
+        for (String m : months) {
+            if (existing.contains(m)) {
+                result.add(m);
+            }
+        }
+        return result;
+    }
+
+    /** 文件表源：纯主表，或「主表(热区) ∪ 各月表」派生表（参数先于过滤条件绑定） */
+    private String buildFileSource(List<String> months, List<Object> params) {
+        if (months.isEmpty()) {
+            return "defect_image_file ";
+        }
+        String cols = DefectImageArchiveRepository.FILE_COLS;
+        StringBuilder sb = new StringBuilder("(SELECT ").append(cols)
+                .append(" FROM defect_image_file WHERE COALESCE(capture_time, upload_time, create_time) >= ? ");
+        params.add(Timestamp.valueOf(hotCutoff()));
+        for (String m : months) {
+            sb.append("UNION ALL SELECT ").append(cols)
+                    .append(" FROM ").append(DefectImageArchiveRepository.monthTable("file", m)).append(" ");
+        }
+        return sb.append(") ").toString();
+    }
+
+    /** 缺陷框表源（severity / defectType 过滤用）：纯主表或主表∪月表并集 */
+    private String buildBoxSource(List<String> months) {
+        if (months.isEmpty()) {
+            return "defect_image_box";
+        }
+        StringBuilder sb = new StringBuilder(
+                "(SELECT image_id, defect_type, severity FROM defect_image_box");
+        for (String m : months) {
+            sb.append(" UNION ALL SELECT image_id, defect_type, severity FROM ")
+                    .append(DefectImageArchiveRepository.monthTable("box", m));
+        }
+        return sb.append(") ").toString();
     }
 
     /** 单张图片的缺陷框列表 */

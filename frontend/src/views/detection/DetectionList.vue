@@ -38,6 +38,14 @@
         <el-button @click="handleReset">重置</el-button>
         <el-button type="success" @click="handleExport">📊 导出 Excel</el-button>
       </el-space>
+      <el-alert
+        v-if="historyQueryHint"
+        type="info"
+        :closable="false"
+        show-icon
+        title="查询范围包含 31 天前的历史数据：将自动查询月度归档表，结果可能较慢"
+        style="margin-top: 10px"
+      />
     </el-card>
 
     <!-- 表格 -->
@@ -100,7 +108,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { ElMessage } from '@/utils/message.js'
 import { getDefectImageHistory } from '../../api/camera'
 
@@ -108,6 +116,15 @@ const activeTab = ref('realtime')
 const cameraName = ref('')
 const filterLine = ref(null)
 const timeRange = ref(null)
+
+/** 历史查询提示：范围早于 31 天时后端会走月度归档表（2026-11-05） */
+const historyQueryHint = computed(() => {
+  const range = timeRange.value
+  if (!range || range.length !== 2) return false
+  const start = new Date(String(range[0]).replace(/-/g, '/')).getTime()
+  if (Number.isNaN(start)) return false
+  return start < Date.now() - 31 * 24 * 3600 * 1000
+})
 const currentPage = ref(1)
 const pageSize = ref(10)
 const total = ref(0)

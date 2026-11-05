@@ -22,10 +22,11 @@
 
 | 脚本 | 用途 |
 |---|---|
-| `cleanup_zk54_incremental.sh` | ZK54 测试相机数据每小时增量清理（服务器 `/usr/local/bin/` 同名副本 + root cron `15 * * * *`，幂等，只留 ZK23 白名单） |
+| `cleanup_zk54_incremental.sh` | **测试相机数据每小时增量清理**（服务器 `/usr/local/bin/cleanup-zk54-incremental.sh` + `/etc/cron.d/cleanup-test-camera-images`，`15 * * * *`）。★ 2026-11-05 起按数据库字段 `camera_type` 判定：REAL=真实相机（**不清理**）/ TEST=测试相机（清理）。保护集合 = `dim_camera` 的 REAL ∪ `camera_status` 的 REAL ∪ `PROTECTED_CODES`（任一表标 REAL 即保护）。三道防线：保护集合为空即中止(退出码3)、单轮待删超阈值即中止(4)、清理后自检 REAL 数据是否减少。口令自读 `/etc/default/camera-detection`，**不写进 cron** |
 | `recover_legacy_chunks.py` | **从历史 JAR 备份恢复旧版前端 chunk**（部署后旧页面才能继续用）。增量写 JAR；**必须在部署完成后执行并重启服务**；绝不能 `jar cf` 重打包（丢 JarLauncher） |
 | `prune_legacy_chunks.py` | 按 `.versions` 清单淘汰过旧静态版本（默认保留 3 版） |
 | `sanitize_secrets.py` | 全仓库明文口令扫描/脱敏（CI 的口令扫描规则同源） |
+| `sync_static_keep_legacy.py` | 把 `frontend/dist` 同步到后端 `static/` —— **只补不删**（保留历史 chunk 防旧标签页失效）。⚠️ 不要用 `sync_static.py`：那个会删旧 chunk，正是「部署后旧页面点不动」的根因 |
 
 ## 三、验证工具
 
@@ -36,6 +37,10 @@
 | `check_sql_columns.py` | **SQL 列名静态校验**：用 information_schema 真实表结构反查 SQL 引用的列。⚠️ 文本比对抓不到列名错（实测 `w.station_id` 应为 `w.workstation_id`，文本一致但整页 500） |
 | `probe_api_paths.sh` | 前端 `api/*.js` 路径与后端端点核对（曾发现 `/users` vs `/user` 404） |
 | `gen_api_doc.py` | 从 Controller 源码再生成《接口文档.md》（`python docs/scripts/gen_api_doc.py`） |
+| `test_cleanup_protect_set.sh` | **清理脚本保护集合逻辑回归**：从真实脚本抽取代码段跑 6 个场景（两表各标/单表标记/运维加码/全误标/多台）。★ 起因：`printf '%s' \| tr` 输出的最后一行无换行 → `while read` 丢弃最后一个相机 → **真实相机被静默丢出保护集合**。本地跑，无需服务器 |
+| `verify_camera_type_guards.sh` | **实机验证三道防误删防线 + 正向清理**：造 ZZTEST 数据 → 验证被清 → 验证真实相机数据分毫不动 → 验证保护集合为空中止(3)/超阈值中止(4) → 自动还原。服务器上以 root 执行 |
+| `verify_camera_type_browser.cjs` | 前端浏览器回归：相机类型列、真实/测试标签、编辑弹窗下拉与回填、0 JS 错误（9 项） |
+| `verify_line_analytics_browser.cjs` | 产线统计页回归：筛选产线与不筛选的检测总数**必须一致**、数据源一致、图片通道无良率卡片、趋势图无良率线、0 JS 错误（11 项） |
 
 ## 四、浏览器回归（`docs/` 根 + 本目录）
 

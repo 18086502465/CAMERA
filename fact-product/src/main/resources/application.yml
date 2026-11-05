@@ -74,6 +74,15 @@ app:
   home: ${APP_HOME:./runtime}
   upload:
     image-dir: ${app.home}/data/uploads/images
+  # ---- 缺陷图片月度归档（2026-11-05）----
+  #   主表保留 hot-days 天，更早数据按月移入 defect_image_*_hist_YYYYMM；
+  #   磁盘图片保留 retain-days 天（由 cleanup-defect-images.sh 按日期目录删）
+  archive:
+    images:
+      cron: "0 30 2 * * ?"     # 每日 02:30（错开 02:00 的 DataCleanupTask）
+      hot-days: 31             # 主表热数据保留天数
+      retain-days: 730         # 月表保留天数（2 年），超期整表 DROP
+      batch-size: 5000         # 每批搬移行数
 
 upload:
   path: ${app.home}/data/uploads
