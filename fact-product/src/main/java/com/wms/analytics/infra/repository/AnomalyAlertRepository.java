@@ -26,14 +26,18 @@ public class AnomalyAlertRepository {
      */
     public int insertCameraAlert(Integer lineId, Integer workstationId, String alertType, String alertLevel,
                                   String alertTitle, String alertMessage) {
+        // ★ 2026-11-05 修复（P4 事件化验证时发现）：原 INSERT 缺 detect_time 与 message
+        //   两列 —— 它们是 NOT NULL 无默认值，导致告警从未成功落库（被 catch 掩盖，
+        //   表长期 0 行）。补：detect_time=NOW()（检测/发现时间）、message=alert_message。
         return jdbcTemplate.update(
-                "INSERT INTO fact_anomaly_alert(line_id, workstation_id, detection_id, alert_type, alert_level, alert_title, alert_message, is_resolved, create_time, update_time) " +
-                        "VALUES(?, ?, NULL, ?, ?, ?, ?, 0, NOW(), NOW())",
+                "INSERT INTO fact_anomaly_alert(line_id, workstation_id, detection_id, alert_type, alert_level, alert_title, alert_message, message, detect_time, is_resolved, create_time, update_time) " +
+                        "VALUES(?, ?, NULL, ?, ?, ?, ?, ?, NOW(), 0, NOW(), NOW())",
                 lineId == null ? 0 : lineId,
                 workstationId == null ? 0 : workstationId,
                 alertType,
                 alertLevel,
                 alertTitle,
-                alertMessage);
+                alertMessage,
+                alertMessage);   // message 列（NOT NULL）
     }
 }

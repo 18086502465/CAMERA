@@ -6,7 +6,7 @@ import com.wms.masterdata.domain.model.DimProductionLine;
 import com.wms.masterdata.domain.model.DimWorkstation;
 import com.wms.device.infra.mapper.CameraStatusMapper;
 import com.wms.device.app.ICameraStatusService;
-import com.wms.device.infra.repository.CameraDirectoryRepository;
+import com.wms.device.app.CameraDirectory;
 import com.wms.masterdata.app.IDimProductionLineService;
 import com.wms.masterdata.app.IDimWorkstationService;
 import com.wms.shared.common.ResultVO;
@@ -32,7 +32,7 @@ public class CameraDashboardController {
     @Autowired private CameraStatusMapper cameraStatusMapper;
     @Autowired private IDimWorkstationService workstationService;
     @Autowired private IDimProductionLineService lineService;
-    @Autowired private CameraDirectoryRepository cameraDirectoryRepository;
+    @Autowired private CameraDirectory cameraDirectory;   // DDD P4：跨域只走 app 接口
 
     @GetMapping
     public ResultVO<IPage<CameraStatus>> pageQuery(
@@ -159,7 +159,7 @@ public class CameraDashboardController {
         if (exists != null) {
             return ResultVO.fail("设备编号已存在");
         }
-        if (cameraDirectoryRepository.countDimCameraByCode(camera.getCameraCode()) > 0) {
+        if (cameraDirectory.countDimCameraByCode(camera.getCameraCode()) > 0) {
             return ResultVO.fail("设备编号已存在");
         }
         camera.setId(null);
@@ -199,7 +199,7 @@ public class CameraDashboardController {
             );
             if (codeExists != null) return ResultVO.fail("设备编号已存在");
         }
-        if (cameraDirectoryRepository.countDimCameraByCodeExcept(camera.getCameraCode(), id) > 0) {
+        if (cameraDirectory.countDimCameraByCodeExcept(camera.getCameraCode(), id) > 0) {
             return ResultVO.fail("设备编号已存在");
         }
         camera.setId(id);
@@ -224,12 +224,12 @@ public class CameraDashboardController {
         //   原实现查的是 `camera_image` —— **这张表根本不存在**（真实表名是 `camera_images`），
         //   而 count() 内部 catch 掉异常返回 0，导致这项依赖检查**永远失效**。
         //   实测：删除一台有 1347 条图片的相机时，legacyImageCount 恒为 0。
-        int imageCount = cameraDirectoryRepository.countDefectImageFiles(existing.getCameraCode(), existing.getCameraName());
-        int compatImageCount = cameraDirectoryRepository.countCompatImages(existing.getCameraName());
-        int defectBoxCount = cameraDirectoryRepository.countDefectImageBoxes(existing.getCameraCode(), existing.getCameraName());
-        int mappingCount = cameraDirectoryRepository.countDefectMappings(id);
-        int tokenCount = cameraDirectoryRepository.countCameraTokens(id);
-        int heartbeatCount = cameraDirectoryRepository.countHeartbeats(existing.getCameraCode());
+        int imageCount = cameraDirectory.countDefectImageFiles(existing.getCameraCode(), existing.getCameraName());
+        int compatImageCount = cameraDirectory.countCompatImages(existing.getCameraName());
+        int defectBoxCount = cameraDirectory.countDefectImageBoxes(existing.getCameraCode(), existing.getCameraName());
+        int mappingCount = cameraDirectory.countDefectMappings(id);
+        int tokenCount = cameraDirectory.countCameraTokens(id);
+        int heartbeatCount = cameraDirectory.countHeartbeats(existing.getCameraCode());
 
         int totalImages = imageCount + compatImageCount;
         Map<String, Object> data = new LinkedHashMap<>();
@@ -304,9 +304,9 @@ public class CameraDashboardController {
             return ResultVO.fail("相机已处于停用/删除状态，无需重复删除");
         }
 
-        int imageCount = cameraDirectoryRepository.countDefectImageFiles(existing.getCameraCode(), existing.getCameraName());
-        int compatImageCount = cameraDirectoryRepository.countCompatImages(existing.getCameraName());
-        int heartbeatCount = cameraDirectoryRepository.countHeartbeats(existing.getCameraCode());
+        int imageCount = cameraDirectory.countDefectImageFiles(existing.getCameraCode(), existing.getCameraName());
+        int compatImageCount = cameraDirectory.countCompatImages(existing.getCameraName());
+        int heartbeatCount = cameraDirectory.countHeartbeats(existing.getCameraCode());
 
         // 有历史图片或心跳 → 拒绝删除（历史数据不可自动清理，必须人工确认归档）
         if (imageCount + compatImageCount > 0 || heartbeatCount > 0) {
@@ -315,12 +315,12 @@ public class CameraDashboardController {
         }
 
         // ---- 逻辑删除：两表一致 ----
-        cameraDirectoryRepository.softDeleteCameraStatus(id);
-        cameraDirectoryRepository.softDeleteDimCamera(id);
+        cameraDirectory.softDeleteCameraStatus(id);
+        cameraDirectory.softDeleteDimCamera(id);
 
         // ---- 级联清理：避免孤儿数据 ----
-        int mappingRows = cameraDirectoryRepository.deleteDefectMappings(id);
-        int tokenRows = cameraDirectoryRepository.deleteCameraTokens(id);
+        int mappingRows = cameraDirectory.deleteDefectMappings(id);
+        int tokenRows = cameraDirectory.deleteCameraTokens(id);
 
         String detail = "缺陷映射 " + mappingRows + " 条、设备令牌 " + tokenRows + " 个已一并清理。";
         return ResultVO.success("删除成功", detail);
@@ -352,9 +352,9 @@ public class CameraDashboardController {
         if (line == null) {
             throw new IllegalArgumentException("产线不存在，无法同步相机维表");
         }
-        cameraDirectoryRepository.upsertDimCamera(camera.getId(), line.getFactoryId(), camera.getLineId(),
+        cameraDirectory.upsertDimCamera(camera.getId(), line.getFactoryId(), camera.getLineId(),
                 camera.getWorkstationId(), camera.getCameraCode(), camera.getCameraName());
-        cameraDirectoryRepository.syncMappingLocation(line.getFactoryId(), camera.getLineId(),
+        cameraDirectory.syncMappingLocation(line.getFactoryId(), camera.getLineId(),
                 camera.getWorkstationId(), camera.getCameraCode(), camera.getId());
     }
 }
