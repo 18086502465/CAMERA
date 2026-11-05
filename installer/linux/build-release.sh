@@ -8,7 +8,7 @@
 # 产出：dist-release/linux/camera-detection-system-<版本>.tar.gz
 #       解压后即为服务器上的安装源目录，直接 sudo ./install.sh 即可。
 #
-# 步骤（与 Windows 版 build-release.ps1 的 8 个阶段对应）：
+# 步骤：
 #   ① 前端构建        ② 前端产物并入后端静态目录
 #   ③ 后端打包        ④ 契约测试
 #   ⑤ 组装发布目录    ⑥ 复制建库脚本
@@ -238,7 +238,7 @@ ok "脚本行尾检查通过（全部 LF）"
 for d in "${ROOT_DIR}/docs/部署方案-Ubuntu22.04.md" "${ROOT_DIR}/docs/部署方案-精简版.md"; do
   [[ -f "$d" ]] && cp "$d" "${STAGE_DIR}/docs/" || true
 done
-cp "${ROOT_DIR}/CODEBUDDY.md" "${STAGE_DIR}/docs/" 2>/dev/null || true
+cp "${ROOT_DIR}/README.md" "${STAGE_DIR}/docs/" 2>/dev/null || true
 
 # 目录结构与 Windows 版一致（安装脚本会创建，这里预置空目录）
 mkdir -p "${STAGE_DIR}/data/uploads/images" "${STAGE_DIR}/data/uploads/defect-images" "${STAGE_DIR}/logs"
