@@ -177,6 +177,13 @@
             <template v-else-if="activeMenu === 'camera'">
               <el-table-column prop="cameraName" label="相机名称" min-width="140" />
               <el-table-column prop="cameraCode" label="设备编号" width="130"><template #default="{ row }"><code>{{ row.cameraCode || row.deviceId || '-' }}</code></template></el-table-column>
+              <el-table-column label="相机类型" width="150" align="center">
+                <template #default="{ row }">
+                  <el-tag :type="row.cameraType === 'REAL' ? 'success' : 'info'" size="small">
+                    {{ row.cameraType === 'REAL' ? '真实产线' : '测试相机' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
               <el-table-column label="所属工厂" min-width="140"><template #default="{ row }">{{ factoryNameByCamera(row) }}</template></el-table-column>
               <el-table-column label="所属产线" min-width="150"><template #default="{ row }">{{ lineMap[row.lineId] || '-' }}</template></el-table-column>
               <el-table-column label="工位名称" min-width="150"><template #default="{ row }">{{ stationMap[row.workstationId] || row.stationName || '-' }}</template></el-table-column>
@@ -243,6 +250,13 @@
           <el-form-item label="工位"><el-select v-model="formData.workstationId" style="width:100%" :disabled="Boolean(parentLocked.workstation)"><el-option v-for="s in stationOptionsForCamera" :key="s.workstationId" :label="s.stationName" :value="s.workstationId" /></el-select></el-form-item>
           <el-form-item label="相机名称"><el-input v-model="formData.name" placeholder="请输入相机名称" /></el-form-item>
           <el-form-item label="设备编号"><el-input v-model="formData.code" placeholder="请输入设备编号" /></el-form-item>
+          <el-form-item label="相机类型">
+            <el-select v-model="formData.cameraType" style="width:100%">
+              <el-option label="测试相机（数据参与定时清理）" value="TEST" />
+              <el-option label="真实产线相机（数据不参与清理）" value="REAL" />
+            </el-select>
+            <div class="form-tip">真实产线相机的图片与数据不会被每小时清理任务删除；测试相机会被清理。</div>
+          </el-form-item>
         </template>
 
         <template v-else>
@@ -887,6 +901,9 @@ const openDialog = (type) => {
     base.lineId = node.raw?.lineId
     parentLocked.value = { workstation: true, line: true }
   }
+  // 新建相机时默认「测试相机」（2026-11-05）：与存量现状一致（现场 16 台中 14 台为测试相机）。
+  // 用户可显式改成「真实产线相机」——真实相机的数据不会被每小时清理任务删除。
+  if (type === 'camera') base.cameraType = 'TEST'
   formData.value = base
   dialogVisible.value = true
 }
@@ -897,14 +914,20 @@ const editRow = (type, row) => {
   if (type === 'factory') { editingId.value = row.factoryId; formData.value = { name: row.factoryName, code: row.factoryCode, address: row.address, status: row.status || '启用' } }
   else if (type === 'line') { editingId.value = row.lineId; formData.value = { name: row.lineName, code: row.lineCode, factoryId: row.factoryId, stationCount: row.stationCount } }
   else if (type === 'workstation') { editingId.value = row.workstationId || row.stationId; formData.value = { name: row.stationName, code: row.stationCode, lineId: row.lineId, description: row.description } }
-  else if (type === 'camera') { editingId.value = row.id || row.cameraId; formData.value = { name: row.cameraName, code: row.cameraCode, lineId: row.lineId, workstationId: row.workstationId, status: row.status || 'RUNNING' } }
+  else if (type === 'camera') { editingId.value = row.id || row.cameraId; formData.value = { name: row.cameraName, code: row.cameraCode, lineId: row.lineId, workstationId: row.workstationId, status: row.status || 'RUNNING', cameraType: row.cameraType === 'REAL' ? 'REAL' : 'TEST' } }
   else { editingId.value = row.userId; formData.value = { name: row.username, realName: row.realName, role: row.role === '管理员' ? 1 : 0, phone: row.phone || '', password: '' } }
 }
 const buildBody = () => {
   if (dialogType.value === 'factory') return { factoryName: formData.value.name, factoryCode: formData.value.code, address: formData.value.address }
   if (dialogType.value === 'line') return { lineName: formData.value.name, lineCode: formData.value.code, factoryId: formData.value.factoryId, stationCount: formData.value.stationCount }
   if (dialogType.value === 'workstation') return { stationName: formData.value.name, stationCode: formData.value.code, lineId: formData.value.lineId, description: formData.value.description }
-  if (dialogType.value === 'camera') return { cameraName: formData.value.name, cameraCode: formData.value.code, lineId: formData.value.lineId, workstationId: formData.value.workstationId, status: formData.value.status || 'RUNNING' }
+  if (dialogType.value === 'camera') {
+    const body = { cameraName: formData.value.name, cameraCode: formData.value.code, lineId: formData.value.lineId, workstationId: formData.value.workstationId, status: formData.value.status || 'RUNNING' }
+    // 相机类型（2026-11-05）：REAL=真实产线相机（数据不参与定时清理）/ TEST=测试相机。
+    // 编辑时若用户没改，保持后端原值（后端在缺省时也会保留原值）。
+    if (formData.value.cameraType) body.cameraType = formData.value.cameraType
+    return body
+  }
   const body = { username: formData.value.name, realName: formData.value.realName, role: formData.value.role, phone: formData.value.phone || '' }
   if (formData.value.password) body.passwordHash = formData.value.password
   return body
@@ -965,6 +988,8 @@ onMounted(fetchAll)
 </script>
 
 <style scoped>
+/* 表单字段下方的灰色提示（相机类型说明等） */
+.form-tip { margin-top: 4px; font-size: 12px; line-height: 1.5; color: #64748b; }
 .sys-config { max-width: 1420px; margin: 0 auto; }
 .config-layout { display: flex; min-height: calc(100vh - 200px); background: #fff; border-radius: 18px; box-shadow: 0 14px 34px rgba(15,23,42,.08); overflow: hidden; border: 1px solid rgba(226,232,240,.9); position: relative; }
 /* 宽度由 JS 拖拽写入 CSS 变量 --sidebar-width（默认值 288px） */

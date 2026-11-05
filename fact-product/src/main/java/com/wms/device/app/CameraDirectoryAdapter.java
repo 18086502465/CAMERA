@@ -76,8 +76,9 @@ public class CameraDirectoryAdapter implements CameraDirectory {
 
     @Override
     public int upsertDimCamera(Long cameraId, Integer factoryId, Integer lineId, Integer workstationId,
-                               String cameraCode, String cameraName) {
-        return repository.upsertDimCamera(cameraId, factoryId, lineId, workstationId, cameraCode, cameraName);
+                               String cameraCode, String cameraName, String cameraType) {
+        return repository.upsertDimCamera(cameraId, factoryId, lineId, workstationId,
+                cameraCode, cameraName, cameraType);
     }
 
     @Override

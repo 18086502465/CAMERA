@@ -89,12 +89,17 @@ public class ConfigImportRepository {
     /** 写入 / 更新相机档案（按 camera_id 主键 upsert） */
     public int upsertDimCamera(Long cameraId, Integer factoryId, Integer lineId, Integer workstationId,
                                String cameraCode, String cameraName) {
+        // ★ 2026-11-05 相机类型：首次导入按 TEST 建档；
+        //   ON DUPLICATE KEY UPDATE **刻意不更新 camera_type** ——
+        //   配置导入是"批量覆盖属性"的操作，若顺带把已标记为 REAL 的真实相机
+        //   降级成 TEST，其数据会被每小时清理任务删除。类型只能由显式的
+        //   "新建/编辑相机"入口修改。
         return jdbcTemplate.update(
-                "INSERT INTO dim_camera(camera_id, factory_id, line_id, workstation_id, camera_code, camera_name, device_id, is_enabled, is_deleted) " +
-                        "VALUES (?,?,?,?,?,?,?,1,0) " +
+                "INSERT INTO dim_camera(camera_id, factory_id, line_id, workstation_id, camera_code, camera_name, device_id, camera_type, is_enabled, is_deleted) " +
+                        "VALUES (?,?,?,?,?,?,?,?,1,0) " +
                         "ON DUPLICATE KEY UPDATE factory_id=VALUES(factory_id), line_id=VALUES(line_id), workstation_id=VALUES(workstation_id), " +
                         "camera_code=VALUES(camera_code), camera_name=VALUES(camera_name), device_id=VALUES(device_id), is_enabled=1, is_deleted=0",
-                cameraId, factoryId, lineId, workstationId, cameraCode, cameraName, cameraCode);
+                cameraId, factoryId, lineId, workstationId, cameraCode, cameraName, cameraCode, "TEST");
     }
 
     /** 相机档案变更后同步映射表的工厂/产线/工位/编码 */

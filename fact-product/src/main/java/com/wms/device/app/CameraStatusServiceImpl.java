@@ -396,11 +396,22 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
         ensureColumn("abnormal_count", "ALTER TABLE camera_status ADD COLUMN abnormal_count INT DEFAULT 0 COMMENT '识别异常数'");
         ensureColumn("error_message", "ALTER TABLE camera_status ADD COLUMN error_message VARCHAR(500) NULL COMMENT '故障信息'");
         ensureColumn("last_upload_at", "ALTER TABLE camera_status ADD COLUMN last_upload_at DATETIME NULL COMMENT '最后缺陷图片上传时间'");
+        // ★ 2026-11-05 相机类型：REAL=真实产线相机（定时清理不碰），TEST=测试相机（参与清理）。
+        //   与 dim_camera.camera_type 双表一致，dim_camera 为权威源。
+        //   缺列时若不补，MyBatis-Plus 的 insert/update 会抛 Unknown column 'camera_type'。
+        ensureColumn("camera_type", "ALTER TABLE camera_status ADD COLUMN camera_type VARCHAR(20) NOT NULL DEFAULT 'TEST' COMMENT '相机类型：REAL=真实产线相机（不参与清理），TEST=测试相机（参与清理）'");
+        // 档案表同步补列（dim_camera 是清理任务判定的权威源，缺列会导致查询失败）
+        ensureDimCameraColumn("camera_type", "ALTER TABLE dim_camera ADD COLUMN camera_type VARCHAR(20) NOT NULL DEFAULT 'TEST' COMMENT '相机类型：REAL=真实产线相机（不参与清理），TEST=测试相机（参与清理）'");
     }
 
     private void ensureColumn(String columnName, String alterSql) {
         // DDD P3 批次③：SQL 下沉到 CameraDirectoryRepository
         // （INFORMATION_SCHEMA 判断 + 失败记 WARN 继续的语义在 Repository 内保留）
         cameraDirectoryRepository.ensureCameraStatusColumn(columnName, alterSql);
+    }
+
+    /** dim_camera 的补列（与 camera_status 同机制，异常语义一致：失败只记 WARN 后继续） */
+    private void ensureDimCameraColumn(String columnName, String alterSql) {
+        cameraDirectoryRepository.ensureDimCameraColumn(columnName, alterSql);
     }
 }
