@@ -3,14 +3,14 @@ package com.wms.device.app;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.wms.analytics.infra.repository.AnomalyAlertRepository;
 import com.wms.device.api.dto.CameraHeartbeatResponseDTO;
 import com.wms.device.api.dto.CameraStatusHeartbeatDTO;
 import com.wms.device.domain.model.CameraStatus;
 import com.wms.device.infra.mapper.CameraStatusMapper;
 import com.wms.device.infra.repository.CameraDirectoryRepository;
 import com.wms.device.app.ICameraStatusService;
-import com.wms.system.infra.repository.SystemSettingsRepository;
+import com.wms.device.app.event.CameraAlertEvent;
+import org.springframework.context.ApplicationEventPublisher;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
@@ -46,9 +46,10 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
     @Autowired
     private CameraDirectoryRepository cameraDirectoryRepository;
     @Autowired
-    private SystemSettingsRepository systemSettingsRepository;
+    private SystemSettingReader systemSettingReader;
+    /** DDD P4：告警经事件发布，analytics 域监听落库（解耦跨域依赖） */
     @Autowired
-    private AnomalyAlertRepository anomalyAlertRepository;
+    private ApplicationEventPublisher eventPublisher;
 
     private final Map<String, CameraStatusCache> statusCache = new ConcurrentHashMap<>();
 
@@ -256,7 +257,7 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
 
     private double getDecimalSetting(String key, double defaultValue) {
         try {
-            String value = systemSettingsRepository.findSettingValue(key);
+            String value = systemSettingReader.findSettingValue(key);
             if (StringUtils.hasText(value)) {
                 return Double.parseDouble(value.trim());
             }
@@ -268,12 +269,12 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
 
     private void insertAnomalyAlert(Integer lineId, Integer workstationId, String alertType, String alertLevel,
                                     String alertTitle, String alertMessage) {
-        try {
-            anomalyAlertRepository.insertCameraAlert(lineId, workstationId, alertType, alertLevel,
-                    alertTitle, alertMessage);
-        } catch (DataAccessException e) {
-            log.warn("写入相机异常告警失败: type={}, title={}, error={}", alertType, alertTitle, e.getMessage());
-        }
+        // DDD P4：原直接调 analytics 域 AnomalyAlertRepository（跨域违规），
+        // 改为发布事件由 analytics 监听器落库。同步事件（发布线程执行），落库失败
+        // 由监听器吞掉（原 catch 语义在监听器侧保持），此处不感知失败 —— 行为不变。
+        eventPublisher.publishEvent(new CameraAlertEvent(
+                lineId, workstationId, alertType, alertLevel,
+                alertTitle, alertMessage));
     }
 
     private String safe(String value) {

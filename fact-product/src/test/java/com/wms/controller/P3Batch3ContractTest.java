@@ -7,7 +7,7 @@ import com.wms.analytics.api.CameraDashboardController;
 import com.wms.device.app.ICameraStatusService;
 import com.wms.device.domain.model.CameraStatus;
 import com.wms.device.infra.mapper.CameraStatusMapper;
-import com.wms.device.infra.repository.CameraDirectoryRepository;
+import com.wms.device.app.CameraDirectory;
 import com.wms.masterdata.app.IDimProductionLineService;
 import com.wms.masterdata.app.IDimWorkstationService;
 import com.wms.masterdata.domain.model.DimProductionLine;
@@ -68,7 +68,7 @@ class P3Batch3ContractTest {
     @Mock
     private IDimProductionLineService lineService;
     @Mock
-    private CameraDirectoryRepository cameraDirectoryRepository;
+    private CameraDirectory cameraDirectory;
 
     @InjectMocks
     private CameraDashboardController cameraDashboardController;
@@ -94,12 +94,12 @@ class P3Batch3ContractTest {
     @DisplayName("dependencies: 有历史图片 → riskLevel=HIGH")
     void dependenciesHighByImages() throws Exception {
         when(cameraStatusMapper.selectById(9L)).thenReturn(existingCamera());
-        when(cameraDirectoryRepository.countDefectImageFiles(anyString(), anyString())).thenReturn(1347);
-        when(cameraDirectoryRepository.countCompatImages(anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countDefectImageBoxes(anyString(), anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countDefectMappings(anyLong())).thenReturn(0);
-        when(cameraDirectoryRepository.countCameraTokens(anyLong())).thenReturn(0);
-        when(cameraDirectoryRepository.countHeartbeats(anyString())).thenReturn(0);
+        when(cameraDirectory.countDefectImageFiles(anyString(), anyString())).thenReturn(1347);
+        when(cameraDirectory.countCompatImages(anyString())).thenReturn(0);
+        when(cameraDirectory.countDefectImageBoxes(anyString(), anyString())).thenReturn(0);
+        when(cameraDirectory.countDefectMappings(anyLong())).thenReturn(0);
+        when(cameraDirectory.countCameraTokens(anyLong())).thenReturn(0);
+        when(cameraDirectory.countHeartbeats(anyString())).thenReturn(0);
 
         MockMvc mvc = mvc();
         mvc.perform(get("/api/cameras/9/dependencies"))
@@ -116,12 +116,12 @@ class P3Batch3ContractTest {
     @DisplayName("dependencies: 仅映射与令牌 → riskLevel=MEDIUM")
     void dependenciesMediumByMappingAndToken() throws Exception {
         when(cameraStatusMapper.selectById(9L)).thenReturn(existingCamera());
-        when(cameraDirectoryRepository.countDefectImageFiles(anyString(), anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countCompatImages(anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countDefectImageBoxes(anyString(), anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countDefectMappings(anyLong())).thenReturn(2);
-        when(cameraDirectoryRepository.countCameraTokens(anyLong())).thenReturn(1);
-        when(cameraDirectoryRepository.countHeartbeats(anyString())).thenReturn(0);
+        when(cameraDirectory.countDefectImageFiles(anyString(), anyString())).thenReturn(0);
+        when(cameraDirectory.countCompatImages(anyString())).thenReturn(0);
+        when(cameraDirectory.countDefectImageBoxes(anyString(), anyString())).thenReturn(0);
+        when(cameraDirectory.countDefectMappings(anyLong())).thenReturn(2);
+        when(cameraDirectory.countCameraTokens(anyLong())).thenReturn(1);
+        when(cameraDirectory.countHeartbeats(anyString())).thenReturn(0);
 
         MockMvc mvc = mvc();
         mvc.perform(get("/api/cameras/9/dependencies"))
@@ -136,12 +136,12 @@ class P3Batch3ContractTest {
     @DisplayName("dependencies: 无任何依赖 → riskLevel=LOW 且 detail=无依赖")
     void dependenciesLow() throws Exception {
         when(cameraStatusMapper.selectById(9L)).thenReturn(existingCamera());
-        when(cameraDirectoryRepository.countDefectImageFiles(anyString(), anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countCompatImages(anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countDefectImageBoxes(anyString(), anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countDefectMappings(anyLong())).thenReturn(0);
-        when(cameraDirectoryRepository.countCameraTokens(anyLong())).thenReturn(0);
-        when(cameraDirectoryRepository.countHeartbeats(anyString())).thenReturn(0);
+        when(cameraDirectory.countDefectImageFiles(anyString(), anyString())).thenReturn(0);
+        when(cameraDirectory.countCompatImages(anyString())).thenReturn(0);
+        when(cameraDirectory.countDefectImageBoxes(anyString(), anyString())).thenReturn(0);
+        when(cameraDirectory.countDefectMappings(anyLong())).thenReturn(0);
+        when(cameraDirectory.countCameraTokens(anyLong())).thenReturn(0);
+        when(cameraDirectory.countHeartbeats(anyString())).thenReturn(0);
 
         MockMvc mvc = mvc();
         mvc.perform(get("/api/cameras/9/dependencies"))
@@ -169,35 +169,35 @@ class P3Batch3ContractTest {
     @DisplayName("delete: 有历史图片 → 拒绝删除，不做任何写操作")
     void deleteBlockedByImages() throws Exception {
         when(cameraStatusMapper.selectById(9L)).thenReturn(existingCamera());
-        when(cameraDirectoryRepository.countDefectImageFiles(anyString(), anyString())).thenReturn(10);
-        when(cameraDirectoryRepository.countCompatImages(anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countHeartbeats(anyString())).thenReturn(0);
+        when(cameraDirectory.countDefectImageFiles(anyString(), anyString())).thenReturn(10);
+        when(cameraDirectory.countCompatImages(anyString())).thenReturn(0);
+        when(cameraDirectory.countHeartbeats(anyString())).thenReturn(0);
 
         MockMvc mvc = mvc();
         mvc.perform(delete("/api/cameras/9"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(500));
 
-        verify(cameraDirectoryRepository, never()).softDeleteCameraStatus(anyLong());
-        verify(cameraDirectoryRepository, never()).softDeleteDimCamera(anyLong());
-        verify(cameraDirectoryRepository, never()).deleteDefectMappings(anyLong());
-        verify(cameraDirectoryRepository, never()).deleteCameraTokens(anyLong());
+        verify(cameraDirectory, never()).softDeleteCameraStatus(anyLong());
+        verify(cameraDirectory, never()).softDeleteDimCamera(anyLong());
+        verify(cameraDirectory, never()).deleteDefectMappings(anyLong());
+        verify(cameraDirectory, never()).deleteCameraTokens(anyLong());
     }
 
     @Test
     @DisplayName("delete: 有心跳记录 → 拒绝删除")
     void deleteBlockedByHeartbeat() throws Exception {
         when(cameraStatusMapper.selectById(9L)).thenReturn(existingCamera());
-        when(cameraDirectoryRepository.countDefectImageFiles(anyString(), anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countCompatImages(anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countHeartbeats(anyString())).thenReturn(5);
+        when(cameraDirectory.countDefectImageFiles(anyString(), anyString())).thenReturn(0);
+        when(cameraDirectory.countCompatImages(anyString())).thenReturn(0);
+        when(cameraDirectory.countHeartbeats(anyString())).thenReturn(5);
 
         MockMvc mvc = mvc();
         mvc.perform(delete("/api/cameras/9"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(500));
 
-        verify(cameraDirectoryRepository, never()).softDeleteCameraStatus(anyLong());
+        verify(cameraDirectory, never()).softDeleteCameraStatus(anyLong());
     }
 
     @Test
@@ -213,18 +213,18 @@ class P3Batch3ContractTest {
                 .andExpect(jsonPath("$.code").value(500))
                 .andExpect(jsonPath("$.message").value("相机已处于停用/删除状态，无需重复删除"));
 
-        verify(cameraDirectoryRepository, never()).softDeleteCameraStatus(anyLong());
+        verify(cameraDirectory, never()).softDeleteCameraStatus(anyLong());
     }
 
     @Test
     @DisplayName("delete: 无依赖 → 两表逻辑删除 + 映射/令牌级联清理")
     void deleteCascades() throws Exception {
         when(cameraStatusMapper.selectById(9L)).thenReturn(existingCamera());
-        when(cameraDirectoryRepository.countDefectImageFiles(anyString(), anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countCompatImages(anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.countHeartbeats(anyString())).thenReturn(0);
-        when(cameraDirectoryRepository.deleteDefectMappings(9L)).thenReturn(2);
-        when(cameraDirectoryRepository.deleteCameraTokens(9L)).thenReturn(1);
+        when(cameraDirectory.countDefectImageFiles(anyString(), anyString())).thenReturn(0);
+        when(cameraDirectory.countCompatImages(anyString())).thenReturn(0);
+        when(cameraDirectory.countHeartbeats(anyString())).thenReturn(0);
+        when(cameraDirectory.deleteDefectMappings(9L)).thenReturn(2);
+        when(cameraDirectory.deleteCameraTokens(9L)).thenReturn(1);
 
         MockMvc mvc = mvc();
         mvc.perform(delete("/api/cameras/9"))
@@ -233,11 +233,11 @@ class P3Batch3ContractTest {
                 .andExpect(jsonPath("$.data").value("删除成功"));
 
         // 两表都做逻辑删除（不是物理删除，保持一致可恢复）
-        verify(cameraDirectoryRepository).softDeleteCameraStatus(9L);
-        verify(cameraDirectoryRepository).softDeleteDimCamera(9L);
+        verify(cameraDirectory).softDeleteCameraStatus(9L);
+        verify(cameraDirectory).softDeleteDimCamera(9L);
         // 级联清理避免孤儿数据
-        verify(cameraDirectoryRepository).deleteDefectMappings(9L);
-        verify(cameraDirectoryRepository).deleteCameraTokens(9L);
+        verify(cameraDirectory).deleteDefectMappings(9L);
+        verify(cameraDirectory).deleteCameraTokens(9L);
     }
 
     // ---------------- 新增：设备编号唯一性 ----------------
@@ -256,7 +256,7 @@ class P3Batch3ContractTest {
         when(lineService.getById(3)).thenReturn(line);
 
         when(cameraStatusMapper.selectOne(any())).thenReturn(null);
-        when(cameraDirectoryRepository.countDimCameraByCode("ZZ-DUP-001")).thenReturn(1);
+        when(cameraDirectory.countDimCameraByCode("ZZ-DUP-001")).thenReturn(1);
 
         Map<String, Object> body = new HashMap<>();
         body.put("cameraCode", "ZZ-DUP-001");

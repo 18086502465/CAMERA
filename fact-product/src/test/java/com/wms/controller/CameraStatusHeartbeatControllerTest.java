@@ -5,6 +5,8 @@ import com.wms.device.api.dto.CameraHeartbeatResponseDTO;
 import com.wms.device.api.dto.CameraStatusHeartbeatDTO;
 import com.wms.device.api.CameraStatusHeartbeatController;
 import com.wms.device.app.ICameraStatusService;
+import com.wms.device.app.SystemSettingReader;
+import org.springframework.context.ApplicationEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -37,6 +39,12 @@ class CameraStatusHeartbeatControllerTest {
     @Mock
     private ICameraStatusService cameraStatusService;
 
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
+
+    @Mock
+    private SystemSettingReader systemSettingReader;
+
     @InjectMocks
     private CameraStatusHeartbeatController controller;
 
@@ -45,6 +53,10 @@ class CameraStatusHeartbeatControllerTest {
 
     @BeforeEach
     void setUp() {
+        // DDD P4：心跳里的告警阈值读取走 SystemSettingReader 端口；null → 调用方兜底默认值
+        org.mockito.Mockito.lenient().when(systemSettingReader.findSettingValue(org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(null);
+
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 
