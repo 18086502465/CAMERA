@@ -261,6 +261,45 @@ public class AnalyticsAggregationRepository {
     // ==================== 日聚合重建 ====================
 
     /** 重建质量日聚合（先删后插） */
+    /**
+     * 清理「孤儿聚合行」—— line_id 关联不到有效产线的历史残留。
+     *
+     * <p><b>为什么需要</b>：产线被删除后，{@code agg_quality_30m} /
+     * {@code agg_defect_type_30m} 里该产线的历史行不会被自动清掉（重建只覆盖
+     * 「当前筛选范围内」的数据，删掉的产线永远不在范围内）。这些行：
+     * <ul>
+     *   <li>让"聚合表有无数据"的判断失真 → 统计页数据源路由错误；</li>
+     *   <li>在「不筛选产线」时被算进总数，而筛选该产线时又看不到 →
+     *       出现「子集比全集大」的自相矛盾（2026-11-05 现场实测：line_id=1
+     *       的产线早已删除，残留 4 行 → 不筛选显示 4、筛选 ZK23 显示 3041）。</li>
+     * </ul>
+     *
+     * <p>清理维度用 <b>line_id</b>（产线维表是权威），同时覆盖工厂维表
+     * （factory_id 关联不到有效工厂的行同样是垃圾）。
+     *
+     * @return 删除的总行数
+     */
+    public int purgeOrphanAggregationRows() {
+        int deleted = 0;
+        deleted += jdbcTemplate.update(
+                "DELETE q FROM agg_quality_30m q "
+                        + "LEFT JOIN dim_production_line l ON q.line_id = l.line_id "
+                        + "WHERE l.line_id IS NULL");
+        deleted += jdbcTemplate.update(
+                "DELETE q FROM agg_defect_type_30m q "
+                        + "LEFT JOIN dim_production_line l ON q.line_id = l.line_id "
+                        + "WHERE l.line_id IS NULL");
+        deleted += jdbcTemplate.update(
+                "DELETE q FROM agg_quality_day q "
+                        + "LEFT JOIN dim_production_line l ON q.line_id = l.line_id "
+                        + "WHERE l.line_id IS NULL");
+        deleted += jdbcTemplate.update(
+                "DELETE q FROM agg_defect_type_day q "
+                        + "LEFT JOIN dim_production_line l ON q.line_id = l.line_id "
+                        + "WHERE l.line_id IS NULL");
+        return deleted;
+    }
+
     public int rebuildQualityDaily(String deleteWhere, List<Object> deleteParams,
                                    String sourceWhere, List<Object> insertParams) {
         jdbcTemplate.update("DELETE FROM agg_quality_day " + deleteWhere, deleteParams.toArray());

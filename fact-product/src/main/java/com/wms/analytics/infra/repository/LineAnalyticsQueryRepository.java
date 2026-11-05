@@ -123,7 +123,10 @@ public class LineAnalyticsQueryRepository {
         return jdbcTemplate.queryForList(
                 "SELECT DATE_FORMAT(f.capture_time,'%Y-%m-%d %H:00:00') AS timeBucket, " +
                         "COUNT(1) AS totalCount, 0 AS okCount, COUNT(1) AS ngCount, " +
-                        "COALESCE(SUM(f.defect_count),0) AS defectCount, 0 AS yieldRate " +
+                        // ★ 2026-11-05：图片通道只上报缺陷图，**没有良品样本** → 良率不可计算。
+                        //   原先写死 `0 AS yieldRate`，前端会照着画一条 0% 的假良率曲线，
+                        //   误导现场以为"良率为 0"。改为 NULL，由前端按「不可计算」处理。
+                        "COALESCE(SUM(f.defect_count),0) AS defectCount, NULL AS yieldRate " +
                         "FROM defect_image_file f " + joinCam + where +
                         " GROUP BY DATE_FORMAT(f.capture_time,'%Y-%m-%d %H:00:00') ORDER BY timeBucket",
                 params.toArray());

@@ -34,6 +34,15 @@
       </div>
     </div>
 
+    <el-alert
+      v-if="historyQueryHint"
+      type="info"
+      :closable="false"
+      show-icon
+      title="查询范围包含 31 天前的历史数据：将自动查询月度归档表，结果可能较慢（默认查询近一个月为毫秒级）"
+      class="history-query-hint"
+    />
+
     <EmptyState v-if="loading" type="loading" title="图像记录加载中" text="正在加载相机和缺陷图片，请稍候" />
 
     <el-row :gutter="16" v-else-if="filteredCameras.length > 0">
@@ -176,6 +185,19 @@ const summaries = ref([])
 const searchKeyword = ref('')
 const imageFilters = reactive({ severity: '', defectType: '' })
 const imageTimeRange = ref([])
+
+/**
+ * 历史查询提示（2026-11-05 月度归档）：
+ * 主表只保留近 31 天，更早数据在月表。选到 31 天前时后端自动路由到归档表，
+ * 结果正确但可能较慢，这里给用户一个预期。
+ */
+const historyQueryHint = computed(() => {
+  const range = imageTimeRange.value
+  if (!range || range.length !== 2) return false
+  const start = new Date(String(range[0]).replace(/-/g, '/')).getTime()
+  if (Number.isNaN(start)) return false
+  return start < Date.now() - 31 * 24 * 3600 * 1000
+})
 const expandedMap = reactive({})
 const cameraPages = reactive({})
 const cameraHistoryState = reactive({})

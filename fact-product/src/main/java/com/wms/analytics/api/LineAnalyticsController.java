@@ -48,6 +48,9 @@ import java.util.concurrent.atomic.AtomicLong;
 @RequestMapping("/api/v1/analytics")
 public class LineAnalyticsController {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(LineAnalyticsController.class);
+
     @Autowired
     private LineAnalyticsRepository lineAnalyticsRepository;
 
@@ -137,7 +140,47 @@ public class LineAnalyticsController {
             // 大范围查询直接使用日聚合表；若当前时间范围尚未聚合，查询前同步补齐一次。
             rebuildQualityDaily(start.toLocalDate(), end.toLocalDate(), factoryId, lineId);
             rebuildDefectDaily(start.toLocalDate(), end.toLocalDate(), factoryId, lineId);
+            // ★ 2026-11-05：顺带清理「孤儿聚合行」（产线已删除但聚合表里还留着）。
+            //   这些行会污染"聚合表有无数据"的判断，导致「不筛选产线」时把
+            //   已删除产线的历史数据算进总数（子集比全集大的矛盾）。
+            //   放在重建之后执行，保证产线一旦被删，下次重建就会清掉残留。
+            try {
+                int purged = aggregationRepository.purgeOrphanAggregationRows();
+                if (purged > 0) {
+                    log.info("已清理孤儿聚合行 {} 条（产线已删除但聚合表残留）", purged);
+                }
+            } catch (Exception e) {
+                log.warn("清理孤儿聚合行失败（不影响统计结果）: {}", e.getMessage());
+            }
         }
+
+        // ★ 2026-11-05 数据源优先级修正（详见 buildSummary 的完整说明）
+        //   现场设备走 defect-images/upload 通道，只写 defect_image_*，**不写** agg_*；
+        //   agg_quality_30m 的唯一写入来源是 batch-upload（冻结契约）+ 日聚合重建。
+        //   现场实测 agg_quality_30m 只剩 5 条**孤儿行**（line_id 指向早已删除的产线）。
+        //   旧判定「聚合表完全无数据才兜底」会被这些孤儿行骗过 →
+        //   不筛选产线时显示聚合表的 4 条，筛选产线时触发兜底显示图片表的 3041 条
+        //   → **子集比全集还大**，用户完全无法理解。
+        //   改为：**图片事实表优先**（它是现场真正在用的通道），聚合表仅在图片表无数据时兜底。
+        Map<String, Object> imageData = buildDefectImageSummary(
+                start, end, factoryId, lineId, workstationId, cameraId, severity);
+        if (longVal(map(imageData.get("kpi")).get("totalCount")) > 0) {
+            Map<String, Object> data = new LinkedHashMap<>(imageData);
+            data.put("aggregationLevel", daily ? "DAY" : "30M");
+            data.put("aggregationMessage", daily ? "当前时间范围较大，已自动使用日聚合表查询。" : "当前使用30分钟聚合表查询。");
+            data.put("aggregationThresholdDays", DAILY_AGGREGATION_THRESHOLD_DAYS);
+            data.put("dataSource", "DEFECT_IMAGE");
+            data.put("dataSourceMessage", "当前使用缺陷图片事实表统计（现场设备实际上报通道）；该通道只上报缺陷图，良率不可计算。");
+            // ★ 映射异常与数据源无关（独立指标），但必须补上 ——
+            //   否则图片表路径的响应会少这个键，与聚合表路径结构不一致。
+            data.put("mappingExceptions", queryRepository.queryOpenMappingExceptions());
+            data.put("severityDistribution", data.get("severityDistribution"));
+            data.put("defectPareto", buildPareto(data.get("defectRanking")));
+            data.put("plantOverview", buildPlantOverview(data));
+            data.put("defectTrend", buildDefectTrend(data.get("trend")));
+            return data;
+        }
+
         String qualityTable = daily ? "agg_quality_day" : "agg_quality_30m";
         String defectTable = daily ? "agg_defect_type_day" : "agg_defect_type_30m";
         String timeColumn = daily ? "date_bucket" : "time_bucket";
@@ -171,30 +214,17 @@ public class LineAnalyticsController {
         data.put("defectPivot", buildDefectPivot(defectTable, timeColumn, daily, start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId));
         data.put("mappingExceptions", queryRepository.queryOpenMappingExceptions());
 
-        // ★ 数据源兜底：聚合表无数据时，回落到「缺陷图片事实表」。
-        //   现场设备走的是 defect-images/upload 通道，该通道只写 defect_image_*，
-        //   不写 agg_* 聚合表 —— 若只读聚合表，统计页在只有图片上报的现场永远是 0。
-        if (longVal(kpi.get("totalCount")) == 0 && longVal(kpi.get("defectCount")) == 0) {
-            Map<String, Object> fallback = buildDefectImageSummary(start, end, factoryId, lineId, workstationId, cameraId, severity);
-            if (longVal(map(fallback.get("kpi")).get("totalCount")) > 0) {
-                data.putAll(fallback);
-                data.put("aggregationLevel", daily ? "DAY" : "30M");
-                data.put("dataSource", "DEFECT_IMAGE");
-                data.put("dataSourceMessage", "当前范围聚合表无数据，已自动切换到缺陷图片事实表统计。");
-            }
-        }
-        if (!data.containsKey("dataSource")) {
-            data.put("dataSource", "AGGREGATION");
-            data.put("dataSourceMessage", "当前使用质量聚合表统计。");
-        }
+        // ★ 2026-11-05：走到这里说明「缺陷图片事实表」在当前范围没有数据
+        //   （可能查的是图片保留期之外的历史区间）。此时用质量聚合表兜底。
+        data.put("dataSource", "AGGREGATION");
+        data.put("dataSourceMessage", "当前范围缺陷图片事实表无数据，已切换到质量聚合表统计。");
 
         // ---- 工厂厂长视角指标（严重度分布 / 帕累托 / 总览 / 缺陷趋势）----
-        // ⚠️ 严重度分布必须用「与主数据源同源」的查询，否则兜底路径下会被空结果覆盖。
-        Object severityRows = "DEFECT_IMAGE".equals(data.get("dataSource"))
-                ? data.get("severityDistribution")
-                : buildSeverityDistribution(defectTable, timeColumn, daily, start, end,
-                        factoryId, lineId, workstationId, cameraId, productId, shiftId, severity);
-        data.put("severityDistribution", severityRows);
+        // ⚠️ 严重度分布必须用「与主数据源同源」的查询，否则数据源切换时会被空结果覆盖。
+        //   2026-11-05 起主数据源是「缺陷图片事实表」，它自带 severityDistribution；
+        //   走到这里说明用的是聚合表 → 用聚合表口径重新查。
+        data.put("severityDistribution", buildSeverityDistribution(defectTable, timeColumn, daily, start, end,
+                factoryId, lineId, workstationId, cameraId, productId, shiftId, severity));
         data.put("defectPareto", buildPareto(data.get("defectRanking")));
         data.put("plantOverview", buildPlantOverview(data));
         data.put("defectTrend", buildDefectTrend(data.get("trend")));
