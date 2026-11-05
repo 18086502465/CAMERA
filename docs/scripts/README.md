@@ -17,6 +17,13 @@
 | `service.sh` | **统一运维入口**（与线上同名副本一致） | `bash service.sh {health\|version\|config-check\|rollback\|cleanup\|status\|logs\|start\|stop\|restart}` |
 | `apply_config_separation.sh` | 配置去密钥改造的服务器落地（**一次性**，改造完成可删） | `sudo bash apply_config_separation.sh` |
 | `sync_static.py` | 把 `frontend/dist` 同步到后端 `static/` 并清理陈旧 chunk | `python sync_static.py` |
+| `upload_jar_b64.py` | **上传 JAR 到服务器**（唯一可行通道，2026-11-05 实测） | `SSH_PASSWORD='xxx' python3 upload_jar_b64.py <本地JAR> <远端路径>` |
+
+> ⚠️ **上传大文件只能走 base64 分块**（2026-11-05 实测）：
+> `scp` 不支持 SSH_ASKPASS；paramiko **SFTP 子系统报 ENOENT**；
+> paramiko **管道直传 60MB+ 会被服务端断开**（`Socket is closed`）。
+> 只有 `upload_jar_b64.py`（base64 分块 + 普通命令通道）实测可用。
+> Git Bash 需 `MSYS_NO_PATHCONV=1`，否则 `/home/...` 会被转成 Windows 路径。
 
 ---
 
@@ -27,6 +34,7 @@
 | `fix_zk19_data.sh` | 逻辑删除 ZK19 空产线及其 2 个空工位 | 需 `MYSQL_PASSWORD` |
 | `cleanup_test_widgets.sh` | 清理看板里混入的测试图表 | 幂等，重复执行删 0 条 |
 | `cleanup_test_dashboards.sh` | 清理「按钮验证」遗留的空看板模板 | 幂等 |
+| `cleanup_p3b2_testdata.py` | 清理 DDD 批次② 验证产生的 `ZZTEST*` 产品/缺陷类型/映射 | 需 `MYSQL_PASSWORD`，只删 ZZTEST 前缀 |
 
 ---
 
@@ -38,6 +46,14 @@
 | `verify_p0_fixes.sh` | **P0**：心跳匹配不串号 + API 路径修正 + 假数据接入 | 在服务器上执行 `bash verify_p0_fixes.sh <管理员口令>` |
 | `verify_config_separation.py` | 配置去密钥后的业务功能（登录、4 个业务接口、设备心跳、图片数） | `python verify_config_separation.py`（需 paramiko 与环境变量） |
 | `verify_zk19_fix.py` | ZK19 修复后的接口与数据完整性 | 同上 |
+| `verify_p3b2_browser.cjs` | **DDD 批次②**：配置页/相机页/缺陷类型页真实数据渲染 + 0 JS 错误 | `node verify_p3b2_browser.cjs`（需 `puppeteer-core` + Chrome） |
+| `compare_structure.py` | **接口快照「键结构树」比对**（只比键路径、忽略值）→ 行为不变的硬指标 | `python3 compare_structure.py <旧快照目录> <新快照目录>`（服务器上执行） |
+| `compare_p3_sql.py` | **SQL 搬运一致性**：还原 Java 字符串拼接后逐条比对原 Controller 与新 Repository | `python3 compare_p3_sql.py <原Controller目录> <新Repository目录>` |
+
+> **为什么两个 compare 都要**：`api_snapshot.py` 的 diff 比对**归一化后的值**，
+> 运行时数据漂移（相机实时上报、看板聚合、CPU 瞬时值）会报出来，需人工判定；
+> `compare_structure.py` 只比**键路径集合**，才能证明「响应结构零变化」。
+> `compare_p3_sql.py` 保证 P3 阶段「SQL 逐字搬运、零优化」没走样。
 
 ---
 
