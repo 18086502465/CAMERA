@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.wms.mapper.DimProductBrandMapper">
+<mapper namespace="com.wms.masterdata.infra.mapper.DimProductBrandMapper">
     <select id="selectBrandIdByProductName" resultType="java.lang.Integer">
         SELECT brand_id FROM dim_product_brand
         WHERE brand_name LIKE CONCAT('%', #{productName}, '%')

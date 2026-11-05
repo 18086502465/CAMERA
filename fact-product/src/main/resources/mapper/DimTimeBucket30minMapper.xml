@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.wms.mapper.DimTimeBucket30minMapper">
+<mapper namespace="com.wms.analytics.infra.mapper.DimTimeBucket30minMapper">
 
     <!-- 根据 日期+小时+分钟分组 精准查询bucketId -->
     <select id="selectBucketIdByTime" resultType="java.lang.Integer">

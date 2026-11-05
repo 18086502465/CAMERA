@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.wms.mapper.SysOperationLogMapper">
+<mapper namespace="com.wms.iam.infra.mapper.SysOperationLogMapper">
 
     <!--
       【2026-10-28 修复】原文件里有三个 id 劫持了 BaseMapper 的同名通用方法：
@@ -18,7 +18,7 @@
       MyBatis-Plus 的规则是「XML 优先」，
       于是启动时 MyBatis-Plus 会认为 BaseMapper 的 insert 已被 XML 加载，
       跳过自己的注入，并打一条 WARN：
-        WARN  [com.wms.mapper.SysOperationLogMapper.insert] Has been loaded by XML
+        WARN  [com.wms.iam.infra.mapper.SysOperationLogMapper.insert] Has been loaded by XML
               or SqlProvider or Mybatis's Annotation, so ignoring this injection
               for [class com.baomidou.mybatisplus.core.injector.methods.Insert]
 

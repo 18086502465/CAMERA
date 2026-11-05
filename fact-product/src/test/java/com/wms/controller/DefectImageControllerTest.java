@@ -1,7 +1,8 @@
 package com.wms.controller;
 
-import com.wms.dto.DefectImageUploadResultDTO;
-import com.wms.service.IDefectImageService;
+import com.wms.defect.api.dto.DefectImageUploadResultDTO;
+import com.wms.defect.api.DefectImageController;
+import com.wms.defect.app.IDefectImageService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

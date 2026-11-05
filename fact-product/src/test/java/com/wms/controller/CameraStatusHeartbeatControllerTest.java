@@ -1,9 +1,10 @@
 package com.wms.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wms.dto.CameraHeartbeatResponseDTO;
-import com.wms.dto.CameraStatusHeartbeatDTO;
-import com.wms.service.ICameraStatusService;
+import com.wms.device.api.dto.CameraHeartbeatResponseDTO;
+import com.wms.device.api.dto.CameraStatusHeartbeatDTO;
+import com.wms.device.api.CameraStatusHeartbeatController;
+import com.wms.device.app.ICameraStatusService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
