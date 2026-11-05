@@ -113,7 +113,7 @@ class DddBaselineContractTest {
     @Mock
     private IDimShiftService shiftService;
     @Mock
-    private JdbcTemplate jdbcTemplate;
+    private com.wms.masterdata.infra.repository.MasterDataRepository masterDataRepository;
 
     @InjectMocks
     private CascadeController cascadeController;
@@ -126,7 +126,8 @@ class DddBaselineContractTest {
         when(workstationService.list()).thenReturn(Collections.emptyList());
         when(brandService.list()).thenReturn(Collections.emptyList());
         when(shiftService.list()).thenReturn(Collections.emptyList());
-        when(jdbcTemplate.queryForList(anyString())).thenReturn(Collections.emptyList());
+        // DDD P3：级联的相机计数已下沉到 MasterDataRepository（原语义：失败返回空 Map）
+        when(masterDataRepository.countCamerasGroupByStation()).thenReturn(Collections.emptyMap());
 
         MockMvc mvc = MockMvcBuilders.standaloneSetup(cascadeController).build();
         mvc.perform(get("/api/cascade/all"))

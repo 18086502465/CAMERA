@@ -12,6 +12,7 @@ import com.wms.masterdata.app.IDimProductBrandService;
 import com.wms.masterdata.app.IDimShiftService;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
+import com.wms.masterdata.infra.repository.MasterDataRepository;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.*;
@@ -40,7 +41,7 @@ public class CascadeController {
     private IDimShiftService shiftService;
 
     @Autowired
-    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+    private MasterDataRepository masterDataRepository;
 
     /**
      * 返回前端级联筛选所需的全量数据
@@ -142,23 +143,8 @@ public class CascadeController {
      * <p>用单条 GROUP BY 一次取回，避免逐工位查询产生 N+1。
      */
     private Map<Integer, Integer> countCamerasByStation() {
-        Map<Integer, Integer> result = new HashMap<>();
-        try {
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT workstation_id, COUNT(*) AS cnt FROM dim_camera "
-                    + "WHERE IFNULL(is_deleted,0)=0 AND workstation_id IS NOT NULL GROUP BY workstation_id");
-            for (Map<String, Object> row : rows) {
-                Object wsId = row.get("workstation_id");
-                Object cnt = row.get("cnt");
-                if (wsId instanceof Number && cnt instanceof Number) {
-                    result.put(((Number) wsId).intValue(), ((Number) cnt).intValue());
-                }
-            }
-        } catch (Exception e) {
-            // 统计失败不应影响级联数据返回，退化为「前端按 camera_status 统计」
-            return new HashMap<>();
-        }
-        return result;
+        // DDD P3 批次①：SQL 下沉到 MasterDataRepository（原语义：统计失败返回空 Map）
+        return masterDataRepository.countCamerasGroupByStation();
     }
 
     private Map<String, Object> buildStationMap(DimWorkstation w, Integer cameraCount) {
