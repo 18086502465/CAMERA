@@ -169,6 +169,24 @@ log "④ 运行测试"
 mvn -q test
 ok "测试通过"
 
+# --- ④b 轻量更新包（--update-only）：只产出 classes 增量，跳过 ⑤⑥⑦⑧ ---------
+#   日常"只改了后端/前端代码"的发版用这个：update-<时间戳>.zip（~2-5MB），
+#   服务器端 deploy_jar.sh <update.zip> 与现有 fat jar 合成，依赖指纹不一致自动拒绝。
+#   首次安装 / 依赖变更 / 发正式包时仍走全量（不带本参数）。
+if [[ "${1:-}" == "--update-only" ]]; then
+  log "④b 生成轻量更新包（--update-only）"
+  TOOL="${LINUX_DIR}/scripts/jar_manifest.py"
+  [[ -f "$TOOL" ]] || die "缺少工具 $TOOL"
+  mkdir -p "${OUT_DIR}/update"
+  python3 "$TOOL" make-update "$JAR" "${OUT_DIR}/update"
+  ok "轻量更新包已生成 → ${OUT_DIR}/update/"
+  echo ""
+  echo "  升级方式："
+  echo "    scp ${OUT_DIR}/update/update-*.zip lims@<服务器>:/tmp/"
+  echo "    SUDO_PASSWORD='<sudo口令>' bash deploy_jar.sh /tmp/update-*.zip"
+  exit 0
+fi
+
 # --- ⑤⑥⑦ 组装发布目录 -------------------------------------------------------
 log "⑤ 组装发布目录"
 rm -rf "$STAGE_DIR"

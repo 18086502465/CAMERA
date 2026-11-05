@@ -6,6 +6,12 @@
 #   export SUDO_PASSWORD='<服务器 sudo 口令>'
 #   bash deploy_jar.sh [JAR路径]
 #
+# 两种模式（按扩展名自动识别）：
+#   *.zip  → 增量模式：包内是 BOOT-INF/classes/** + manifest.json（~2-5MB），
+#            在服务器上与现有 fat jar 合成（依赖指纹一致才允许），
+#            合成成功后才停服替换 —— 停服窗口更短
+#   *.jar  → 全量模式：fat jar 原子替换（首次安装/依赖变更时使用）
+#
 # 能力：
 #   1. 备份当前 JAR（带时间戳）
 #   2. 原子替换（先写临时文件再 mv，避免替换过程中服务读到半个文件）
@@ -25,7 +31,7 @@
 # ============================================================
 set -u
 
-JAR="${1:-/tmp/time-bucket-demo.jar}"
+SRC="${1:-/tmp/time-bucket-demo.jar}"
 APP_DIR=/opt/camera-detection-system/app
 TARGET="$APP_DIR/time-bucket-demo.jar"
 SERVICE=camera-detection
@@ -33,6 +39,7 @@ STAMP="$(date '+%Y%m%d_%H%M%S')"
 BACKUP="$TARGET.bak-$STAMP"
 HEALTH_URL="http://127.0.0.1:8091/"
 HEALTH_RETRIES=20
+TOOL_DIR="$(cd "$(dirname "$0")" && pwd)"     # jar_manifest.py 与本脚本同目录
 
 log()  { printf '[deploy] %s\n' "$*"; }
 die()  { printf '[deploy] 错误：%s\n' "$*" >&2; exit 1; }
@@ -40,16 +47,38 @@ die()  { printf '[deploy] 错误：%s\n' "$*" >&2; exit 1; }
 # --- 前置检查 --------------------------------------------------------------
 [[ -n "${SUDO_PASSWORD:-}" ]] || die "未设置环境变量 SUDO_PASSWORD，无法执行需要 root 的操作
   用法：export SUDO_PASSWORD='<服务器 sudo 口令>' && bash $0"
-[[ -f "$JAR" ]] || die "未找到待部署的 JAR：$JAR"
+[[ -f "$SRC" ]] || die "未找到待部署文件：$SRC"
+
+MODE=full
+case "$SRC" in
+  *.zip) MODE=incremental ;;
+  *.jar) MODE=full ;;
+  *) die "无法识别的部署文件类型（应为 .zip 增量 / .jar 全量）：$SRC" ;;
+esac
 
 sudo_do() {
   # 所有需要 root 的操作统一走这里；口令错误会立刻暴露，不静默
   echo "$SUDO_PASSWORD" | sudo -S "$@" || die "sudo 执行失败：$*"
 }
 
+# --- 增量模式：先在线合成（服务不停，读当前 JAR 是只读操作） ------------------
+if [[ "$MODE" == "incremental" ]]; then
+  log "增量模式：update 包 $SRC"
+  [[ -f "$TOOL_DIR/jar_manifest.py" ]] || die "缺少合成工具 $TOOL_DIR/jar_manifest.py（与 deploy_jar.sh 同目录分发）"
+  MERGED="/tmp/merged-$(date '+%Y%m%d_%H%M%S').jar"
+  log "与线上 fat jar 合成（依赖指纹校验 → classes 整段替换）..."
+  if ! python3 "$TOOL_DIR/jar_manifest.py" merge "$TARGET" "$SRC" "$MERGED"; then
+    die "合成失败（依赖指纹不一致或包损坏）。依赖变更场景请改用【全量 fat jar】部署。"
+  fi
+  JAR="$MERGED"
+  log "合成产物：$JAR（$(stat -c %s "$JAR") 字节），后续走标准替换流程"
+else
+  JAR="$SRC"
+fi
+
 OLD_SIZE=$(stat -c %s "$TARGET" 2>/dev/null || echo 0)
 NEW_SIZE=$(stat -c %s "$JAR" 2>/dev/null || echo 0)
-log "待部署 JAR：$JAR（$NEW_SIZE 字节）"
+log "待部署文件：$SRC（模式=$MODE，$(stat -c %s "$SRC") 字节）"
 log "当前线上 JAR：$TARGET（$OLD_SIZE 字节）"
 
 echo ""
@@ -68,7 +97,7 @@ done
 log "服务已停止"
 
 echo ""
-log "3/5 原子替换 JAR"
+log "3/5 原子替换（$MODE）"
 # 先写临时文件再 mv：替换过程中即使服务意外重启，也不会读到半个文件
 sudo_do cp "$JAR" "${TARGET}.new"
 sudo_do chown cdsys:cdsys "${TARGET}.new"
