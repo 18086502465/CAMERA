@@ -6,7 +6,7 @@ import com.wms.masterdata.domain.model.DimWorkstation;
 import com.wms.masterdata.app.IDimWorkstationService;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.wms.masterdata.infra.repository.MasterDataRepository;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -22,7 +22,7 @@ public class DimWorkstationController {
     private IDimWorkstationService workstationService;
 
     @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private MasterDataRepository masterDataRepository;
 
     @GetMapping
     public ResultVO<?> listAll(@RequestParam(required = false) Integer lineId,
@@ -66,18 +66,9 @@ public class DimWorkstationController {
         ws.setStationId(id);
         workstationService.updateById(ws);
         if (ws.getLineId() != null) {
-            jdbcTemplate.update("UPDATE camera_status SET line_id=?, update_time=NOW() WHERE workstation_id=?",
-                    ws.getLineId(), id);
-            jdbcTemplate.update(
-                    "UPDATE dim_camera dc JOIN dim_production_line l ON l.line_id=? " +
-                            "SET dc.line_id=?, dc.factory_id=l.factory_id, dc.workstation_id=? " +
-                            "WHERE dc.workstation_id=? AND IFNULL(dc.is_deleted,0)=0",
-                    ws.getLineId(), ws.getLineId(), id, id);
-            jdbcTemplate.update(
-                    "UPDATE cfg_camera_defect_mapping m JOIN dim_camera c ON m.camera_id=c.camera_id " +
-                            "SET m.factory_id=c.factory_id, m.line_id=c.line_id, m.workstation_id=c.workstation_id, m.camera_code=c.camera_code " +
-                            "WHERE c.workstation_id=? AND IFNULL(c.is_deleted,0)=0",
-                    id);
+            masterDataRepository.touchCameraStatusOnWorkstationMove(ws.getLineId(), id);
+            masterDataRepository.syncCameraLocation(ws.getLineId(), id);
+            masterDataRepository.remapDefectMappingByStation(id);
         }
         return ResultVO.success("更新成功");
     }
@@ -94,9 +85,9 @@ public class DimWorkstationController {
     @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     public ResultVO<String> delete(@PathVariable Integer id) {
-        int cameraCount = count("SELECT COUNT(*) FROM dim_camera WHERE workstation_id = ? AND IFNULL(is_deleted,0)=0", id);
-        int productionCount = count("SELECT COUNT(*) FROM fact_production_30min WHERE workstation_id = ?", id);
-        int defectCount = count("SELECT COUNT(*) FROM product_detection_history WHERE workstation_id = ?", id);
+        int cameraCount = masterDataRepository.countCamerasByStation(id);
+        int productionCount = masterDataRepository.countProductionByStation(id);
+        int defectCount = masterDataRepository.countDetectionByStation(id);
         if (cameraCount > 0) {
             return ResultVO.fail("工位已绑定相机，禁止直接删除。请先迁移或解绑相机后再操作。",
                     "依赖明细：相机 " + cameraCount + " 台，生产记录 " + productionCount + " 条，缺陷记录 " + defectCount + " 条。");
@@ -109,8 +100,8 @@ public class DimWorkstationController {
         //   现在改为：把绑定相机的 workstation_id 改成一个「已删除工位」占位值不可行，
         //   正确做法是**只停用相机**（is_enabled=0 + is_deleted=1 走相机自身的删除语义），
         //   由前端在相机行上看到「工位已删除」提示；这里不再写 NULL。
-        int boundCameras = count("SELECT COUNT(*) FROM dim_camera WHERE workstation_id = ? AND IFNULL(is_deleted,0)=0", id);
-        jdbcTemplate.update("UPDATE dim_camera SET is_enabled = 0, update_time = NOW() WHERE workstation_id = ? AND IFNULL(is_deleted,0)=0", id);
+        int boundCameras = masterDataRepository.countCamerasByStation(id);
+        masterDataRepository.disableCamerasByStation(id);
         workstationService.removeById(id);
         // 注意 ResultVO.success(data, message) 的参数顺序：data 在前、message 在后。
         String message = boundCameras > 0
@@ -122,9 +113,9 @@ public class DimWorkstationController {
     @GetMapping("/{id}/dependencies")
     public ResultVO<Map<String, Object>> dependencies(@PathVariable Integer id) {
         // ★ 查 dim_camera（绑定关系的真实来源），而非 camera_status（状态快照）
-        int cameraCount = count("SELECT COUNT(*) FROM dim_camera WHERE workstation_id = ? AND IFNULL(is_deleted,0)=0", id);
-        int productionCount = count("SELECT COUNT(*) FROM fact_production_30min WHERE workstation_id = ?", id);
-        int defectCount = count("SELECT COUNT(*) FROM product_detection_history WHERE workstation_id = ?", id);
+        int cameraCount = masterDataRepository.countCamerasByStation(id);
+        int productionCount = masterDataRepository.countProductionByStation(id);
+        int defectCount = masterDataRepository.countDetectionByStation(id);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("cameraCount", cameraCount);
         data.put("productionCount", productionCount);
@@ -133,12 +124,4 @@ public class DimWorkstationController {
         return ResultVO.success(data);
     }
 
-    private int count(String sql, Object... args) {
-        try {
-            Integer value = jdbcTemplate.queryForObject(sql, Integer.class, args);
-            return value == null ? 0 : value;
-        } catch (Exception e) {
-            return 0;
-        }
-    }
 }

@@ -7,7 +7,7 @@ import com.wms.masterdata.app.IDimFactoryService;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.jdbc.core.JdbcTemplate;
+import com.wms.masterdata.infra.repository.MasterDataRepository;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -24,7 +24,7 @@ public class DimFactoryController {
     private IDimFactoryService factoryService;
 
     @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private MasterDataRepository masterDataRepository;
 
     @GetMapping
     public ResultVO<?> listAll(@RequestParam(required = false) Integer companyId,
@@ -82,25 +82,25 @@ public class DimFactoryController {
     @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     public ResultVO<String> delete(@PathVariable Integer id) {
-        int lineCount = count("SELECT COUNT(*) FROM dim_production_line WHERE factory_id = ? AND IFNULL(is_deleted,0)=0", id);
-        int userCount = count("SELECT COUNT(*) FROM sys_user WHERE factory_id = ?", id);
+        int lineCount = masterDataRepository.countLinesByFactory(id);
+        int userCount = masterDataRepository.countUsersByFactory(id);
         if (lineCount > 0 || userCount > 0) {
             return ResultVO.fail("工厂存在依赖数据，禁止直接删除。请先迁移或删除下属产线/用户后再操作。",
                     "依赖明细：产线 " + lineCount + " 条，用户 " + userCount + " 条。");
         }
-        jdbcTemplate.update("UPDATE dim_factory SET is_deleted = 1 WHERE factory_id = ?", id);
+        masterDataRepository.softDeleteFactory(id);
         return ResultVO.success("删除成功");
     }
 
     @GetMapping("/{id}/dependencies")
     public ResultVO<Map<String, Object>> dependencies(@PathVariable Integer id) {
-        int lineCount = count("SELECT COUNT(*) FROM dim_production_line WHERE factory_id = ? AND IFNULL(is_deleted,0)=0", id);
+        int lineCount = masterDataRepository.countLinesByFactory(id);
         // ★ 2026-11-04 修正：dim_workstation 是逻辑删除，需过滤 is_deleted
-        int stationCount = count("SELECT COUNT(*) FROM dim_workstation ws JOIN dim_production_line pl ON ws.line_id = pl.line_id WHERE pl.factory_id = ? AND IFNULL(pl.is_deleted,0)=0 AND IFNULL(ws.is_deleted,0)=0", id);
+        int stationCount = masterDataRepository.countStationsByFactory(id);
         // ★ 2026-11-04 修正：原查 camera_status（状态快照，可能无对应行），
         //   改为查 dim_camera（相机与产线绑定的真实来源）。
-        int cameraCount = count("SELECT COUNT(*) FROM dim_camera dc JOIN dim_workstation ws ON dc.workstation_id = ws.workstation_id JOIN dim_production_line pl ON ws.line_id = pl.line_id WHERE pl.factory_id = ? AND IFNULL(dc.is_deleted,0)=0", id);
-        int userCount = count("SELECT COUNT(*) FROM sys_user WHERE factory_id = ?", id);
+        int cameraCount = masterDataRepository.countCamerasByFactory(id);
+        int userCount = masterDataRepository.countUsersByFactory(id);
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("lineCount", lineCount);
         data.put("stationCount", stationCount);
@@ -110,12 +110,4 @@ public class DimFactoryController {
         return ResultVO.success(data);
     }
 
-    private int count(String sql, Object... args) {
-        try {
-            Integer value = jdbcTemplate.queryForObject(sql, Integer.class, args);
-            return value == null ? 0 : value;
-        } catch (Exception e) {
-            return 0;
-        }
-    }
 }
