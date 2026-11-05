@@ -2,6 +2,9 @@ package com.wms.analytics.api;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wms.analytics.infra.repository.AnalyticsAggregationRepository;
+import com.wms.analytics.infra.repository.AnalyticsDashboardRepository;
+import com.wms.analytics.infra.repository.LineAnalyticsQueryRepository;
 import com.wms.analytics.infra.repository.LineAnalyticsRepository;
 import com.wms.shared.common.ResultVO;
 import org.apache.poi.ss.usermodel.Cell;
@@ -14,7 +17,6 @@ import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.*;
 
@@ -37,16 +39,26 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * 首期直接基于 agg_quality_30m / agg_defect_type_30m 查询，
  * 后续动态报表配置仍使用 cfg_analytics_dashboard / cfg_analytics_widget 扩展。
+ *
+ * <p><b>DDD P3 批次④</b>：全部 SQL 已下沉到 analytics 域的四个 Repository
+ * （查询 / 看板配置 / 聚合任务 / 元数据），本类只保留 HTTP 编排、
+ * WHERE 拼装与响应封装。
  */
 @RestController
 @RequestMapping("/api/v1/analytics")
 public class LineAnalyticsController {
 
     @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private LineAnalyticsRepository lineAnalyticsRepository;
 
     @Autowired
-    private LineAnalyticsRepository lineAnalyticsRepository;
+    private LineAnalyticsQueryRepository queryRepository;
+
+    @Autowired
+    private AnalyticsDashboardRepository dashboardRepository;
+
+    @Autowired
+    private AnalyticsAggregationRepository aggregationRepository;
 
     private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final int DAILY_AGGREGATION_THRESHOLD_DAYS = 3;
@@ -137,10 +149,7 @@ public class LineAnalyticsController {
         data.put("aggregationLevel", daily ? "DAY" : "30M");
         data.put("aggregationMessage", daily ? "当前时间范围较大，已自动使用日聚合表查询。" : "当前使用30分钟聚合表查询。");
         data.put("aggregationThresholdDays", DAILY_AGGREGATION_THRESHOLD_DAYS);
-        Map<String, Object> kpi = one(
-                "SELECT COALESCE(SUM(total_count),0) AS totalCount, COALESCE(SUM(ok_count),0) AS okCount, COALESCE(SUM(ng_count),0) AS ngCount, " +
-                        "COALESCE(SUM(defect_count),0) AS defectCount FROM " + qualityTable + " " + qualityWhere,
-                qualityParams);
+        Map<String, Object> kpi = queryRepository.queryKpi(qualityTable, qualityWhere, qualityParams);
         long total = longVal(kpi.get("totalCount"));
         long ok = longVal(kpi.get("okCount"));
         long ng = longVal(kpi.get("ngCount"));
@@ -148,40 +157,19 @@ public class LineAnalyticsController {
         kpi.put("ngRate", total > 0 ? Math.round(ng * 10000.0 / total) / 100.0 : 0.0);
         data.put("kpi", kpi);
 
-        data.put("trend", jdbcTemplate.queryForList(
-                "SELECT " + timeColumn + " AS timeBucket, SUM(total_count) AS totalCount, SUM(ok_count) AS okCount, SUM(ng_count) AS ngCount, " +
-                        "IF(SUM(total_count)>0, ROUND(SUM(ok_count)*100/SUM(total_count),2),0) AS yieldRate " +
-                        "FROM " + qualityTable + " " + qualityWhere + " GROUP BY " + timeColumn + " ORDER BY " + timeColumn,
-                qualityParams.toArray()));
+        data.put("trend", queryRepository.queryTrend(qualityTable, timeColumn, qualityWhere, qualityParams));
 
         List<Object> defectParams = new ArrayList<>();
         String defectWhere = buildDefectWhere(timeColumn, daily, start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, defectTypeId, severity, defectParams);
-        data.put("defectRanking", jdbcTemplate.queryForList(
-                "SELECT defect_type_id AS defectTypeId, defect_code AS defectCode, defect_name AS defectName, severity, SUM(defect_count) AS defectCount " +
-                        "FROM " + defectTable + " " + defectWhere + " GROUP BY defect_type_id, defect_code, defect_name, severity ORDER BY defectCount DESC LIMIT 20",
-                defectParams.toArray()));
+        data.put("defectRanking", queryRepository.queryDefectRanking(defectTable, defectWhere, defectParams));
         List<Object> stationParams = new ArrayList<>();
         String stationWhere = buildQualityWhereAlias("q", timeColumn, daily, start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, stationParams);
-        data.put("stationRanking", jdbcTemplate.queryForList(
-                "SELECT q.workstation_id AS workstationId, w.station_name AS workstationName, SUM(q.total_count) AS totalCount, SUM(q.ok_count) AS okCount, SUM(q.ng_count) AS ngCount, " +
-                        "IF(SUM(q.total_count)>0, ROUND(SUM(q.ok_count)*100/SUM(q.total_count),2),0) AS yieldRate " +
-                        "FROM " + qualityTable + " q LEFT JOIN dim_workstation w ON q.workstation_id = w.workstation_id " +
-                        stationWhere +
-                        " GROUP BY q.workstation_id, w.station_name ORDER BY ngCount DESC, totalCount DESC LIMIT 20",
-                stationParams.toArray()));
+        data.put("stationRanking", queryRepository.queryStationRanking(qualityTable, stationWhere, stationParams));
         List<Object> cameraParams = new ArrayList<>();
         String cameraWhere = buildQualityWhereAlias("q", timeColumn, daily, start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, cameraParams);
-        data.put("cameraRanking", jdbcTemplate.queryForList(
-                "SELECT q.camera_id AS cameraId, c.camera_name AS cameraName, c.camera_code AS cameraCode, SUM(q.total_count) AS totalCount, SUM(q.ok_count) AS okCount, SUM(q.ng_count) AS ngCount, " +
-                        "IF(SUM(q.total_count)>0, ROUND(SUM(q.ok_count)*100/SUM(q.total_count),2),0) AS yieldRate " +
-                        "FROM " + qualityTable + " q LEFT JOIN dim_camera c ON q.camera_id = c.camera_id " +
-                        cameraWhere +
-                        " GROUP BY q.camera_id, c.camera_name, c.camera_code ORDER BY ngCount DESC, totalCount DESC LIMIT 20",
-                cameraParams.toArray()));
+        data.put("cameraRanking", queryRepository.queryCameraRanking(qualityTable, cameraWhere, cameraParams));
         data.put("defectPivot", buildDefectPivot(defectTable, timeColumn, daily, start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId));
-        data.put("mappingExceptions", safeList(
-                "SELECT exception_id AS exceptionId, camera_code AS cameraCode, product_name AS productName, source_code AS sourceCode, exception_type AS exceptionType, exception_message AS exceptionMessage, create_time AS createTime " +
-                        "FROM fact_inspection_mapping_exception WHERE status = 'OPEN' ORDER BY create_time DESC LIMIT 10"));
+        data.put("mappingExceptions", queryRepository.queryOpenMappingExceptions());
 
         // ★ 数据源兜底：聚合表无数据时，回落到「缺陷图片事实表」。
         //   现场设备走的是 defect-images/upload 通道，该通道只写 defect_image_*，
@@ -238,10 +226,7 @@ public class LineAnalyticsController {
                                                                  Long cameraId, Long productId, Long shiftId, String severity) {
         List<Object> params = new ArrayList<>();
         String where = buildDefectWhere(timeColumn, daily, start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, null, severity, params);
-        return jdbcTemplate.queryForList(
-                "SELECT UPPER(IFNULL(severity,'UNKNOWN')) AS severity, SUM(defect_count) AS defectCount " +
-                        "FROM " + defectTable + " " + where + " GROUP BY UPPER(IFNULL(severity,'UNKNOWN')) ORDER BY defectCount DESC",
-                params.toArray());
+        return queryRepository.querySeverityDistribution(defectTable, where, params);
     }
 
     /**
@@ -350,12 +335,7 @@ public class LineAnalyticsController {
 
         Map<String, Object> kpi = new LinkedHashMap<>();
         List<Object> kpiParams = new ArrayList<>(params);
-        String kpiSql = "SELECT COUNT(1) AS imageCount, COALESCE(SUM(f.defect_count),0) AS defectCount, " +
-                "COALESCE(SUM(f.high_count),0) AS highCount, COALESCE(SUM(f.medium_count),0) AS mediumCount, " +
-                "COALESCE(SUM(f.low_count),0) AS lowCount, COUNT(DISTINCT c.camera_id) AS cameraCount, " +
-                "COUNT(DISTINCT c.workstation_id) AS workstationCount " +
-                "FROM defect_image_file f " + joinCam + where;
-        Map<String, Object> imgStat = one(kpiSql, kpiParams);
+        Map<String, Object> imgStat = queryRepository.queryDefectImageKpi(joinCam, where.toString(), kpiParams);
         long imageCount = longVal(imgStat.get("imageCount"));
         long defectCount = longVal(imgStat.get("defectCount"));
         kpi.put("totalCount", imageCount);
@@ -374,62 +354,26 @@ public class LineAnalyticsController {
 
         // 趋势：按小时聚合缺陷图与缺陷数
         List<Object> trendParams = new ArrayList<>(params);
-        data.put("trend", jdbcTemplate.queryForList(
-                "SELECT DATE_FORMAT(f.capture_time,'%Y-%m-%d %H:00:00') AS timeBucket, " +
-                        "COUNT(1) AS totalCount, 0 AS okCount, COUNT(1) AS ngCount, " +
-                        "COALESCE(SUM(f.defect_count),0) AS defectCount, 0 AS yieldRate " +
-                        "FROM defect_image_file f " + joinCam + where +
-                        " GROUP BY DATE_FORMAT(f.capture_time,'%Y-%m-%d %H:00:00') ORDER BY timeBucket",
-                trendParams.toArray()));
+        data.put("trend", queryRepository.queryDefectImageTrend(joinCam, where.toString(), trendParams));
 
         // 缺陷类型排行：按 defect_image_box 的 defect_type（现场口径为中文缺陷名）
         List<Object> rankParams = new ArrayList<>(params);
         if (!sevWhere.isEmpty()) { rankParams.add(severity.trim().toUpperCase(Locale.ROOT)); }
-        data.put("defectRanking", jdbcTemplate.queryForList(
-                "SELECT b.defect_type AS defectName, b.defect_type AS defectCode, 0 AS defectTypeId, " +
-                        "b.severity AS severity, COUNT(1) AS defectCount " +
-                        "FROM defect_image_box b " +
-                        " JOIN defect_image_file f ON f.image_id = b.image_id " + joinCam + where + sevWhere +
-                        " GROUP BY b.defect_type, b.severity ORDER BY defectCount DESC LIMIT 20",
-                rankParams.toArray()));
+        data.put("defectRanking", queryRepository.queryDefectImageRanking(joinCam, where.toString(), sevWhere, rankParams));
 
         // 工位排行
         List<Object> stationParams = new ArrayList<>(params);
-        data.put("stationRanking", jdbcTemplate.queryForList(
-                "SELECT c.workstation_id AS workstationId, w.station_name AS workstationName, " +
-                        "COUNT(1) AS totalCount, 0 AS okCount, COUNT(1) AS ngCount, " +
-                        "COALESCE(SUM(f.defect_count),0) AS defectCount, 0 AS yieldRate " +
-                        "FROM defect_image_file f " + joinCam +
-                        " LEFT JOIN dim_workstation w ON w.workstation_id = c.workstation_id " + where +
-                        " GROUP BY c.workstation_id, w.station_name ORDER BY ngCount DESC, totalCount DESC LIMIT 20",
-                stationParams.toArray()));
+        data.put("stationRanking", queryRepository.queryDefectImageStationRanking(joinCam, where.toString(), stationParams));
 
         // 相机排行
         List<Object> cameraParams = new ArrayList<>(params);
-        data.put("cameraRanking", jdbcTemplate.queryForList(
-                "SELECT c.camera_id AS cameraId, c.camera_name AS cameraName, c.camera_code AS cameraCode, " +
-                        "COUNT(1) AS totalCount, 0 AS okCount, COUNT(1) AS ngCount, " +
-                        "COALESCE(SUM(f.defect_count),0) AS defectCount, 0 AS yieldRate " +
-                        "FROM defect_image_file f " + joinCam + where +
-                        " GROUP BY c.camera_id, c.camera_name, c.camera_code ORDER BY ngCount DESC, totalCount DESC LIMIT 20",
-                cameraParams.toArray()));
+        data.put("cameraRanking", queryRepository.queryDefectImageCameraRanking(joinCam, where.toString(), cameraParams));
 
         // 产品缺陷透视：图片通道无产品维度，用缺陷类型作列
-        data.put("defectPivot", jdbcTemplate.queryForList(
-                "SELECT 0 AS productId, 0 AS defectTypeId, b.defect_type AS defectCode, b.defect_type AS defectName, " +
-                        "COUNT(1) AS defectCount " +
-                        "FROM defect_image_box b " +
-                        " JOIN defect_image_file f ON f.image_id = b.image_id " + joinCam + where + sevWhere +
-                        " GROUP BY b.defect_type ORDER BY defectCount DESC LIMIT 30",
-                rankParams.toArray()));
+        data.put("defectPivot", queryRepository.queryDefectImagePivot(joinCam, where.toString(), sevWhere, rankParams));
 
         // 严重度分布
-        data.put("severityDistribution", jdbcTemplate.queryForList(
-                "SELECT UPPER(IFNULL(b.severity,'UNKNOWN')) AS severity, COUNT(1) AS defectCount " +
-                        "FROM defect_image_box b " +
-                        " JOIN defect_image_file f ON f.image_id = b.image_id " + joinCam + where + sevWhere +
-                        " GROUP BY UPPER(IFNULL(b.severity,'UNKNOWN')) ORDER BY defectCount DESC",
-                rankParams.toArray()));
+        data.put("severityDistribution", queryRepository.queryDefectImageSeverityDistribution(joinCam, where.toString(), sevWhere, rankParams));
 
         return data;
     }
@@ -484,11 +428,7 @@ public class LineAnalyticsController {
         String scopeType = firstNonBlank(strOrNull(body.get("scopeType")), "FACTORY");
         int isDefault = intVal(body.get("isDefault"), 0);
         String layoutJson = jsonValue(body.get("layoutJson"), "{\"cols\":12,\"rowHeight\":120}");
-        jdbcTemplate.update(
-                "INSERT INTO cfg_analytics_dashboard (dashboard_name, factory_id, owner_user_id, scope_type, is_default, layout_json, is_enabled) " +
-                        "VALUES (?,?,?,?,?,CAST(? AS JSON),1)",
-                name, factoryId, ownerUserId, scopeType, isDefault, layoutJson);
-        Long id = jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
+        Long id = dashboardRepository.insertDashboard(name, factoryId, ownerUserId, scopeType, isDefault, layoutJson);
         return dashboardDetail(id);
     }
 
@@ -502,16 +442,7 @@ public class LineAnalyticsController {
         Long ownerUserId = payload.containsKey("ownerUserId") ? longOrNull(payload.get("ownerUserId")) : longOrNull(source.get("ownerUserId"));
         String scopeType = firstNonBlank(strOrNull(payload.get("scopeType")), firstNonBlank(strOrNull(source.get("scopeType")), "FACTORY"));
         int isDefault = intVal(payload.get("isDefault"), 0);
-        jdbcTemplate.update(
-                "INSERT INTO cfg_analytics_dashboard (dashboard_name, factory_id, owner_user_id, scope_type, is_default, layout_json, is_enabled) " +
-                        "SELECT ?, ?, ?, ?, ?, layout_json, 1 FROM cfg_analytics_dashboard WHERE dashboard_id=? AND is_enabled=1",
-                name, factoryId, ownerUserId, scopeType, isDefault, id);
-        Long newId = jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
-        jdbcTemplate.update(
-                "INSERT INTO cfg_analytics_widget (dashboard_id, widget_name, widget_type, metric_json, dimension_json, filter_json, option_json, layout_json, follow_global_filter, sort_order, is_enabled) " +
-                        "SELECT ?, widget_name, widget_type, metric_json, dimension_json, filter_json, option_json, layout_json, follow_global_filter, sort_order, is_enabled " +
-                        "FROM cfg_analytics_widget WHERE dashboard_id=? AND is_enabled=1 ORDER BY sort_order, widget_id",
-                newId, id);
+        Long newId = dashboardRepository.copyDashboard(id, name, factoryId, ownerUserId, scopeType, isDefault);
         return dashboardDetail(newId);
     }
 
@@ -520,17 +451,14 @@ public class LineAnalyticsController {
         String name = required(body, "dashboardName", "看板名称不能为空");
         String scopeType = firstNonBlank(strOrNull(body.get("scopeType")), "FACTORY");
         String layoutJson = jsonValue(body.get("layoutJson"), "{\"cols\":12,\"rowHeight\":120}");
-        jdbcTemplate.update(
-                "UPDATE cfg_analytics_dashboard SET dashboard_name=?, factory_id=?, owner_user_id=?, scope_type=?, is_default=?, layout_json=CAST(? AS JSON) WHERE dashboard_id=?",
-                name, longOrNull(body.get("factoryId")), longOrNull(body.get("ownerUserId")), scopeType,
-                intVal(body.get("isDefault"), 0), layoutJson, id);
+        dashboardRepository.updateDashboard(id, name, longOrNull(body.get("factoryId")),
+                longOrNull(body.get("ownerUserId")), scopeType, intVal(body.get("isDefault"), 0), layoutJson);
         return dashboardDetail(id);
     }
 
     @DeleteMapping("/dashboards/{id}")
     public ResultVO<String> deleteDashboard(@PathVariable Long id) {
-        jdbcTemplate.update("UPDATE cfg_analytics_dashboard SET is_enabled = 0 WHERE dashboard_id = ?", id);
-        jdbcTemplate.update("UPDATE cfg_analytics_widget SET is_enabled = 0 WHERE dashboard_id = ?", id);
+        dashboardRepository.disableDashboard(id);
         return ResultVO.success("删除成功");
     }
 
@@ -544,10 +472,7 @@ public class LineAnalyticsController {
         Long dashboardId = requiredLong(body, "dashboardId", "看板不能为空");
         String widgetName = required(body, "widgetName", "图表名称不能为空");
         String widgetType = firstNonBlank(strOrNull(body.get("widgetType")), "KPI").toUpperCase(Locale.ROOT);
-        jdbcTemplate.update(
-                "INSERT INTO cfg_analytics_widget (dashboard_id, widget_name, widget_type, metric_json, dimension_json, filter_json, option_json, layout_json, follow_global_filter, sort_order, is_enabled) " +
-                        "VALUES (?,?,?,CAST(? AS JSON),CAST(? AS JSON),CAST(? AS JSON),CAST(? AS JSON),CAST(? AS JSON),?,?,1)",
-                dashboardId, widgetName, widgetType,
+        Long id = dashboardRepository.insertWidget(dashboardId, widgetName, widgetType,
                 jsonValue(body.get("metricJson"), "{}"),
                 jsonValue(body.get("dimensionJson"), "[]"),
                 jsonValue(body.get("filterJson"), "{}"),
@@ -555,7 +480,6 @@ public class LineAnalyticsController {
                 jsonValue(body.get("layoutJson"), "{\"w\":6,\"h\":2}"),
                 intVal(body.get("followGlobalFilter"), 1),
                 intVal(body.get("sortOrder"), 0));
-        Long id = jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
         return ResultVO.success(findWidget(id));
     }
 
@@ -563,10 +487,7 @@ public class LineAnalyticsController {
     public ResultVO<Map<String, Object>> updateWidget(@PathVariable Long id, @RequestBody Map<String, Object> body) {
         String widgetName = required(body, "widgetName", "图表名称不能为空");
         String widgetType = firstNonBlank(strOrNull(body.get("widgetType")), "KPI").toUpperCase(Locale.ROOT);
-        jdbcTemplate.update(
-                "UPDATE cfg_analytics_widget SET widget_name=?, widget_type=?, metric_json=CAST(? AS JSON), dimension_json=CAST(? AS JSON), " +
-                        "filter_json=CAST(? AS JSON), option_json=CAST(? AS JSON), layout_json=CAST(? AS JSON), follow_global_filter=?, sort_order=?, is_enabled=? WHERE widget_id=?",
-                widgetName, widgetType,
+        dashboardRepository.updateWidget(id, widgetName, widgetType,
                 jsonValue(body.get("metricJson"), "{}"),
                 jsonValue(body.get("dimensionJson"), "[]"),
                 jsonValue(body.get("filterJson"), "{}"),
@@ -574,14 +495,13 @@ public class LineAnalyticsController {
                 jsonValue(body.get("layoutJson"), "{\"w\":6,\"h\":2}"),
                 intVal(body.get("followGlobalFilter"), 1),
                 intVal(body.get("sortOrder"), 0),
-                intVal(body.get("isEnabled"), 1),
-                id);
+                intVal(body.get("isEnabled"), 1));
         return ResultVO.success(findWidget(id));
     }
 
     @DeleteMapping("/widgets/{id}")
     public ResultVO<String> deleteWidget(@PathVariable Long id) {
-        jdbcTemplate.update("UPDATE cfg_analytics_widget SET is_enabled = 0 WHERE widget_id = ?", id);
+        dashboardRepository.disableWidget(id);
         return ResultVO.success("删除成功");
     }
 
@@ -594,10 +514,9 @@ public class LineAnalyticsController {
                 Map<?, ?> item = (Map<?, ?>) obj;
                 Long widgetId = longOrNull(item.get("widgetId"));
                 if (widgetId == null) continue;
-                jdbcTemplate.update("UPDATE cfg_analytics_widget SET sort_order=?, layout_json=CAST(? AS JSON) WHERE widget_id=?",
+                dashboardRepository.reorderWidget(widgetId,
                         intVal(item.get("sortOrder"), 0),
-                        jsonValue(item.get("layoutJson"), "{\"w\":6,\"h\":2}"),
-                        widgetId);
+                        jsonValue(item.get("layoutJson"), "{\"w\":6,\"h\":2}"));
             }
         }
         return ResultVO.success("保存成功");
@@ -666,9 +585,7 @@ public class LineAnalyticsController {
         int lookbackDays = Math.max(1, Math.min(365, intVal(payload.get("lookbackDays"), 7)));
         Long factoryId = longOrNull(payload.get("factoryId"));
         Long lineId = longOrNull(payload.get("lineId"));
-        jdbcTemplate.update(
-                "UPDATE analytics_aggregation_schedule SET enabled=?, schedule_time=?, lookback_days=?, factory_id=?, line_id=?, update_time=NOW() WHERE config_id=1",
-                enabled, time.toString(), lookbackDays, factoryId, lineId);
+        aggregationRepository.updateAggregationSchedule(enabled, time.toString(), lookbackDays, factoryId, lineId);
         return ResultVO.success(findAggregationSchedule());
     }
 
@@ -685,22 +602,7 @@ public class LineAnalyticsController {
             where = " WHERE status = ? ";
             params.add(status.trim().toUpperCase(Locale.ROOT));
         }
-        Long total = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM analytics_aggregation_job" + where, params.toArray(), Long.class);
-        List<Object> listParams = new ArrayList<>(params);
-        listParams.add((p - 1) * size);
-        listParams.add(size);
-        List<Map<String, Object>> records = jdbcTemplate.queryForList(
-                "SELECT job_id AS jobId, job_type AS jobType, status, start_date AS startDate, end_date AS endDate, factory_id AS factoryId, line_id AS lineId, " +
-                        "quality_rows AS qualityRows, defect_rows AS defectRows, message, error_detail AS errorDetail, trigger_source AS triggerSource, retry_from_job_id AS retryFromJobId, " +
-                        "create_time AS createTime, start_time AS startTime, finish_time AS finishTime " +
-                        "FROM analytics_aggregation_job " + where + " ORDER BY job_id DESC LIMIT ?, ?",
-                listParams.toArray());
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("records", records);
-        data.put("total", total == null ? 0 : total);
-        data.put("page", p);
-        data.put("pageSize", size);
-        return ResultVO.success(data);
+        return ResultVO.success(aggregationRepository.queryAggregationJobs(status, p, size));
     }
 
     @GetMapping("/aggregation/jobs/{id}")
@@ -725,10 +627,7 @@ public class LineAnalyticsController {
     @GetMapping("/aggregation/jobs/recent")
     public ResultVO<List<Map<String, Object>>> recentAggregationJobs() {
         ensureAggregationJobTable();
-        return ResultVO.success(jdbcTemplate.queryForList(
-                "SELECT job_id AS jobId, job_type AS jobType, status, start_date AS startDate, end_date AS endDate, factory_id AS factoryId, line_id AS lineId, " +
-                        "quality_rows AS qualityRows, defect_rows AS defectRows, message, error_detail AS errorDetail, trigger_source AS triggerSource, retry_from_job_id AS retryFromJobId, create_time AS createTime, start_time AS startTime, finish_time AS finishTime " +
-                        "FROM analytics_aggregation_job ORDER BY job_id DESC LIMIT 20"));
+        return ResultVO.success(aggregationRepository.queryRecentAggregationJobs());
     }
 
     @Scheduled(fixedDelay = 60000)
@@ -744,8 +643,7 @@ public class LineAnalyticsController {
             int lookbackDays = Math.max(1, Math.min(365, intVal(cfg.get("lookbackDays"), 7)));
             LocalDate startDate = today.minusDays(lookbackDays - 1L);
             Map<String, Object> job = submitDailyAggregation(startDate, today, longOrNull(cfg.get("factoryId")), longOrNull(cfg.get("lineId")), "SCHEDULE", null);
-            jdbcTemplate.update("UPDATE analytics_aggregation_schedule SET last_run_date=?, last_job_id=?, update_time=NOW() WHERE config_id=1",
-                    java.sql.Date.valueOf(today), longOrNull(job.get("jobId")));
+            aggregationRepository.updateLastRun(today, longOrNull(job.get("jobId")));
         } catch (Exception ignored) {
             // 定时检查不影响主服务；错误会在具体聚合任务中记录。
         }
@@ -819,14 +717,7 @@ public class LineAnalyticsController {
      * 判断表是否真实存在（查 INFORMATION_SCHEMA，不执行任何 DDL）。
      */
     private boolean tableExists(String tableName) {
-        try {
-            Integer count = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(1) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
-                    Integer.class, tableName);
-            return count != null && count > 0;
-        } catch (Exception e) {
-            return false;
-        }
+        return aggregationRepository.tableExists(tableName);
     }
 
     private void ensureAggregationScheduleTable() {
@@ -835,22 +726,7 @@ public class LineAnalyticsController {
             return;   // ★ 表在，不执行 DDL
         }
         try {
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS analytics_aggregation_schedule (" +
-                "config_id BIGINT NOT NULL PRIMARY KEY," +
-                "enabled TINYINT NOT NULL DEFAULT 1," +
-                "schedule_time TIME NOT NULL DEFAULT '02:00:00'," +
-                "lookback_days INT NOT NULL DEFAULT 7," +
-                "factory_id BIGINT NULL," +
-                "line_id BIGINT NULL," +
-                "last_run_date DATE NULL," +
-                "last_job_id BIGINT NULL," +
-                "create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP," +
-                "update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP" +
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='产线统计日聚合定时配置表'");
-        Integer count = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM analytics_aggregation_schedule WHERE config_id=1", Integer.class);
-        if (count == null || count == 0) {
-            jdbcTemplate.update("INSERT INTO analytics_aggregation_schedule(config_id, enabled, schedule_time, lookback_days) VALUES (1,1,'02:00:00',7)");
-        }
+        aggregationRepository.ensureAggregationScheduleTable();
         scheduleTableEnsured.set(true);
         } catch (Exception e) {
             // 建表失败要让标志位复位，否则应用再也不会尝试建表
@@ -861,9 +737,7 @@ public class LineAnalyticsController {
 
     private Map<String, Object> findAggregationSchedule() {
         ensureAggregationScheduleTable();
-        Map<String, Object> row = one("SELECT config_id AS configId, enabled, TIME_FORMAT(schedule_time,'%H:%i') AS scheduleTime, lookback_days AS lookbackDays, " +
-                "factory_id AS factoryId, line_id AS lineId, last_run_date AS lastRunDate, last_job_id AS lastJobId, create_time AS createTime, update_time AS updateTime " +
-                "FROM analytics_aggregation_schedule WHERE config_id=1", new ArrayList<>());
+        Map<String, Object> row = aggregationRepository.findAggregationSchedule();
         row.put("enabled", boolVal(row.get("enabled"), true));
         return row;
     }
@@ -874,49 +748,7 @@ public class LineAnalyticsController {
             return;   // ★ 表在，不执行 DDL
         }
         try {
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS agg_quality_day (" +
-                "agg_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY," +
-                "date_bucket DATE NOT NULL," +
-                "factory_id INT NOT NULL," +
-                "line_id INT NOT NULL," +
-                "workstation_id INT NOT NULL," +
-                "camera_id BIGINT NOT NULL," +
-                "product_id BIGINT NOT NULL," +
-                "shift_id BIGINT NOT NULL DEFAULT 0," +
-                "total_count BIGINT NOT NULL DEFAULT 0," +
-                "ok_count BIGINT NOT NULL DEFAULT 0," +
-                "ng_count BIGINT NOT NULL DEFAULT 0," +
-                "defect_count BIGINT NOT NULL DEFAULT 0," +
-                "yield_rate DECIMAL(10,6) NULL," +
-                "ng_rate DECIMAL(10,6) NULL," +
-                "update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP," +
-                "UNIQUE KEY uk_quality_day_scope(date_bucket,factory_id,line_id,workstation_id,camera_id,product_id,shift_id)," +
-                "KEY idx_quality_day_factory(date_bucket,factory_id)," +
-                "KEY idx_quality_day_line(date_bucket,line_id)," +
-                "KEY idx_quality_day_product(date_bucket,product_id)" +
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='质量日聚合表'");
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS agg_defect_type_day (" +
-                "agg_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY," +
-                "date_bucket DATE NOT NULL," +
-                "factory_id INT NOT NULL," +
-                "line_id INT NOT NULL," +
-                "workstation_id INT NOT NULL," +
-                "camera_id BIGINT NOT NULL," +
-                "product_id BIGINT NOT NULL," +
-                "shift_id BIGINT NOT NULL DEFAULT 0," +
-                "defect_type_id BIGINT NOT NULL," +
-                "defect_code VARCHAR(50) NOT NULL," +
-                "defect_name VARCHAR(100) NOT NULL," +
-                "position_id BIGINT NULL," +
-                "position_code VARCHAR(50) NULL," +
-                "severity VARCHAR(20) NULL," +
-                "defect_count BIGINT NOT NULL DEFAULT 0," +
-                "update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP," +
-                "UNIQUE KEY uk_defect_day_scope(date_bucket,factory_id,line_id,workstation_id,camera_id,product_id,shift_id,defect_type_id)," +
-                "KEY idx_defect_day_type(date_bucket,defect_type_id)," +
-                "KEY idx_defect_day_line(date_bucket,line_id)," +
-                "KEY idx_defect_day_product(date_bucket,product_id)" +
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='缺陷类型日聚合表'");
+        aggregationRepository.ensureDailyAggregationTables();
         dailyAggTablesEnsured.set(true);
         } catch (Exception e) {
             dailyAggTablesEnsured.set(false);
@@ -931,30 +763,7 @@ public class LineAnalyticsController {
             return;   // ★ 表在，不执行 DDL
         }
         try {
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS analytics_aggregation_job (" +
-                "job_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY," +
-                "job_type VARCHAR(50) NOT NULL," +
-                "status VARCHAR(20) NOT NULL," +
-                "start_date DATE NULL," +
-                "end_date DATE NULL," +
-                "factory_id BIGINT NULL," +
-                "line_id BIGINT NULL," +
-                "quality_rows INT NOT NULL DEFAULT 0," +
-                "defect_rows INT NOT NULL DEFAULT 0," +
-                "message VARCHAR(500) NULL," +
-                "error_detail TEXT NULL," +
-                "trigger_source VARCHAR(30) NOT NULL DEFAULT 'MANUAL'," +
-                "retry_from_job_id BIGINT NULL," +
-                "create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP," +
-                "start_time DATETIME NULL," +
-                "finish_time DATETIME NULL," +
-                "KEY idx_job_create_time(create_time)," +
-                "KEY idx_job_status(status)," +
-                "KEY idx_job_trigger_source(trigger_source)" +
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='产线统计聚合任务表'");
-        addColumnQuiet("analytics_aggregation_job", "error_detail", "ALTER TABLE analytics_aggregation_job ADD COLUMN error_detail TEXT NULL AFTER message");
-        addColumnQuiet("analytics_aggregation_job", "trigger_source", "ALTER TABLE analytics_aggregation_job ADD COLUMN trigger_source VARCHAR(30) NOT NULL DEFAULT 'MANUAL' AFTER error_detail");
-        addColumnQuiet("analytics_aggregation_job", "retry_from_job_id", "ALTER TABLE analytics_aggregation_job ADD COLUMN retry_from_job_id BIGINT NULL AFTER trigger_source");
+        aggregationRepository.ensureAggregationJobTable();
         aggregationJobTableEnsured.set(true);
         } catch (Exception e) {
             aggregationJobTableEnsured.set(false);
@@ -963,60 +772,35 @@ public class LineAnalyticsController {
     }
 
     private Long createAggregationJob(LocalDate startDate, LocalDate endDate, Long factoryId, Long lineId, String triggerSource, Long retryFromJobId) {
-        jdbcTemplate.update(
-                "INSERT INTO analytics_aggregation_job(job_type,status,start_date,end_date,factory_id,line_id,message,trigger_source,retry_from_job_id,start_time) " +
-                        "VALUES ('DAILY_AGGREGATION','RUNNING',?,?,?,?,?,?,?,NOW())",
-                java.sql.Date.valueOf(startDate), java.sql.Date.valueOf(endDate), factoryId, lineId, "日聚合任务已提交", triggerSource, retryFromJobId);
-        return jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
+        return aggregationRepository.createAggregationJob(startDate, endDate, factoryId, lineId, triggerSource, retryFromJobId);
     }
 
     private void updateAggregationJob(Long jobId, String status, int qualityRows, int defectRows, String message, String errorDetail) {
         try {
             ensureAggregationJobTable();
-            jdbcTemplate.update("UPDATE analytics_aggregation_job SET status=?, quality_rows=?, defect_rows=?, message=?, error_detail=?, finish_time=NOW() WHERE job_id=?",
-                    status, qualityRows, defectRows, clip(message, 500), clip(errorDetail, 4000), jobId);
+            aggregationRepository.updateAggregationJob(jobId, status, qualityRows, defectRows, message, errorDetail);
         } catch (Exception ignored) {
             // 聚合线程中不再向外抛出，避免影响服务主流程。
         }
     }
 
     private Map<String, Object> findAggregationJob(Long jobId) {
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT job_id AS jobId, job_type AS jobType, status, start_date AS startDate, end_date AS endDate, factory_id AS factoryId, line_id AS lineId, " +
-                        "quality_rows AS qualityRows, defect_rows AS defectRows, message, error_detail AS errorDetail, trigger_source AS triggerSource, retry_from_job_id AS retryFromJobId, create_time AS createTime, start_time AS startTime, finish_time AS finishTime " +
-                        "FROM analytics_aggregation_job WHERE job_id=?", jobId);
-        return rows.isEmpty() ? new LinkedHashMap<>() : rows.get(0);
+        return aggregationRepository.findAggregationJob(jobId);
     }
     private int rebuildQualityDaily(LocalDate startDate, LocalDate endDate, Long factoryId, Long lineId) {
         List<Object> deleteParams = new ArrayList<>();
         String deleteWhere = buildDailyDeleteWhere("date_bucket", startDate, endDate, factoryId, lineId, deleteParams);
-        jdbcTemplate.update("DELETE FROM agg_quality_day " + deleteWhere, deleteParams.toArray());
-
         List<Object> insertParams = new ArrayList<>();
         String sourceWhere = buildDailySourceWhere("time_bucket", startDate, endDate, factoryId, lineId, insertParams);
-        return jdbcTemplate.update(
-                "INSERT INTO agg_quality_day(date_bucket,factory_id,line_id,workstation_id,camera_id,product_id,shift_id,total_count,ok_count,ng_count,defect_count,yield_rate,ng_rate) " +
-                        "SELECT DATE(time_bucket), factory_id, line_id, workstation_id, camera_id, product_id, shift_id, " +
-                        "SUM(total_count), SUM(ok_count), SUM(ng_count), SUM(defect_count), " +
-                        "IF(SUM(total_count)>0, SUM(ok_count)/SUM(total_count), 0), IF(SUM(total_count)>0, SUM(ng_count)/SUM(total_count), 0) " +
-                        "FROM agg_quality_30m " + sourceWhere +
-                        " GROUP BY DATE(time_bucket), factory_id, line_id, workstation_id, camera_id, product_id, shift_id",
-                insertParams.toArray());
+        return aggregationRepository.rebuildQualityDaily(deleteWhere, deleteParams, sourceWhere, insertParams);
     }
 
     private int rebuildDefectDaily(LocalDate startDate, LocalDate endDate, Long factoryId, Long lineId) {
         List<Object> deleteParams = new ArrayList<>();
         String deleteWhere = buildDailyDeleteWhere("date_bucket", startDate, endDate, factoryId, lineId, deleteParams);
-        jdbcTemplate.update("DELETE FROM agg_defect_type_day " + deleteWhere, deleteParams.toArray());
-
         List<Object> insertParams = new ArrayList<>();
         String sourceWhere = buildDailySourceWhere("time_bucket", startDate, endDate, factoryId, lineId, insertParams);
-        return jdbcTemplate.update(
-                "INSERT INTO agg_defect_type_day(date_bucket,factory_id,line_id,workstation_id,camera_id,product_id,shift_id,defect_type_id,defect_code,defect_name,position_id,position_code,severity,defect_count) " +
-                        "SELECT DATE(time_bucket), factory_id, line_id, workstation_id, camera_id, product_id, shift_id, defect_type_id, defect_code, defect_name, position_id, position_code, severity, SUM(defect_count) " +
-                        "FROM agg_defect_type_30m " + sourceWhere +
-                        " GROUP BY DATE(time_bucket), factory_id, line_id, workstation_id, camera_id, product_id, shift_id, defect_type_id, defect_code, defect_name, position_id, position_code, severity",
-                insertParams.toArray());
+        return aggregationRepository.rebuildDefectDaily(deleteWhere, deleteParams, sourceWhere, insertParams);
     }
 
     private String buildDailyDeleteWhere(String column, LocalDate startDate, LocalDate endDate, Long factoryId, Long lineId, List<Object> params) {
@@ -1043,10 +827,7 @@ public class LineAnalyticsController {
                                                        Long cameraId, Long productId, Long shiftId) {
         List<Object> params = new ArrayList<>();
         String where = buildDefectWhere(timeColumn, daily, start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, null, null, params);
-        return jdbcTemplate.queryForList(
-                "SELECT product_id AS productId, defect_type_id AS defectTypeId, defect_code AS defectCode, defect_name AS defectName, SUM(defect_count) AS defectCount " +
-                        "FROM " + defectTable + " " + where + " GROUP BY product_id, defect_type_id, defect_code, defect_name ORDER BY product_id, defectCount DESC",
-                params.toArray());
+        return queryRepository.queryDefectPivot(defectTable, where, params);
     }
 
     private String buildQualityWhere(String timeColumn, boolean daily, LocalDateTime start, LocalDateTime end, Long factoryId, Long lineId, Long workstationId,
@@ -1143,16 +924,7 @@ public class LineAnalyticsController {
     }
 
     private void addColumnQuiet(String tableName, String columnName, String ddl) {
-        try {
-            Integer count = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(1) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
-                    Integer.class, tableName, columnName);
-            if (count == null || count == 0) {
-                jdbcTemplate.execute(ddl);
-            }
-        } catch (Exception ignored) {
-            // 兼容老库字段补齐，失败时由后续 SQL 暴露真实错误。
-        }
+        aggregationRepository.addColumnQuiet(tableName, columnName, ddl);
     }
 
     private String stackTraceText(Exception e) {
@@ -1166,16 +938,11 @@ public class LineAnalyticsController {
     }
 
     private List<Map<String, Object>> safeList(String sql) {
-        try {
-            return jdbcTemplate.queryForList(sql);
-        } catch (Exception e) {
-            return new ArrayList<>();
-        }
+        return queryRepository.safeList(sql);
     }
 
     private Map<String, Object> one(String sql, List<Object> params) {
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql, params.toArray());
-        return rows.isEmpty() ? new LinkedHashMap<>() : rows.get(0);
+        return queryRepository.one(sql, params);
     }
 
     private Map<String, Object> findDefaultDashboard(Long factoryId) {
@@ -1209,11 +976,7 @@ public class LineAnalyticsController {
      * </ul>
      */
     private Long createDefaultDashboard(Long factoryId) {
-        jdbcTemplate.update(
-                "INSERT INTO cfg_analytics_dashboard (dashboard_name, factory_id, scope_type, is_default, layout_json, is_enabled) " +
-                        "VALUES (?,?,?,1,CAST(? AS JSON),1)",
-                "工厂质量看板（厂长视角）", factoryId, "FACTORY", "{\"cols\":12,\"rowHeight\":120}");
-        Long dashboardId = jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
+        Long dashboardId = dashboardRepository.insertDefaultDashboard(factoryId);
         // 1. 质量总览：一眼看清规模、风险等级、首要缺陷
         insertDefaultWidget(dashboardId, "质量总览（厂长视角）", "KPI", "{\"metric\":\"plantOverview\"}", "[\"time\"]", "{\"x\":0,\"y\":0,\"w\":12,\"h\":1}", 1);
         // 2. 缺陷帕累托：80/20 定位主要矛盾
@@ -1237,22 +1000,14 @@ public class LineAnalyticsController {
      */
     private void upgradeLegacyDefaultDashboard(Long factoryId) {
         try {
-            List<Map<String, Object>> legacy = jdbcTemplate.queryForList(
-                    "SELECT dashboard_id AS dashboardId, dashboard_name AS dashboardName FROM cfg_analytics_dashboard " +
-                            "WHERE is_enabled=1 AND dashboard_name='默认产线统计看板' " +
-                            (factoryId == null ? "" : "AND (factory_id = ? OR factory_id IS NULL) ") +
-                            "ORDER BY dashboard_id LIMIT 1",
-                    factoryId == null ? new Object[]{} : new Object[]{factoryId});
+            List<Map<String, Object>> legacy = dashboardRepository.findLegacyDefaultDashboard(factoryId);
             if (legacy.isEmpty()) return;
             Long dashboardId = longVal(legacy.get(0).get("dashboardId"));
             // 只升级「组件全是内置默认组件」的看板，保留用户手工改造过的
-            Integer customCount = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(1) FROM cfg_analytics_widget WHERE dashboard_id=? AND is_enabled=1 " +
-                            "AND widget_name NOT IN ('核心质量指标','30分钟质量趋势','缺陷类型排行','异常工位排行','产品缺陷透视表')",
-                    Integer.class, dashboardId);
+            Integer customCount = dashboardRepository.countCustomWidgets(dashboardId);
             if (customCount != null && customCount > 0) return;
-            jdbcTemplate.update("UPDATE cfg_analytics_dashboard SET dashboard_name='工厂质量看板（厂长视角）' WHERE dashboard_id=?", dashboardId);
-            jdbcTemplate.update("DELETE FROM cfg_analytics_widget WHERE dashboard_id=?", dashboardId);
+            dashboardRepository.renameDashboard(dashboardId);
+            dashboardRepository.deleteWidgets(dashboardId);
             createDashboardWidgets(dashboardId);
         } catch (Exception ignored) {
             // 升级失败不影响主流程，用户仍可手工新建看板
@@ -1271,10 +1026,7 @@ public class LineAnalyticsController {
 
     private void insertDefaultWidget(Long dashboardId, String name, String type, String metricJson,
                                      String dimensionJson, String layoutJson, int sortOrder) {
-        jdbcTemplate.update(
-                "INSERT INTO cfg_analytics_widget (dashboard_id, widget_name, widget_type, metric_json, dimension_json, filter_json, option_json, layout_json, follow_global_filter, sort_order, is_enabled) " +
-                        "VALUES (?,?,?,CAST(? AS JSON),CAST(? AS JSON),CAST(? AS JSON),CAST(? AS JSON),CAST(? AS JSON),1,?,1)",
-                dashboardId, name, type, metricJson, dimensionJson, "{}", "{}", layoutJson, sortOrder);
+        dashboardRepository.insertDefaultWidget(dashboardId, name, type, metricJson, dimensionJson, layoutJson, sortOrder);
     }
 
 
