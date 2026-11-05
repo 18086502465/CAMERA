@@ -133,7 +133,7 @@ public class LineAnalyticsController {
         }
         boolean daily = shouldUseDailyAggregation(start, end);
         if (daily) {
-            ensureDailyAggregationTables();
+            aggregationRepository.ensureDailyAggregationTables();
             // 大范围查询直接使用日聚合表；若当前时间范围尚未聚合，查询前同步补齐一次。
             rebuildQualityDaily(start.toLocalDate(), end.toLocalDate(), factoryId, lineId);
             rebuildDefectDaily(start.toLocalDate(), end.toLocalDate(), factoryId, lineId);
@@ -556,8 +556,8 @@ public class LineAnalyticsController {
     }
     @PostMapping("/aggregation/daily/run")
     public ResultVO<Map<String, Object>> runDailyAggregation(@RequestBody(required = false) Map<String, Object> body) {
-        ensureDailyAggregationTables();
-        ensureAggregationJobTable();
+        aggregationRepository.ensureDailyAggregationTables();
+        aggregationRepository.ensureAggregationJobTable();
         Map<String, Object> payload = body == null ? new LinkedHashMap<>() : body;
         LocalDate startDate = parseDate(firstNonBlank(strOrNull(payload.get("startDate")), strOrNull(payload.get("startTime"))), LocalDate.now().minusDays(7));
         LocalDate endDate = parseDate(firstNonBlank(strOrNull(payload.get("endDate")), strOrNull(payload.get("endTime"))), LocalDate.now());
@@ -571,13 +571,13 @@ public class LineAnalyticsController {
 
     @GetMapping("/aggregation/schedule")
     public ResultVO<Map<String, Object>> aggregationSchedule() {
-        ensureAggregationScheduleTable();
+        aggregationRepository.ensureAggregationScheduleTable();
         return ResultVO.success(findAggregationSchedule());
     }
 
     @PutMapping("/aggregation/schedule")
     public ResultVO<Map<String, Object>> updateAggregationSchedule(@RequestBody(required = false) Map<String, Object> body) {
-        ensureAggregationScheduleTable();
+        aggregationRepository.ensureAggregationScheduleTable();
         Map<String, Object> payload = body == null ? new LinkedHashMap<>() : body;
         int enabled = boolVal(payload.get("enabled"), true) ? 1 : 0;
         String scheduleTime = firstNonBlank(strOrNull(payload.get("scheduleTime")), "02:00");
@@ -593,7 +593,7 @@ public class LineAnalyticsController {
     public ResultVO<Map<String, Object>> aggregationJobs(@RequestParam(required = false, defaultValue = "1") Integer page,
                                                          @RequestParam(required = false, defaultValue = "10") Integer pageSize,
                                                          @RequestParam(required = false) String status) {
-        ensureAggregationJobTable();
+        aggregationRepository.ensureAggregationJobTable();
         int p = Math.max(1, page == null ? 1 : page);
         int size = Math.max(5, Math.min(100, pageSize == null ? 10 : pageSize));
         List<Object> params = new ArrayList<>();
@@ -607,7 +607,7 @@ public class LineAnalyticsController {
 
     @GetMapping("/aggregation/jobs/{id}")
     public ResultVO<Map<String, Object>> aggregationJobDetail(@PathVariable Long id) {
-        ensureAggregationJobTable();
+        aggregationRepository.ensureAggregationJobTable();
         Map<String, Object> job = findAggregationJob(id);
         if (job.isEmpty()) return ResultVO.fail("聚合任务不存在");
         return ResultVO.success(job);
@@ -615,8 +615,8 @@ public class LineAnalyticsController {
 
     @PostMapping("/aggregation/jobs/{id}/retry")
     public ResultVO<Map<String, Object>> retryAggregationJob(@PathVariable Long id) {
-        ensureDailyAggregationTables();
-        ensureAggregationJobTable();
+        aggregationRepository.ensureDailyAggregationTables();
+        aggregationRepository.ensureAggregationJobTable();
         Map<String, Object> job = findAggregationJob(id);
         if (job.isEmpty()) return ResultVO.fail("聚合任务不存在");
         LocalDate startDate = parseDate(strOrNull(job.get("startDate")), LocalDate.now().minusDays(7));
@@ -626,14 +626,14 @@ public class LineAnalyticsController {
 
     @GetMapping("/aggregation/jobs/recent")
     public ResultVO<List<Map<String, Object>>> recentAggregationJobs() {
-        ensureAggregationJobTable();
+        aggregationRepository.ensureAggregationJobTable();
         return ResultVO.success(aggregationRepository.queryRecentAggregationJobs());
     }
 
     @Scheduled(fixedDelay = 60000)
     public void runScheduledDailyAggregationIfNeeded() {
         try {
-            ensureAggregationScheduleTable();
+            aggregationRepository.ensureAggregationScheduleTable();
             Map<String, Object> cfg = findAggregationSchedule();
             if (!boolVal(cfg.get("enabled"), true)) return;
             LocalTime scheduleTime = parseScheduleTime(strOrNull(cfg.get("scheduleTime")));
@@ -654,8 +654,8 @@ public class LineAnalyticsController {
         //   之前只有 runDailyAggregation / retryAggregationJob 两条入口做了 ensure，
         //   而 @Scheduled 定时任务走的 submitDailyAggregation 直接就 DELETE，
         //   线上实测报 "Table 'wms-new.agg_quality_day' doesn't exist" → 任务 FAILED。
-        ensureDailyAggregationTables();
-        ensureAggregationJobTable();
+        aggregationRepository.ensureDailyAggregationTables();
+        aggregationRepository.ensureAggregationJobTable();
         Long jobId = createAggregationJob(startDate, endDate, factoryId, lineId, triggerSource, retryFromJobId);
         Map<String, Object> job = findAggregationJob(jobId);
         aggregationExecutor.submit(() -> {
@@ -706,69 +706,15 @@ public class LineAnalyticsController {
      *       比 DDL 轻两个数量级，不构成性能问题。</li>
      * </ul>
      */
-    private final java.util.concurrent.atomic.AtomicBoolean scheduleTableEnsured =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-    private final java.util.concurrent.atomic.AtomicBoolean dailyAggTablesEnsured =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-    private final java.util.concurrent.atomic.AtomicBoolean aggregationJobTableEnsured =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
-
-    /**
-     * 判断表是否真实存在（查 INFORMATION_SCHEMA，不执行任何 DDL）。
-     */
-    private boolean tableExists(String tableName) {
-        return aggregationRepository.tableExists(tableName);
-    }
-
-    private void ensureAggregationScheduleTable() {
-        if (tableExists("analytics_aggregation_schedule")) {
-            scheduleTableEnsured.set(true);
-            return;   // ★ 表在，不执行 DDL
-        }
-        try {
-        aggregationRepository.ensureAggregationScheduleTable();
-        scheduleTableEnsured.set(true);
-        } catch (Exception e) {
-            // 建表失败要让标志位复位，否则应用再也不会尝试建表
-            scheduleTableEnsured.set(false);
-            throw e;
-        }
-    }
+    // DDD P5：原 3 个 AtomicBoolean ensured 标志位为死代码（只 set 从不 get 短路），
+    // 已随请求路径惰性建表收敛而删除 —— 启动期由 SchemaInitializer 统一保证表结构，
+    // repository.ensure* 内部自带 INFORMATION_SCHEMA 幂等判断。
 
     private Map<String, Object> findAggregationSchedule() {
-        ensureAggregationScheduleTable();
+        aggregationRepository.ensureAggregationScheduleTable();
         Map<String, Object> row = aggregationRepository.findAggregationSchedule();
         row.put("enabled", boolVal(row.get("enabled"), true));
         return row;
-    }
-
-    private void ensureDailyAggregationTables() {
-        if (tableExists("agg_quality_day") && tableExists("agg_defect_type_day")) {
-            dailyAggTablesEnsured.set(true);
-            return;   // ★ 表在，不执行 DDL
-        }
-        try {
-        aggregationRepository.ensureDailyAggregationTables();
-        dailyAggTablesEnsured.set(true);
-        } catch (Exception e) {
-            dailyAggTablesEnsured.set(false);
-            throw e;
-        }
-    }
-
-
-    private void ensureAggregationJobTable() {
-        if (tableExists("analytics_aggregation_job")) {
-            aggregationJobTableEnsured.set(true);
-            return;   // ★ 表在，不执行 DDL
-        }
-        try {
-        aggregationRepository.ensureAggregationJobTable();
-        aggregationJobTableEnsured.set(true);
-        } catch (Exception e) {
-            aggregationJobTableEnsured.set(false);
-            throw e;
-        }
     }
 
     private Long createAggregationJob(LocalDate startDate, LocalDate endDate, Long factoryId, Long lineId, String triggerSource, Long retryFromJobId) {
@@ -777,7 +723,7 @@ public class LineAnalyticsController {
 
     private void updateAggregationJob(Long jobId, String status, int qualityRows, int defectRows, String message, String errorDetail) {
         try {
-            ensureAggregationJobTable();
+            aggregationRepository.ensureAggregationJobTable();
             aggregationRepository.updateAggregationJob(jobId, status, qualityRows, defectRows, message, errorDetail);
         } catch (Exception ignored) {
             // 聚合线程中不再向外抛出，避免影响服务主流程。

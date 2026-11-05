@@ -890,6 +890,34 @@ public class DefectImageRepository {
     }
 
     /** 检查并新增索引（失败记 WARN，由后续 SQL 暴露真实错误） */
+    /**
+     * DDD P5：完整表结构保证（建表 + 补列 + 补索引），原样搬运自
+     * DefectImageServiceImpl.doEnsureSchema（2026-11-05 收敛到 SchemaInitializer 调度，
+     * 语义与 SQL 逐字保留）。ensureColumn/ensureIndex 内部自带 INFORMATION_SCHEMA
+     * 判断与异常 WARN 兜底（既有语义），幂等可重入。
+     */
+    public void ensureSchemaFull() {
+        createTables();
+        ensureColumn("camera_status", "last_upload_at", "ALTER TABLE camera_status ADD COLUMN last_upload_at DATETIME NULL COMMENT '最后缺陷图片上传时间'");
+        ensureColumn("defect_image_batch", "declared_image_count", "ALTER TABLE defect_image_batch ADD COLUMN declared_image_count INT DEFAULT 0 COMMENT 'metadata声明图片数'");
+        ensureColumn("defect_image_batch", "success_count", "ALTER TABLE defect_image_batch ADD COLUMN success_count INT DEFAULT 0 COMMENT '成功入库图片数'");
+        ensureColumn("defect_image_batch", "fail_count", "ALTER TABLE defect_image_batch ADD COLUMN fail_count INT DEFAULT 0 COMMENT '失败图片数'");
+        ensureColumn("defect_image_batch", "upload_status", "ALTER TABLE defect_image_batch ADD COLUMN upload_status VARCHAR(30) DEFAULT 'SUCCESS' COMMENT '上传状态'");
+        ensureColumn("defect_image_batch", "error_summary", "ALTER TABLE defect_image_batch ADD COLUMN error_summary TEXT NULL COMMENT '失败摘要'");
+        ensureIndex("defect_image_file", "idx_defect_file_camera_id_time",
+                "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_camera_id_time(camera_id, create_time, image_id)");
+        ensureIndex("defect_image_file", "idx_defect_file_camera_name_time",
+                "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_camera_name_time(camera_name, create_time, image_id)");
+        ensureIndex("defect_image_file", "idx_defect_file_capture_time",
+                "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_capture_time(capture_time, image_id)");
+        ensureIndex("defect_image_box", "idx_defect_box_type",
+                "ALTER TABLE defect_image_box ADD INDEX idx_defect_box_type(defect_type)");
+        ensureIndex("defect_image_box", "idx_defect_box_severity_image",
+                "ALTER TABLE defect_image_box ADD INDEX idx_defect_box_severity_image(severity, image_id)");
+        ensureIndex("defect_image_batch", "idx_defect_batch_status_time",
+                "ALTER TABLE defect_image_batch ADD INDEX idx_defect_batch_status_time(upload_status, upload_time)");
+    }
+
     public void ensureIndex(String tableName, String indexName, String alterSql) {
         try {
             Integer count = jdbcTemplate.queryForObject(

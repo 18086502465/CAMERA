@@ -11,7 +11,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import javax.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -33,13 +32,8 @@ public class SystemSettingsController {
     @Autowired
     private SystemSettingsRepository settingsRepository;
 
-    @PostConstruct
-    public void init() {
-        settingsRepository.ensureSettingTable();
-        settingsRepository.seedDefaultSettings();
-        settingsRepository.repairCorruptedDefaultSettings();
-        settingsRepository.seedDefaultRetentionPolicies();
-    }
+    // DDD P5：启动期建表 + 种子数据已由 com.wms.init.SchemaInitializer 统一调度
+    // （原样搬运，语义不变）。请求路径的 ensureSettingTable() 幂等守卫保留。
 
     @GetMapping
     public ResultVO<Map<String, Object>> getSettings() {

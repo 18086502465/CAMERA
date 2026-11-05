@@ -24,7 +24,6 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.util.UriUtils;
 
-import javax.annotation.PostConstruct;
 import javax.imageio.ImageIO;
 import javax.servlet.http.HttpServletRequest;
 import java.awt.image.BufferedImage;
@@ -83,13 +82,8 @@ public class DefectImageServiceImpl implements IDefectImageService {
     /** 运行期表结构自检的最小间隔（毫秒）。 */
     private static final long SCHEMA_CHECK_INTERVAL_MS = 5 * 60 * 1000L;
 
-    @PostConstruct
-    public void init() {
-        // 启动时强制完整检查一次（建表 + 补列 + 补索引）
-        schemaChecked = false;
-        lastSchemaCheckAt = 0L;
-        ensureSchema();
-    }
+    // DDD P5：启动期完整建表已由 com.wms.init.SchemaInitializer 统一调度；
+    // 本类的 ensureSchema() 限频自愈守卫保留（表运行期被删时最多 5 分钟自愈）。
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -972,7 +966,7 @@ public class DefectImageServiceImpl implements IDefectImageService {
      *
      * <p>修复：改成<b>按需 + 限频</b>：
      * <ul>
-     *   <li>应用启动时（{@code @PostConstruct}）已完整执行过一次；</li>
+     *   <li>应用启动时（{@code SchemaInitializer}，DDD P5 收敛）已完整执行过一次；</li>
      *   <li>运行期只做<b>只读</b>的存在性检查（INFORMATION_SCHEMA 查询，毫秒级），</li>
      *   <li>检查结果用时间戳缓存，默认 5 分钟内不重复检查。</li>
      * </ul>
@@ -988,7 +982,7 @@ public class DefectImageServiceImpl implements IDefectImageService {
                 return;
             }
             try {
-                doEnsureSchema();
+                defectImageRepository.ensureSchemaFull();
                 schemaChecked = true;
                 lastSchemaCheckAt = System.currentTimeMillis();
             } catch (Exception e) {
@@ -998,46 +992,7 @@ public class DefectImageServiceImpl implements IDefectImageService {
         }
     }
 
-    private void doEnsureSchema() {
-        createTables();
-        ensureColumn("camera_status", "last_upload_at", "ALTER TABLE camera_status ADD COLUMN last_upload_at DATETIME NULL COMMENT '最后缺陷图片上传时间'");
-        ensureColumn("defect_image_batch", "declared_image_count", "ALTER TABLE defect_image_batch ADD COLUMN declared_image_count INT DEFAULT 0 COMMENT 'metadata声明图片数'");
-        ensureColumn("defect_image_batch", "success_count", "ALTER TABLE defect_image_batch ADD COLUMN success_count INT DEFAULT 0 COMMENT '成功入库图片数'");
-        ensureColumn("defect_image_batch", "fail_count", "ALTER TABLE defect_image_batch ADD COLUMN fail_count INT DEFAULT 0 COMMENT '失败图片数'");
-        ensureColumn("defect_image_batch", "upload_status", "ALTER TABLE defect_image_batch ADD COLUMN upload_status VARCHAR(30) DEFAULT 'SUCCESS' COMMENT '上传状态'");
-        ensureColumn("defect_image_batch", "error_summary", "ALTER TABLE defect_image_batch ADD COLUMN error_summary TEXT NULL COMMENT '失败摘要'");
-        ensureIndexes();
-    }
 
-    private void createTables() {
-        // DDD P3 批次⑤：建表 DDL 已下沉到 DefectImageRepository
-        defectImageRepository.createTables();
-    }
-
-    private void ensureColumn(String tableName, String columnName, String alterSql) {
-        // DDD P3 批次⑤：列检查已下沉到 DefectImageRepository
-        defectImageRepository.ensureColumn(tableName, columnName, alterSql);
-    }
-
-    private void ensureIndexes() {
-        ensureIndex("defect_image_file", "idx_defect_file_camera_id_time",
-                "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_camera_id_time(camera_id, create_time, image_id)");
-        ensureIndex("defect_image_file", "idx_defect_file_camera_name_time",
-                "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_camera_name_time(camera_name, create_time, image_id)");
-        ensureIndex("defect_image_file", "idx_defect_file_capture_time",
-                "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_capture_time(capture_time, image_id)");
-        ensureIndex("defect_image_box", "idx_defect_box_type",
-                "ALTER TABLE defect_image_box ADD INDEX idx_defect_box_type(defect_type)");
-        ensureIndex("defect_image_box", "idx_defect_box_severity_image",
-                "ALTER TABLE defect_image_box ADD INDEX idx_defect_box_severity_image(severity, image_id)");
-        ensureIndex("defect_image_batch", "idx_defect_batch_status_time",
-                "ALTER TABLE defect_image_batch ADD INDEX idx_defect_batch_status_time(upload_status, upload_time)");
-    }
-
-    private void ensureIndex(String tableName, String indexName, String alterSql) {
-        // DDD P3 批次⑤：索引检查已下沉到 DefectImageRepository
-        defectImageRepository.ensureIndex(tableName, indexName, alterSql);
-    }
 
     private static class SavedImage {
         String originalFileName;
