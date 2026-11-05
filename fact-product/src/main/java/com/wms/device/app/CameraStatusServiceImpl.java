@@ -3,15 +3,17 @@ package com.wms.device.app;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.wms.analytics.infra.repository.AnomalyAlertRepository;
 import com.wms.device.api.dto.CameraHeartbeatResponseDTO;
 import com.wms.device.api.dto.CameraStatusHeartbeatDTO;
 import com.wms.device.domain.model.CameraStatus;
 import com.wms.device.infra.mapper.CameraStatusMapper;
+import com.wms.device.infra.repository.CameraDirectoryRepository;
 import com.wms.device.app.ICameraStatusService;
+import com.wms.system.infra.repository.SystemSettingsRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -40,8 +42,13 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
     @Autowired
     private CameraStatusMapper cameraStatusMapper;
 
+    /** DDD P3 批次③：SQL 已下沉到各域 Repository，本类只保留业务编排 */
     @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private CameraDirectoryRepository cameraDirectoryRepository;
+    @Autowired
+    private SystemSettingsRepository systemSettingsRepository;
+    @Autowired
+    private AnomalyAlertRepository anomalyAlertRepository;
 
     private final Map<String, CameraStatusCache> statusCache = new ConcurrentHashMap<>();
 
@@ -249,10 +256,7 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
 
     private double getDecimalSetting(String key, double defaultValue) {
         try {
-            String value = jdbcTemplate.queryForObject(
-                    "SELECT setting_value FROM sys_system_setting WHERE setting_key=? LIMIT 1",
-                    new Object[]{key},
-                    String.class);
+            String value = systemSettingsRepository.findSettingValue(key);
             if (StringUtils.hasText(value)) {
                 return Double.parseDouble(value.trim());
             }
@@ -265,15 +269,8 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
     private void insertAnomalyAlert(Integer lineId, Integer workstationId, String alertType, String alertLevel,
                                     String alertTitle, String alertMessage) {
         try {
-            jdbcTemplate.update(
-                    "INSERT INTO fact_anomaly_alert(line_id, workstation_id, detection_id, alert_type, alert_level, alert_title, alert_message, is_resolved, create_time, update_time) " +
-                            "VALUES(?, ?, NULL, ?, ?, ?, ?, 0, NOW(), NOW())",
-                    lineId == null ? 0 : lineId,
-                    workstationId == null ? 0 : workstationId,
-                    alertType,
-                    alertLevel,
-                    alertTitle,
-                    alertMessage);
+            anomalyAlertRepository.insertCameraAlert(lineId, workstationId, alertType, alertLevel,
+                    alertTitle, alertMessage);
         } catch (DataAccessException e) {
             log.warn("写入相机异常告警失败: type={}, title={}, error={}", alertType, alertTitle, e.getMessage());
         }
@@ -401,16 +398,8 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
     }
 
     private void ensureColumn(String columnName, String alterSql) {
-        try {
-            Integer count = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'camera_status' AND COLUMN_NAME = ?",
-                    Integer.class,
-                    columnName);
-            if (count == null || count == 0) {
-                jdbcTemplate.execute(alterSql);
-            }
-        } catch (DataAccessException e) {
-            log.warn("检查/新增 camera_status.{} 字段失败: {}", columnName, e.getMessage());
-        }
+        // DDD P3 批次③：SQL 下沉到 CameraDirectoryRepository
+        // （INFORMATION_SCHEMA 判断 + 失败记 WARN 继续的语义在 Repository 内保留）
+        cameraDirectoryRepository.ensureCameraStatusColumn(columnName, alterSql);
     }
 }
