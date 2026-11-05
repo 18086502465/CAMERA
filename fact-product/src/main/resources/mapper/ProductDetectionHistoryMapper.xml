@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.wms.mapper.ProductDetectionHistoryMapper">
+<mapper namespace="com.wms.inspection.infra.mapper.ProductDetectionHistoryMapper">
 
     <sql id="Base_Column_List">
         detection_id, line_id, workstation_id, brand_id, shift_id,
@@ -25,7 +25,7 @@
     </insert>
 
     <!-- 根据 detectionTime + defectCode 查询（幂等性：批量上报去重） -->
-    <select id="selectByStartTimeAndCameraName" resultType="com.wms.entity.ProductDetectionHistory">
+    <select id="selectByStartTimeAndCameraName" resultType="com.wms.inspection.domain.model.ProductDetectionHistory">
         SELECT * FROM product_detection_history
         WHERE detection_time = #{startTime}
         AND defect_code = #{cameraName}

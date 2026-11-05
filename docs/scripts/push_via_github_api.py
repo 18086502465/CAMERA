@@ -83,87 +83,109 @@ def git_raw(*args):
 
 def main():
     head = git('rev-parse', 'HEAD')
-    parent = git('rev-parse', 'HEAD~1')
 
     branch = api('GET', '/branches/main')
     remote_head = branch['commit']['sha']
     print('本地 HEAD   :', head)
-    print('本地 parent :', parent)
     print('远端 HEAD   :', remote_head)
-    if remote_head != parent:
-        print('!! 远端与本地 parent 不一致，终止（避免覆盖他人提交）')
-        sys.exit(2)
+
+    # ★ 支持多提交：取「远端 HEAD → 本地 HEAD」之间的全部提交，按时间正序逐个重建。
+    #   原实现只推最后一个提交（HEAD~1 == remote_head 的假设），
+    #   本地连续多个提交时会被判为「远端与本地 parent 不一致」而终止。
+    commits = []
+    if remote_head != head:
+        revs = git('rev-list', '--reverse', '%s..%s' % (remote_head, head)).split()
+        if not revs:
+            print('!! 无法确定待推送的提交范围，终止')
+            sys.exit(2)
+        print('待推送提交数:', len(revs))
+        for r in revs:
+            commits.append(r)
 
     remote_tree = {}
     rt = api('GET', '/git/trees/%s?recursive=1' % remote_head)
     for t in rt.get('tree', []):
         remote_tree[t['path']] = (t['sha'], t['mode'], t['type'])
 
-    ls = git('ls-tree', '-r', '-z', head)
-    local_files = []
-    for rec in ls.split('\0'):
-        if not rec.strip():
-            continue
-        meta, path = rec.split('\t', 1)
-        mode, otype, sha = meta.split()
-        local_files.append((mode, otype, sha, path))
-    print('本地文件数  :', len(local_files))
+    # 逐个提交处理：每个提交用它自己的 tree 快照
+    parent = remote_head
+    for idx, c in enumerate(commits, 1):
+        print('\n=== 提交 %d/%d: %s ===' % (idx, len(commits), c[:7]))
+        print('  ', git('log', '-1', '--format=%s', c))
 
-    new_entries = []
-    uploaded = 0
-    reused = 0
-    for mode, otype, local_sha, path in local_files:
-        if otype != 'blob':
-            new_entries.append({'path': path, 'mode': mode, 'type': otype,
-                                'sha': local_sha})
-            continue
-        r = remote_tree.get(path)
-        if r and r[0] == local_sha and r[1] == mode:
+        ls = git('ls-tree', '-r', '-z', c)
+        local_files = []
+        for rec in ls.split('\0'):
+            if not rec.strip():
+                continue
+            meta, path = rec.split('\t', 1)
+            mode, otype, sha = meta.split()
+            local_files.append((mode, otype, sha, path))
+
+        new_entries = []
+        uploaded = 0
+        reused = 0
+        for mode, otype, local_sha, path in local_files:
+            if otype != 'blob':
+                new_entries.append({'path': path, 'mode': mode, 'type': otype,
+                                    'sha': local_sha})
+                continue
+            r = remote_tree.get(path)
+            if r and r[0] == local_sha and r[1] == mode:
+                new_entries.append({'path': path, 'mode': mode, 'type': 'blob',
+                                    'sha': r[0]})
+                reused += 1
+                continue
+            content = git_raw('cat-file', 'blob', local_sha)
+            b = api('POST', '/git/blobs', {
+                'content': base64.b64encode(content).decode(),
+                'encoding': 'base64'
+            })
             new_entries.append({'path': path, 'mode': mode, 'type': 'blob',
-                                'sha': r[0]})
-            reused += 1
-            continue
-        content = git_raw('cat-file', 'blob', local_sha)
-        b = api('POST', '/git/blobs', {
-            'content': base64.b64encode(content).decode(),
-            'encoding': 'base64'
+                                'sha': b['sha']})
+            uploaded += 1
+            if uploaded % 20 == 0:
+                print('  已上传 blob %d 个（复用 %d 个）' % (uploaded, reused))
+        print('  blob 上传 %d 个，复用 %d 个' % (uploaded, reused))
+
+        local_paths = {p for _, _, _, p in local_files}
+        removed = [p for p in remote_tree if p not in local_paths]
+        if removed:
+            print('  本次删除的文件 %d 个：' % len(removed))
+            for p in removed[:5]:
+                print('     -', p)
+            if len(removed) > 5:
+                print('     ... 共 %d 个' % len(removed))
+
+        tree = api('POST', '/git/trees', {'tree': new_entries})
+        print('  新 tree sha :', tree['sha'])
+
+        msg = git('log', '-1', '--format=%B', c)
+        commit = api('POST', '/git/commits', {
+            'message': msg,
+            'tree': tree['sha'],
+            'parents': [parent],
+            'author': {
+                'name': git('log', '-1', '--format=%an', c),
+                'email': git('log', '-1', '--format=%ae', c),
+                'date': git('log', '-1', '--format=%aI', c),
+            }
         })
-        new_entries.append({'path': path, 'mode': mode, 'type': 'blob',
-                            'sha': b['sha']})
-        uploaded += 1
-        if uploaded % 10 == 0:
-            print('  已上传 blob %d 个（复用 %d 个）' % (uploaded, reused))
-    print('blob 上传 %d 个，复用 %d 个' % (uploaded, reused))
+        print('  新 commit   :', commit['sha'])
+        parent = commit['sha']
+        # 下一个提交以这个 tree 为基线复用
+        remote_tree = {}
+        for e in new_entries:
+            remote_tree[e['path']] = (e['sha'], e['mode'], e['type'])
 
-    local_paths = {p for _, _, _, p in local_files}
-    removed = [p for p in remote_tree if p not in local_paths]
-    if removed:
-        print('本次删除的文件 %d 个：' % len(removed))
-        for p in removed[:8]:
-            print('   -', p)
-        if len(removed) > 8:
-            print('   ... 共 %d 个' % len(removed))
-
-    tree = api('POST', '/git/trees', {'tree': new_entries})
-    print('新 tree sha :', tree['sha'])
-
-    msg = git('log', '-1', '--format=%B', head)
-    commit = api('POST', '/git/commits', {
-        'message': msg,
-        'tree': tree['sha'],
-        'parents': [parent],
-        'author': {
-            'name': git('log', '-1', '--format=%an', head),
-            'email': git('log', '-1', '--format=%ae', head),
-            'date': git('log', '-1', '--format=%aI', head),
-        }
-    })
-    print('新 commit   :', commit['sha'])
+    if not commits:
+        print('本地与远端一致，无需推送')
+        return
 
     ref = api('PATCH', '/git/refs/heads/main',
-              {'sha': commit['sha'], 'force': False})
-    print('main 已更新 ->', ref['object']['sha'])
-    print('\n推送完成')
+              {'sha': parent, 'force': False})
+    print('\nmain 已更新 ->', ref['object']['sha'])
+    print('推送完成（共 %d 个提交）' % len(commits))
 
 
 if __name__ == '__main__':

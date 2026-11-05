@@ -10,7 +10,15 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * @MapperScan 扫描所有Mapper接口的包，必须配置
  */
 @SpringBootApplication
-@MapperScan("com.wms.mapper") // 关键注解：扫描mapper接口包
+@MapperScan({
+        "com.wms.iam.infra.mapper",
+        "com.wms.masterdata.infra.mapper",
+        "com.wms.device.infra.mapper",
+        "com.wms.defect.infra.mapper",
+        "com.wms.inspection.infra.mapper",
+        "com.wms.analytics.infra.mapper",
+        "com.wms.system.infra.mapper"
+}) // DDD 拆分：按域扫描 mapper // 关键注解：扫描mapper接口包
 @EnableScheduling // 开启定时任务
 public class TimeBucketApplication {
     public static void main(String[] args) {

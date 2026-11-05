@@ -1,6 +1,7 @@
 package com.wms.service.impl;
 
-import com.wms.vo.ServerMetricsVO;
+import com.wms.device.app.ServerMetricsServiceImpl;
+import com.wms.device.api.vo.ServerMetricsVO;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

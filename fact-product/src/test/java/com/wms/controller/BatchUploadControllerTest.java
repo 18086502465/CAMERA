@@ -1,10 +1,11 @@
 package com.wms.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wms.dto.inspection.InspectionBatchUploadRequest;
-import com.wms.dto.inspection.InspectionBatchUploadResponse;
-import com.wms.service.inspection.InspectionUploadException;
-import com.wms.service.inspection.InspectionUploadService;
+import com.wms.inspection.api.BatchUploadController;
+import com.wms.inspection.api.dto.InspectionBatchUploadRequest;
+import com.wms.inspection.api.dto.InspectionBatchUploadResponse;
+import com.wms.inspection.app.InspectionUploadException;
+import com.wms.inspection.app.InspectionUploadService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

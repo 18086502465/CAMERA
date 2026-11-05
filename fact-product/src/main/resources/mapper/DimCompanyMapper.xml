@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
-<mapper namespace="com.wms.mapper.DimCompanyMapper">
+<mapper namespace="com.wms.masterdata.infra.mapper.DimCompanyMapper">
 
     <!--
       【2026-10-28 移除】原先这里有一个 <select id="selectList">，它**劫持了

@@ -1,8 +1,9 @@
 package com.wms.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.wms.service.IServerMetricsService;
-import com.wms.vo.ServerMetricsVO;
+import com.wms.device.api.ServerMetricsController;
+import com.wms.device.app.IServerMetricsService;
+import com.wms.device.api.vo.ServerMetricsVO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
