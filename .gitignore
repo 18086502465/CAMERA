@@ -31,6 +31,9 @@ uploads/
 __pycache__/
 *.pyc
 
+# ---- 轻量更新包产物（时间戳命名，每次构建生成，不入库）----
+dist-release/linux/update/
+
 # ---- WorkBuddy 工作区数据（非项目产物）----
 .workbuddy/
 
