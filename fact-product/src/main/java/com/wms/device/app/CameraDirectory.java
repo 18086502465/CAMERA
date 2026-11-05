@@ -49,9 +49,14 @@ public interface CameraDirectory {
     /** 删除该相机的上报令牌，返回行数 */
     int deleteCameraTokens(Long cameraId);
 
-    /** 新增/更新相机档案（upsert），返回影响行数 */
+    /**
+     * 新增/更新相机档案（upsert），返回影响行数。
+     *
+     * @param cameraType 相机类型：REAL=真实产线相机（数据不参与定时清理）、
+     *                   TEST=测试相机（参与清理）。null 时由实现方按 TEST 处理。
+     */
     int upsertDimCamera(Long cameraId, Integer factoryId, Integer lineId, Integer workstationId,
-                        String cameraCode, String cameraName);
+                        String cameraCode, String cameraName, String cameraType);
 
     /** 相机换绑后联动缺陷映射位置，返回行数 */
     int syncMappingLocation(Integer factoryId, Integer lineId, Integer workstationId,

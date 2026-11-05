@@ -28,6 +28,11 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/cameras")
 public class CameraDashboardController {
 
+    /** 相机类型：真实产线相机（数据不参与定时清理） */
+    private static final String CAMERA_TYPE_REAL = "REAL";
+    /** 相机类型：测试相机（参与定时清理） */
+    private static final String CAMERA_TYPE_TEST = "TEST";
+
     @Autowired private ICameraStatusService cameraStatusService;
     @Autowired private CameraStatusMapper cameraStatusMapper;
     @Autowired private IDimWorkstationService workstationService;
@@ -165,6 +170,12 @@ public class CameraDashboardController {
         camera.setId(null);
         if (camera.getStatus() == null || camera.getStatus().trim().isEmpty()) camera.setStatus("RUNNING");
         if (camera.getIsActive() == null) camera.setIsActive(1);
+        // ★ 2026-11-05 新增：相机类型（REAL=真实产线相机，不参与定时清理；TEST=测试相机，参与清理）。
+        //   未指定时按 TEST 处理（与存量现状一致：现场 16 台中 14 台为测试相机）。
+        String typeError = normalizeCameraType(camera, null);
+        if (typeError != null) {
+            return ResultVO.fail(typeError);
+        }
         java.time.LocalDateTime now = java.time.LocalDateTime.now();
         camera.setCreateTime(now);
         camera.setUpdateTime(now);
@@ -208,6 +219,12 @@ public class CameraDashboardController {
         //   相机仍不出现在列表里（实测：PUT 返回"更新成功"但 is_active 仍为 0）。
         //   前端编辑表单不携带 is_active 字段，这里显式置 1。
         camera.setIsActive(1);
+        // ★ 2026-11-05：相机类型。请求未带 cameraType 时**保留原值**，
+        //   避免编辑其他属性时把真实相机意外降级成测试相机（会导致其数据被定时清理）。
+        String typeError = normalizeCameraType(camera, existing.getCameraType());
+        if (typeError != null) {
+            return ResultVO.fail(typeError);
+        }
         camera.setUpdateTime(java.time.LocalDateTime.now());
         cameraStatusMapper.updateById(camera);
         syncDimCamera(camera);
@@ -347,13 +364,39 @@ public class CameraDashboardController {
         return null;
     }
 
+    /**
+     * 归一化相机类型（2026-11-05 新增）。
+     *
+     * <p>取值仅允许 REAL（真实产线相机，数据不参与定时清理）与 TEST（测试相机，参与清理）。
+     *
+     * @param camera        待写入的相机
+     * @param existingType  已有类型（新增场景传 null；编辑场景传原值用于"未指定则保留"）
+     * @return null 表示合法；非 null 为错误提示文案
+     */
+    private String normalizeCameraType(CameraStatus camera, String existingType) {
+        String raw = camera.getCameraType();
+        if (raw == null || raw.trim().isEmpty()) {
+            // 未指定：新增时默认 TEST（与存量现状一致），编辑时保留原值
+            camera.setCameraType(existingType == null || existingType.trim().isEmpty()
+                    ? CAMERA_TYPE_TEST : existingType);
+            return null;
+        }
+        String normalized = raw.trim().toUpperCase(java.util.Locale.ROOT);
+        if (!CAMERA_TYPE_REAL.equals(normalized) && !CAMERA_TYPE_TEST.equals(normalized)) {
+            return "相机类型无效：仅支持 REAL（真实产线相机）或 TEST（测试相机）";
+        }
+        camera.setCameraType(normalized);
+        return null;
+    }
+
     private void syncDimCamera(CameraStatus camera) {
         DimProductionLine line = lineService.getById(camera.getLineId());
         if (line == null) {
             throw new IllegalArgumentException("产线不存在，无法同步相机维表");
         }
         cameraDirectory.upsertDimCamera(camera.getId(), line.getFactoryId(), camera.getLineId(),
-                camera.getWorkstationId(), camera.getCameraCode(), camera.getCameraName());
+                camera.getWorkstationId(), camera.getCameraCode(), camera.getCameraName(),
+                camera.getCameraType());
         cameraDirectory.syncMappingLocation(line.getFactoryId(), camera.getLineId(),
                 camera.getWorkstationId(), camera.getCameraCode(), camera.getId());
     }

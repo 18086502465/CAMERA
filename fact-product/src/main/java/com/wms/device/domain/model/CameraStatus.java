@@ -82,6 +82,18 @@ public class CameraStatus implements Serializable {
     @TableField("is_active")
     private Integer isActive;
 
+    /**
+     * 相机类型（2026-11-05 新增）。
+     *
+     * <p>REAL = 真实产线相机 → 数据<b>不参与</b>定时清理；
+     * TEST = 测试相机 → 参与清理（无效图片 + 对应库记录）。
+     *
+     * <p>与 {@code dim_camera.camera_type} 保持一致（双表一致模式），
+     * 其中 {@code dim_camera} 为权威源。
+     */
+    @TableField("camera_type")
+    private String cameraType;
+
     @TableField("create_time")
     private LocalDateTime createTime;
 
@@ -175,6 +187,9 @@ public class CameraStatus implements Serializable {
 
     public Integer getIsActive() { return isActive; }
     public void setIsActive(Integer isActive) { this.isActive = isActive; }
+
+    public String getCameraType() { return cameraType; }
+    public void setCameraType(String cameraType) { this.cameraType = cameraType; }
 
     public LocalDateTime getCreateTime() { return createTime; }
     public void setCreateTime(LocalDateTime createTime) { this.createTime = createTime; }

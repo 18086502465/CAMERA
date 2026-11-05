@@ -434,6 +434,49 @@ EOF
   ok "图片清理目录：${IMAGE_DIR}"
 fi
 
+# --- 8a-2. 测试相机增量清理（每小时 :15） ------------------------------------
+# 2026-11-05 新增：把「哪些相机的数据可以清」从脚本硬编码白名单改为
+# 数据库字段 camera_type（REAL=真实产线相机不清理 / TEST=测试相机参与清理）。
+#
+# ★ 口令来源：/etc/default/camera-detection（640 root:root），**不写进 cron 文件**。
+#   cron 文件全局可读，把口令写进去等于把库口令公开给所有本地用户。
+#   脚本自己 source 该文件取口令。
+if [[ -f "${SOURCE_DIR}/scripts/cleanup-zk54-incremental.sh" ]]; then
+  log "安装测试相机增量清理脚本"
+  install -m 0755 "${SOURCE_DIR}/scripts/cleanup-zk54-incremental.sh" /usr/local/bin/
+
+  # 脚本自读口令：/etc/default/camera-detection → MYSQL_PASSWORD
+  if [[ -f /etc/default/camera-detection ]] \
+     && ! grep -q 'camera-detection' /etc/default/camera-detection 2>/dev/null; then
+    cat >> /etc/default/camera-detection <<'EOF'
+
+# ---- 测试相机增量清理（2026-11-05）----
+# 清理脚本自己 source 本文件取口令，不在 cron 文件里写口令。
+# PROTECTED_CODES：额外保护的真实相机编号（逗号分隔），运维临时加码用。
+PROTECTED_CODES=""
+MAX_SINGLE_DELETE=50000
+EOF
+    chmod 640 /etc/default/camera-detection
+    chown root:root /etc/default/camera-detection
+    ok "已在 /etc/default/camera-detection 追加清理任务配置"
+  fi
+
+  # 图片根目录与脚本默认一致（脚本内 IMG_ROOT 默认值相同）
+  if [[ ! -f /etc/cron.d/cleanup-test-camera-images ]]; then
+    cat > /etc/cron.d/cleanup-test-camera-images <<'EOF'
+# 每小时 :15 清理测试相机的无效图片与对应数据库记录
+# 真实相机（camera_type='REAL'）的数据一律不参与清理。
+# 口令由脚本自己从 /etc/default/camera-detection 读取，此处不写口令。
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+15 * * * * root /usr/local/bin/cleanup-zk54-incremental.sh
+EOF
+    ok "已加入 cron（每小时 :15，仅清理测试相机）"
+  else
+    log "cron 规则已存在，保留不动"
+  fi
+fi
+
 # --- 8b. 磁盘水位监控 --------------------------------------------------------
 # 磁盘写满时应用能启动，但图片上传与数据库写入会陆续失败，
 # 表现为「服务活着但业务全错」，极难排查。每 30 分钟巡检一次。

@@ -7,6 +7,8 @@ import org.springframework.stereotype.Repository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
+
 /**
  * 相机域仓储（DDD P3 批次③ 收敛）。
  *
@@ -44,15 +46,40 @@ public class CameraDirectoryRepository {
      *
      * <p>SQL 与 {@code ConfigImportRepository.upsertDimCamera} 同源，
      * 按「SQL 原样搬运、零优化」原则各自保留；P4 抽跨域接口时统一收敛。
+     *
+     * <p>★ 2026-11-05 新增 {@code cameraType}（相机类型）：
+     * REAL=真实产线相机（数据不参与清理），TEST=测试相机（参与清理）。
+     * {@code dim_camera} 是相机档案的<b>权威源</b>，清理任务据此判定保护集合。
      */
     public int upsertDimCamera(Long cameraId, Integer factoryId, Integer lineId, Integer workstationId,
-                               String cameraCode, String cameraName) {
+                               String cameraCode, String cameraName, String cameraType) {
         return jdbcTemplate.update(
-                "INSERT INTO dim_camera(camera_id, factory_id, line_id, workstation_id, camera_code, camera_name, device_id, is_enabled, is_deleted) " +
-                        "VALUES (?,?,?,?,?,?,?,1,0) " +
+                "INSERT INTO dim_camera(camera_id, factory_id, line_id, workstation_id, camera_code, camera_name, device_id, camera_type, is_enabled, is_deleted) " +
+                        "VALUES (?,?,?,?,?,?,?,?,1,0) " +
                         "ON DUPLICATE KEY UPDATE factory_id=VALUES(factory_id), line_id=VALUES(line_id), workstation_id=VALUES(workstation_id), " +
-                        "camera_code=VALUES(camera_code), camera_name=VALUES(camera_name), device_id=VALUES(device_id), is_enabled=1, is_deleted=0",
-                cameraId, factoryId, lineId, workstationId, cameraCode, cameraName, cameraCode);
+                        "camera_code=VALUES(camera_code), camera_name=VALUES(camera_name), device_id=VALUES(device_id), " +
+                        "camera_type=VALUES(camera_type), is_enabled=1, is_deleted=0",
+                cameraId, factoryId, lineId, workstationId, cameraCode, cameraName, cameraCode, cameraType);
+    }
+
+    /**
+     * 按 camera_code 读取相机的类型（{@code dim_camera} 权威源）。
+     *
+     * <p>用于更新场景：改其他属性时若请求未带 cameraType，保留原值，
+     * 避免把真实相机意外降级成测试相机。
+     *
+     * @return REAL / TEST；查不到返回 null
+     */
+    public String findCameraTypeByCode(String cameraCode) {
+        try {
+            List<String> rows = jdbcTemplate.queryForList(
+                    "SELECT camera_type FROM dim_camera WHERE camera_code = ? LIMIT 1",
+                    String.class, cameraCode);
+            return rows.isEmpty() ? null : rows.get(0);
+        } catch (Exception e) {
+            log.warn("读取 dim_camera.camera_type 失败: cameraCode={}, error={}", cameraCode, e.getMessage());
+            return null;
+        }
     }
 
     /** 相机档案变更后同步映射表的工厂/产线/工位/编码 */
@@ -144,6 +171,26 @@ public class CameraDirectoryRepository {
             }
         } catch (DataAccessException e) {
             log.warn("检查/新增 camera_status.{} 字段失败: {}", columnName, e.getMessage());
+        }
+    }
+
+    /**
+     * 检查并新增 {@code dim_camera} 的列。
+     *
+     * <p>异常语义与 {@link #ensureCameraStatusColumn} 一致：失败只记 WARN 后继续，
+     * 字段缺失不影响启动（由后续逻辑兜底）。
+     */
+    public void ensureDimCameraColumn(String columnName, String alterSql) {
+        try {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'dim_camera' AND COLUMN_NAME = ?",
+                    Integer.class,
+                    columnName);
+            if (count == null || count == 0) {
+                jdbcTemplate.execute(alterSql);
+            }
+        } catch (DataAccessException e) {
+            log.warn("检查/新增 dim_camera.{} 字段失败: {}", columnName, e.getMessage());
         }
     }
 
