@@ -8,6 +8,7 @@ import com.wms.device.domain.model.CameraStatus;
 import com.wms.device.infra.mapper.CameraImageMapper;
 import com.wms.device.infra.mapper.CameraStatusMapper;
 import com.wms.defect.app.IDefectImageService;
+import com.wms.defect.infra.repository.DefectImageRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -17,9 +18,6 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.support.GeneratedKeyHolder;
-import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -36,10 +34,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -67,8 +63,9 @@ public class DefectImageServiceImpl implements IDefectImageService {
     @Autowired
     private ObjectMapper objectMapper;
 
+    /** DDD P3 批次⑤：SQL 已下沉到 DefectImageRepository */
     @Autowired
-    private JdbcTemplate jdbcTemplate;
+    private DefectImageRepository defectImageRepository;
 
     @Autowired
     private CameraImageMapper cameraImageMapper;
@@ -223,109 +220,10 @@ public class DefectImageServiceImpl implements IDefectImageService {
                                                 String keyword, String severity, String defectType,
                                                 LocalDateTime startTime, LocalDateTime endTime) {
         ensureSchema();
-        int safeLimit = limit == null ? 1000 : Math.max(1, Math.min(limit, 5000));
-        List<Object> params = new ArrayList<>();
-        StringBuilder sql = new StringBuilder();
-        sql.append("SELECT f.image_id, f.batch_id, f.camera_id, f.camera_name, f.file_name, f.original_file_name, ")
-                .append("f.image_path, f.image_url, f.capture_time, f.upload_time, f.create_time, f.file_size, f.width, f.height, ")
-                .append("f.defect_count, f.high_count, f.medium_count, f.low_count, ")
-                .append("cs.line_id, cs.workstation_id, cs.camera_code, ws.station_name, ws.station_code, ")
-                .append("pl.line_name, pl.line_code, pl.factory_id ")
-                .append("FROM defect_image_file f ")
-                .append(cameraStatusJoinSql())
-                .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
-                .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
-                .append("WHERE 1=1 ");
-        if (StringUtils.hasText(cameraId)) {
-            sql.append("AND f.camera_id = ? ");
-            params.add(cameraId);
-        }
-        if (StringUtils.hasText(cameraName)) {
-            sql.append("AND f.camera_name = ? ");
-            params.add(cameraName);
-        }
-        if (factoryId != null) {
-            sql.append("AND pl.factory_id = ? ");
-            params.add(factoryId);
-        }
-        if (lineId != null) {
-            sql.append("AND cs.line_id = ? ");
-            params.add(lineId);
-        }
-        if (stationId != null) {
-            sql.append("AND cs.workstation_id = ? ");
-            params.add(stationId);
-        }
-        if (StringUtils.hasText(keyword)) {
-            String like = "%" + keyword.trim() + "%";
-            sql.append("AND (f.camera_id LIKE ? OR f.camera_name LIKE ? OR f.file_name LIKE ? OR f.original_file_name LIKE ? ")
-                    .append("OR cs.camera_code LIKE ? OR ws.station_name LIKE ? OR ws.station_code LIKE ? OR pl.line_name LIKE ? ")
-                    .append("OR EXISTS (SELECT 1 FROM defect_image_box bkw WHERE bkw.image_id = f.image_id AND bkw.defect_type LIKE ?)) ");
-            params.add(like); params.add(like); params.add(like); params.add(like);
-            params.add(like); params.add(like); params.add(like); params.add(like); params.add(like);
-        }
-        if (StringUtils.hasText(severity)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bs WHERE bs.image_id = f.image_id AND UPPER(bs.severity) = ?) ");
-            params.add(severity.trim().toUpperCase());
-        }
-        if (StringUtils.hasText(defectType)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bt WHERE bt.image_id = f.image_id AND bt.defect_type LIKE ?) ");
-            params.add("%" + defectType.trim() + "%");
-        }
-        if (startTime != null) {
-            sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) >= ? ");
-            params.add(Timestamp.valueOf(startTime));
-        }
-        if (endTime != null) {
-            sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) <= ? ");
-            params.add(Timestamp.valueOf(endTime));
-        }
-        sql.append("ORDER BY f.create_time DESC, f.upload_time DESC, f.image_id DESC LIMIT ?");
-        params.add(safeLimit);
-
-        List<Map<String, Object>> images = jdbcTemplate.query(sql.toString(), params.toArray(), (rs, rowNum) -> {
-            Map<String, Object> item = new LinkedHashMap<>();
-            long imageId = rs.getLong("image_id");
-            item.put("imageId", imageId);
-            item.put("batchId", rs.getLong("batch_id"));
-            item.put("cameraId", rs.getString("camera_id"));
-            item.put("cameraName", rs.getString("camera_name"));
-            item.put("cameraCode", rs.getString("camera_code"));
-            item.put("factoryId", rs.getObject("factory_id"));
-            item.put("lineId", rs.getObject("line_id"));
-            item.put("lineName", rs.getString("line_name"));
-            item.put("lineCode", rs.getString("line_code"));
-            item.put("workstationId", rs.getObject("workstation_id"));
-            item.put("stationCode", rs.getString("station_code"));
-            item.put("stationName", rs.getString("station_name"));
-            item.put("stationLabel", formatStationLabel(rs.getString("station_code"), rs.getString("station_name")));
-            item.put("fileName", rs.getString("file_name"));
-            item.put("originalFileName", rs.getString("original_file_name"));
-            item.put("imagePath", rs.getString("image_path"));
-            item.put("imageUrl", rs.getString("image_url"));
-            item.put("captureTime", toLocalDateTime(rs.getTimestamp("capture_time")));
-            item.put("uploadTime", toLocalDateTime(rs.getTimestamp("upload_time")));
-            item.put("receiveTime", toLocalDateTime(rs.getTimestamp("create_time")));
-            item.put("createTime", toLocalDateTime(rs.getTimestamp("create_time")));
-            item.put("fileSize", rs.getLong("file_size"));
-            item.put("width", rs.getObject("width"));
-            item.put("height", rs.getObject("height"));
-            item.put("defectCount", rs.getInt("defect_count"));
-            item.put("highCount", rs.getInt("high_count"));
-            item.put("mediumCount", rs.getInt("medium_count"));
-            item.put("lowCount", rs.getInt("low_count"));
-            return item;
-        });
-        // ★ 2026-11-04 性能修复：原实现在 RowMapper 里逐图调用 listDefects(imageId)，
-        //   10 张图就是 10 次查询（N+1）。改为批量查一次再回填。
-        Map<Long, List<Map<String, Object>>> defectsByImage = listDefectsByImageIds(images);
-        for (Map<String, Object> item : images) {
-            Object v = item.get("imageId");
-            Long imageId = v instanceof Number ? ((Number) v).longValue() : null;
-            List<Map<String, Object>> boxes = imageId == null ? null : defectsByImage.get(imageId);
-            item.put("defects", boxes == null ? new ArrayList<>() : boxes);
-        }
-        return images;
+        // DDD P3 批次⑤：SQL 与行映射已下沉到 DefectImageRepository
+        return defectImageRepository.listRecentImages(limit, cameraId, cameraName,
+                factoryId, lineId, stationId, keyword, severity, defectType,
+                startTime, endTime, this::formatStationLabel);
     }
 
     @Override
@@ -334,123 +232,17 @@ public class DefectImageServiceImpl implements IDefectImageService {
                                                          String keyword, String severity, String defectType,
                                                          LocalDateTime startTime, LocalDateTime endTime) {
         ensureSchema();
-        int safeLatestLimit = latestLimit == null ? 5 : Math.max(1, Math.min(latestLimit, 20));
-        List<Object> params = new ArrayList<>();
-        StringBuilder sql = new StringBuilder();
-        // ★ 2026-11-04 性能修复：改为**两段式聚合**。
-        //   原实现是「先 JOIN camera_status 再 GROUP BY」，
-        //   JOIN 要对 7.4 万行逐行执行（即便已消除相关子查询，仍是 8 万次
-        //   派生表查找 + 临时表分组），实测 359ms。
-        //   现在改成：
-        //     第 1 段：只扫 defect_image_file 做聚合 → 结果只有 10 行（按相机）；
-        //     第 2 段：拿这 10 行去 JOIN camera_status / dim_workstation / dim_production_line。
-        //   JOIN 的行数从 7.4 万降到 10，实测 203ms（再快 43%）。
-        //
-        //   关联依据：defect_image_file.camera_id 存的是**设备编号**，
-        //   与 camera_status.camera_code 一一对应（服务器实测 10/10 组匹配，
-        //   0 组落空），因此可直接走 uk_camera_code 唯一索引。
-        sql.append("SELECT agg.camera_key camera_key, agg.camera_id camera_id, ")
-                .append("COALESCE(MAX(cs.camera_name), agg.camera_name) camera_name, ")
-                .append("MAX(cs.camera_code) camera_code, MAX(cs.status) status, ")
-                .append("MAX(cs.line_id) line_id, MAX(cs.workstation_id) workstation_id, ")
-                .append("MAX(ws.station_name) station_name, MAX(ws.station_code) station_code, ")
-                .append("MAX(pl.line_name) line_name, MAX(pl.line_code) line_code, MAX(pl.factory_id) factory_id, ")
-                .append("agg.image_count image_count, agg.defect_count defect_count, agg.high_count high_count, ")
-                .append("agg.medium_count medium_count, agg.low_count low_count, agg.latest_time latest_time ")
-                .append("FROM (")
-                .append("SELECT COALESCE(NULLIF(f.camera_id, ''), f.camera_name) camera_key, ")
-                .append("MAX(f.camera_id) camera_id, MAX(f.camera_name) camera_name, ")
-                .append("COUNT(1) image_count, SUM(f.defect_count) defect_count, SUM(f.high_count) high_count, ")
-                .append("SUM(f.medium_count) medium_count, SUM(f.low_count) low_count, ")
-                .append("MAX(COALESCE(f.capture_time, f.upload_time, f.create_time)) latest_time ")
-                .append("FROM defect_image_file f ")
-                .append("WHERE 1=1 ");
-        // 内层子查询只有 f 表 —— 只能用行级条件（相机编号/名称、严重度、缺陷类型、时间范围）
-        if (StringUtils.hasText(cameraId)) {
-            sql.append("AND f.camera_id = ? ");
-            params.add(cameraId);
-        }
-        if (StringUtils.hasText(cameraName)) {
-            sql.append("AND f.camera_name = ? ");
-            params.add(cameraName);
-        }
-        appendKeywordFilterRowLevel(sql, params, keyword);
-        if (StringUtils.hasText(severity)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bs WHERE bs.image_id = f.image_id AND UPPER(bs.severity) = ?) ");
-            params.add(severity.trim().toUpperCase(Locale.ROOT));
-        }
-        if (StringUtils.hasText(defectType)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bt WHERE bt.image_id = f.image_id AND bt.defect_type LIKE ?) ");
-            params.add("%" + defectType.trim() + "%");
-        }
-        if (startTime != null) {
-            sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) >= ? ");
-            params.add(Timestamp.valueOf(startTime));
-        }
-        if (endTime != null) {
-            sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) <= ? ");
-            params.add(Timestamp.valueOf(endTime));
-        }
-        sql.append("GROUP BY COALESCE(NULLIF(f.camera_id, ''), f.camera_name) ")
-                .append(") agg ")
-                .append("LEFT JOIN camera_status cs ON cs.camera_code = agg.camera_id ")
-                .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
-                .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
-                .append("WHERE 1=1 ");
-        // 外层才有过 cs/ws/pl 别名 —— 维度过滤（工厂/产线/工位）放这里
-        if (factoryId != null) {
-            sql.append("AND pl.factory_id = ? ");
-            params.add(factoryId);
-        }
-        if (lineId != null) {
-            sql.append("AND cs.line_id = ? ");
-            params.add(lineId);
-        }
-        if (stationId != null) {
-            sql.append("AND cs.workstation_id = ? ");
-            params.add(stationId);
-        }
-        // keyword 的维度部分（相机编号/工位名/产线名）同样只能在外层过滤
-        if (StringUtils.hasText(keyword)) {
-            String like = "%" + keyword.trim() + "%";
-            sql.append("AND (cs.camera_code LIKE ? OR ws.station_name LIKE ? OR ws.station_code LIKE ? OR pl.line_name LIKE ?) ");
-            params.add(like); params.add(like); params.add(like); params.add(like);
-        }
-        sql.append("GROUP BY agg.camera_key, agg.camera_id, agg.camera_name, ")
-                .append("agg.image_count, agg.defect_count, agg.high_count, agg.medium_count, agg.low_count, agg.latest_time ")
-                .append("ORDER BY latest_time DESC, image_count DESC, camera_id ASC ");
-
-        List<Map<String, Object>> summaries = jdbcTemplate.query(sql.toString(), params.toArray(), (rs, rowNum) -> {
-            Map<String, Object> item = new LinkedHashMap<>();
-            String summaryCameraId = rs.getString("camera_id");
-            String summaryCameraName = rs.getString("camera_name");
-            item.put("cameraId", summaryCameraId);
-            item.put("cameraName", summaryCameraName);
-            item.put("cameraCode", rs.getString("camera_code"));
-            item.put("status", rs.getString("status"));
-            item.put("factoryId", rs.getObject("factory_id"));
-            item.put("lineId", rs.getObject("line_id"));
-            item.put("lineName", rs.getString("line_name"));
-            item.put("lineCode", rs.getString("line_code"));
-            item.put("workstationId", rs.getObject("workstation_id"));
-            item.put("stationCode", rs.getString("station_code"));
-            item.put("stationName", rs.getString("station_name"));
-            item.put("stationLabel", formatStationLabel(rs.getString("station_code"), rs.getString("station_name")));
-            item.put("imageCount", rs.getLong("image_count"));
-            item.put("defectCount", rs.getLong("defect_count"));
-            item.put("highCount", rs.getLong("high_count"));
-            item.put("mediumCount", rs.getLong("medium_count"));
-            item.put("lowCount", rs.getLong("low_count"));
-            item.put("latestTime", toLocalDateTime(rs.getTimestamp("latest_time")));
-            return item;
-        });
+        // DDD P3 批次⑤：两段式聚合 SQL 与行映射已下沉到 DefectImageRepository
+        List<Map<String, Object>> summaries = defectImageRepository.listCameraSummaries(latestLimit,
+                cameraId, cameraName, factoryId, lineId, stationId, keyword, severity, defectType,
+                startTime, endTime, this::formatStationLabel);
         // ★ 2026-11-04 性能修复：原实现在 RowMapper 里对**每一行**汇总都调用
         //   listRecent(...) —— 10 个相机就是 10 次额外查询，且每次都带
         //   那个 3 秒的相关子查询 JOIN（N+1 + 慢 JOIN 叠加 = 6.4 秒）。
         //   现在改为：先拿到全部汇总，再**一次性**批量查最近图片。
         Map<String, List<Map<String, Object>>> recentByCamera =
-                listRecentForSummaries(summaries, safeLatestLimit, factoryId, lineId, stationId,
-                        keyword, severity, defectType, startTime, endTime);
+                listRecentForSummaries(summaries, latestLimit == null ? 5 : Math.max(1, Math.min(latestLimit, 20)),
+                        factoryId, lineId, stationId, keyword, severity, defectType, startTime, endTime);
         for (Map<String, Object> item : summaries) {
             String summaryCameraId = item.get("cameraId") == null ? null : String.valueOf(item.get("cameraId"));
             String summaryCameraName = item.get("cameraName") == null ? null : String.valueOf(item.get("cameraName"));
@@ -475,164 +267,16 @@ public class DefectImageServiceImpl implements IDefectImageService {
             Integer factoryId, Integer lineId, Integer stationId,
             String keyword, String severity, String defectType,
             LocalDateTime startTime, LocalDateTime endTime) {
-        Map<String, List<Map<String, Object>>> result = new LinkedHashMap<>();
-        if (summaries == null || summaries.isEmpty() || safeLatestLimit <= 0) {
-            return result;
-        }
-        List<Object> cameraKeys = new ArrayList<>();
-        for (Map<String, Object> item : summaries) {
-            Object key = item.get("cameraId");
-            if (key == null || String.valueOf(key).isEmpty()) {
-                key = item.get("cameraName");
-            }
-            if (key != null && !String.valueOf(key).isEmpty()) {
-                cameraKeys.add(String.valueOf(key));
-            }
-        }
-        if (cameraKeys.isEmpty()) {
-            return result;
-        }
-
-        StringBuilder sql = new StringBuilder();
-        List<Object> params = new ArrayList<>();
-        // ★ 2026-11-04 性能修复：**先窗口函数分组，再 JOIN**。
-        //   原写法把 JOIN 放在窗口函数<b>之前</b>，
-        //   导致 8 万行图片<b>全部</b>都要做 camera_status / dim_workstation /
-        //   dim_production_line 的 JOIN，然后才被窗口函数裁掉 ——
-        //   实测 1253ms，其中绝大部分是白做的 JOIN。
-        //   现在改成：内层只扫 defect_image_file 做窗口编号（222ms），
-        //   外层只对 <b>50 行</b>（10 相机 × 5 张）做 JOIN —— 实测 662ms，快 47%。
-        sql.append("SELECT r.image_id, r.batch_id, r.camera_id, r.camera_name, r.file_name, r.original_file_name, ")
-                .append("r.image_path, r.image_url, r.capture_time, r.upload_time, r.create_time, r.file_size, r.width, r.height, ")
-                .append("r.defect_count, r.high_count, r.medium_count, r.low_count, ")
-                .append("cs.line_id, cs.workstation_id, cs.camera_code, ws.station_name, ws.station_code, ")
-                .append("pl.line_name, pl.line_code, pl.factory_id ")
-                .append("FROM (")
-                .append("SELECT f.image_id, f.batch_id, f.camera_id, f.camera_name, f.file_name, f.original_file_name, ")
-                .append("f.image_path, f.image_url, f.capture_time, f.upload_time, f.create_time, f.file_size, f.width, f.height, ")
-                .append("f.defect_count, f.high_count, f.medium_count, f.low_count, ")
-                .append("ROW_NUMBER() OVER (PARTITION BY COALESCE(NULLIF(f.camera_id, ''), f.camera_name) ")
-                .append("ORDER BY f.create_time DESC, f.upload_time DESC, f.image_id DESC) rn ")
-                .append("FROM defect_image_file f ")
-                .append("WHERE COALESCE(NULLIF(f.camera_id, ''), f.camera_name) IN (");
-        for (int i = 0; i < cameraKeys.size(); i++) {
-            sql.append(i == 0 ? "?" : ",?");
-            params.add(cameraKeys.get(i));
-        }
-        sql.append(") ) r ")
-                .append("LEFT JOIN camera_status cs ON cs.camera_code = r.camera_id ")
-                .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
-                .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
-                .append("WHERE r.rn <= ?");
-        params.add(safeLatestLimit);
-        // 行级过滤（内层只有 f 表）
-        appendKeywordFilterRowLevel(sql, params, keyword);
-        if (StringUtils.hasText(severity)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bs WHERE bs.image_id = f.image_id AND UPPER(bs.severity) = ?) ");
-            params.add(severity.trim().toUpperCase(Locale.ROOT));
-        }
-        if (StringUtils.hasText(defectType)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bt WHERE bt.image_id = f.image_id AND bt.defect_type LIKE ?) ");
-            params.add("%" + defectType.trim() + "%");
-        }
-        if (startTime != null) {
-            sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) >= ? ");
-            params.add(Timestamp.valueOf(startTime));
-        }
-        if (endTime != null) {
-            sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) <= ? ");
-            params.add(Timestamp.valueOf(endTime));
-        }
-
-        List<Map<String, Object>> rows = jdbcTemplate.query(sql.toString(), params.toArray(), (rs, rowNum) -> {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("imageId", rs.getLong("image_id"));
-            item.put("batchId", rs.getLong("batch_id"));
-            item.put("cameraId", rs.getString("camera_id"));
-            item.put("cameraName", rs.getString("camera_name"));
-            item.put("cameraCode", rs.getString("camera_code"));
-            item.put("factoryId", rs.getObject("factory_id"));
-            item.put("lineId", rs.getObject("line_id"));
-            item.put("lineName", rs.getString("line_name"));
-            item.put("lineCode", rs.getString("line_code"));
-            item.put("workstationId", rs.getObject("workstation_id"));
-            item.put("stationCode", rs.getString("station_code"));
-            item.put("stationName", rs.getString("station_name"));
-            item.put("stationLabel", formatStationLabel(rs.getString("station_code"), rs.getString("station_name")));
-            item.put("fileName", rs.getString("file_name"));
-            item.put("originalFileName", rs.getString("original_file_name"));
-            item.put("imagePath", rs.getString("image_path"));
-            item.put("imageUrl", rs.getString("image_url"));
-            item.put("captureTime", toLocalDateTime(rs.getTimestamp("capture_time")));
-            item.put("uploadTime", toLocalDateTime(rs.getTimestamp("upload_time")));
-            item.put("receiveTime", toLocalDateTime(rs.getTimestamp("create_time")));
-            item.put("createTime", toLocalDateTime(rs.getTimestamp("create_time")));
-            item.put("fileSize", rs.getLong("file_size"));
-            item.put("width", rs.getObject("width"));
-            item.put("height", rs.getObject("height"));
-            item.put("defectCount", rs.getInt("defect_count"));
-            item.put("highCount", rs.getInt("high_count"));
-            item.put("mediumCount", rs.getInt("medium_count"));
-            item.put("lowCount", rs.getInt("low_count"));
-            return item;
-        });
-
-        // 按相机分组；缺陷框批量补齐（避免逐图查询）
-        Map<Long, List<Map<String, Object>>> defectsByImage = listDefectsByImageIds(rows);
-        for (Map<String, Object> row : rows) {
-            Long imageId = row.get("imageId") == null ? null : ((Number) row.get("imageId")).longValue();
-            List<Map<String, Object>> boxes = imageId == null ? null : defectsByImage.get(imageId);
-            row.put("defects", boxes == null ? new ArrayList<>() : boxes);
-            String key = row.get("cameraId") == null ? null : String.valueOf(row.get("cameraId"));
-            if (key == null || key.isEmpty()) {
-                key = row.get("cameraName") == null ? null : String.valueOf(row.get("cameraName"));
-            }
-            if (key == null) continue;
-            result.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
-        }
-        return result;
+        // DDD P3 批次⑤：窗口函数分组 SQL 与行映射已下沉到 DefectImageRepository
+        return defectImageRepository.listRecentForSummaries(summaries, safeLatestLimit,
+                factoryId, lineId, stationId, keyword, severity, defectType,
+                startTime, endTime, this::formatStationLabel);
     }
 
     /** 批量取多张图片的缺陷框，避免 N 次单查（N+1）。 */
     private Map<Long, List<Map<String, Object>>> listDefectsByImageIds(List<Map<String, Object>> images) {
-        Map<Long, List<Map<String, Object>>> result = new HashMap<>();
-        if (images == null || images.isEmpty()) {
-            return result;
-        }
-        List<Long> ids = new ArrayList<>();
-        for (Map<String, Object> img : images) {
-            Object v = img.get("imageId");
-            if (v instanceof Number) {
-                ids.add(((Number) v).longValue());
-            }
-        }
-        if (ids.isEmpty()) {
-            return result;
-        }
-        StringBuilder sql = new StringBuilder(
-                "SELECT box_id, image_id, defect_type, severity, severity_level, x, y, width, height, area "
-                        + "FROM defect_image_box WHERE image_id IN (");
-        List<Object> params = new ArrayList<>();
-        for (int i = 0; i < ids.size(); i++) {
-            sql.append(i == 0 ? "?" : ",?");
-            params.add(ids.get(i));
-        }
-        sql.append(") ORDER BY image_id ASC, box_id ASC");
-        jdbcTemplate.query(sql.toString(), params.toArray(), rs -> {
-            Map<String, Object> defect = new LinkedHashMap<>();
-            defect.put("boxId", rs.getLong("box_id"));
-            defect.put("type", rs.getString("defect_type"));
-            defect.put("severity", rs.getString("severity"));
-            defect.put("severityLevel", rs.getInt("severity_level"));
-            defect.put("x", rs.getDouble("x"));
-            defect.put("y", rs.getDouble("y"));
-            defect.put("width", rs.getDouble("width"));
-            defect.put("height", rs.getDouble("height"));
-            defect.put("area", rs.getDouble("area"));
-            long imageId = rs.getLong("image_id");
-            result.computeIfAbsent(imageId, k -> new ArrayList<>()).add(defect);
-        });
-        return result;
+        // DDD P3 批次⑤：批量缺陷框查询已下沉到 DefectImageRepository
+        return defectImageRepository.listDefectsByImageIds(images);
     }
 
     @Override
@@ -641,44 +285,10 @@ public class DefectImageServiceImpl implements IDefectImageService {
                                                String keyword, String severity, String defectType,
                                                LocalDateTime startTime, LocalDateTime endTime) {
         ensureSchema();
-        int safePage = page == null ? 1 : Math.max(1, page);
-        int safeSize = size == null ? 10 : Math.max(1, Math.min(size, 100));
-        int offset = (safePage - 1) * safeSize;
-
-        List<Object> countParams = new ArrayList<>();
-        StringBuilder countSql = new StringBuilder();
-        countSql.append("SELECT COUNT(1) FROM defect_image_file f ")
-                .append(cameraStatusJoinSql())
-                .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
-                .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
-                .append("WHERE 1=1 ");
-        appendImageFilters(countSql, countParams, cameraId, cameraName, factoryId, lineId, stationId,
-                keyword, severity, defectType, startTime, endTime);
-        Long total = jdbcTemplate.queryForObject(countSql.toString(), countParams.toArray(), Long.class);
-
-        List<Object> params = new ArrayList<>();
-        StringBuilder sql = new StringBuilder();
-        sql.append(imageSelectSql())
-                .append("FROM defect_image_file f ")
-                .append(cameraStatusJoinSql())
-                .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
-                .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
-                .append("WHERE 1=1 ");
-        appendImageFilters(sql, params, cameraId, cameraName, factoryId, lineId, stationId,
-                keyword, severity, defectType, startTime, endTime);
-        sql.append("ORDER BY f.create_time DESC, f.upload_time DESC, f.image_id DESC LIMIT ? OFFSET ?");
-        params.add(safeSize);
-        params.add(offset);
-
-        List<Map<String, Object>> records = jdbcTemplate.query(sql.toString(), params.toArray(),
-                (rs, rowNum) -> mapImageRow(rs));
-
-        Map<String, Object> pageResult = new LinkedHashMap<>();
-        pageResult.put("records", records);
-        pageResult.put("total", total == null ? 0L : total);
-        pageResult.put("page", safePage);
-        pageResult.put("size", safeSize);
-        return pageResult;
+        // DDD P3 批次⑤：分页 SQL 与行映射已下沉到 DefectImageRepository
+        return defectImageRepository.listHistoryPage(page, size, cameraId, cameraName,
+                factoryId, lineId, stationId, keyword, severity, defectType,
+                startTime, endTime, this::formatStationLabel);
     }
 
     @Override
@@ -722,11 +332,7 @@ public class DefectImageServiceImpl implements IDefectImageService {
             }
 
             String imageUrl = "/api/v1/defect-images/file/" + decoded.replace('\\', '/');
-            List<String> paths = jdbcTemplate.query(
-                    "SELECT image_path FROM defect_image_file WHERE image_url = ? ORDER BY image_id DESC LIMIT 3",
-                    new Object[]{imageUrl},
-                    (rs, rowNum) -> rs.getString("image_path")
-            );
+            List<String> paths = defectImageRepository.listImagePathsByUrl(imageUrl);
             for (String path : paths) {
                 if (!StringUtils.hasText(path)) continue;
                 Path dbPath = Paths.get(path).toAbsolutePath().normalize();
@@ -810,12 +416,8 @@ public class DefectImageServiceImpl implements IDefectImageService {
 
     private void cleanupFailedImage(Long batchId, Long imageId, SavedImage saved) {
         try {
-            if (imageId != null) {
-                jdbcTemplate.update("DELETE FROM defect_image_box WHERE image_id=?", imageId);
-                jdbcTemplate.update("DELETE FROM defect_image_file WHERE image_id=?", imageId);
-            } else if (batchId != null && saved != null && StringUtils.hasText(saved.absolutePath)) {
-                jdbcTemplate.update("DELETE FROM defect_image_file WHERE batch_id=? AND image_path=?", batchId, saved.absolutePath);
-            }
+            defectImageRepository.cleanupFailedImageRows(batchId, imageId,
+                    saved == null ? null : saved.absolutePath);
         } catch (Exception dbCleanupError) {
             log.warn("清理失败图片数据库残留失败: {}", dbCleanupError.getMessage());
         }
@@ -919,63 +521,27 @@ public class DefectImageServiceImpl implements IDefectImageService {
 
     private Long insertBatch(String batchNo, String cameraId, String cameraName, String deviceId,
                              LocalDateTime uploadTime, int declaredImageCount, String metadataJson) {
-        KeyHolder keyHolder = new GeneratedKeyHolder();
-        jdbcTemplate.update(connection -> {
-            PreparedStatement ps = connection.prepareStatement(
-                    "INSERT INTO defect_image_batch(batch_no, camera_id, camera_name, device_id, upload_time, declared_image_count, metadata_json, upload_status, create_time) VALUES(?,?,?,?,?,?,?,?,NOW())",
-                    Statement.RETURN_GENERATED_KEYS);
-            ps.setString(1, batchNo);
-            ps.setString(2, cameraId);
-            ps.setString(3, cameraName);
-            ps.setString(4, deviceId);
-            ps.setTimestamp(5, Timestamp.valueOf(uploadTime));
-            ps.setInt(6, declaredImageCount);
-            ps.setString(7, metadataJson);
-            ps.setString(8, "PROCESSING");
-            return ps;
-        }, keyHolder);
-        return Objects.requireNonNull(keyHolder.getKey()).longValue();
+        // DDD P3 批次⑤：INSERT 已下沉到 DefectImageRepository
+        return defectImageRepository.insertBatch(batchNo, cameraId, cameraName, deviceId,
+                uploadTime, declaredImageCount, metadataJson);
     }
 
     private Long insertImageFile(Long batchId, String cameraId, String cameraName,
                                  DefectImageUploadMetadataDTO.ImageMetadata imageMeta,
                                  SavedImage saved, LocalDateTime captureTime, LocalDateTime uploadTime,
                                  DefectCounts counts) {
-        KeyHolder keyHolder = new GeneratedKeyHolder();
-        jdbcTemplate.update(connection -> {
-            PreparedStatement ps = connection.prepareStatement(
-                    "INSERT INTO defect_image_file(batch_id, camera_id, camera_name, file_name, original_file_name, image_path, image_url, capture_time, upload_time, file_size, width, height, defect_count, high_count, medium_count, low_count, create_time) " +
-                            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())",
-                    Statement.RETURN_GENERATED_KEYS);
-            ps.setLong(1, batchId);
-            ps.setString(2, cameraId);
-            ps.setString(3, cameraName);
-            ps.setString(4, imageMeta.getFileName());
-            ps.setString(5, saved.originalFileName);
-            ps.setString(6, saved.absolutePath);
-            ps.setString(7, saved.imageUrl);
-            ps.setTimestamp(8, Timestamp.valueOf(captureTime));
-            ps.setTimestamp(9, Timestamp.valueOf(uploadTime));
-            ps.setLong(10, saved.fileSize == null ? 0L : saved.fileSize);
-            if (saved.width == null) ps.setObject(11, null); else ps.setInt(11, saved.width);
-            if (saved.height == null) ps.setObject(12, null); else ps.setInt(12, saved.height);
-            ps.setInt(13, counts.total);
-            ps.setInt(14, counts.high);
-            ps.setInt(15, counts.medium);
-            ps.setInt(16, counts.low);
-            return ps;
-        }, keyHolder);
-        return Objects.requireNonNull(keyHolder.getKey()).longValue();
+        // DDD P3 批次⑤：INSERT 已下沉到 DefectImageRepository
+        return defectImageRepository.insertImageFile(batchId, cameraId, cameraName,
+                imageMeta.getFileName(), saved.originalFileName, saved.absolutePath, saved.imageUrl,
+                captureTime, uploadTime, saved.fileSize, saved.width, saved.height,
+                counts.total, counts.high, counts.medium, counts.low);
     }
 
     private void insertDefectBoxes(Long batchId, Long imageId, List<DefectImageUploadMetadataDTO.DefectMetadata> defects) {
         if (defects == null || defects.isEmpty()) return;
         for (DefectImageUploadMetadataDTO.DefectMetadata defect : defects) {
             String severity = normalizeSeverity(defect.getSeverity());
-            jdbcTemplate.update(
-                    "INSERT INTO defect_image_box(image_id, batch_id, defect_type, severity, severity_level, x, y, width, height, area, create_time) VALUES(?,?,?,?,?,?,?,?,?,?,NOW())",
-                    imageId,
-                    batchId,
+            defectImageRepository.insertDefectBox(imageId, batchId,
                     firstNotBlank(defect.getType(), "UNKNOWN"),
                     severity,
                     severityLevel(severity),
@@ -983,8 +549,7 @@ public class DefectImageServiceImpl implements IDefectImageService {
                     nvl(defect.getY()),
                     nvl(defect.getWidth()),
                     nvl(defect.getHeight()),
-                    nvl(defect.getArea())
-            );
+                    nvl(defect.getArea()));
         }
     }
 
@@ -1014,8 +579,8 @@ public class DefectImageServiceImpl implements IDefectImageService {
         String errorSummary = failureMessages == null || failureMessages.isEmpty()
                 ? null
                 : failureMessages.stream().limit(20).collect(Collectors.joining("; "));
-        jdbcTemplate.update("UPDATE defect_image_batch SET image_count=?, success_count=?, fail_count=?, defect_count=?, high_count=?, medium_count=?, low_count=?, upload_status=?, error_summary=? WHERE batch_id=?",
-                successCount, successCount, failCount, defectCount, highCount, mediumCount, lowCount, uploadStatus, errorSummary, batchId);
+        defectImageRepository.updateBatchSummary(batchId, successCount, failCount, defectCount,
+                highCount, mediumCount, lowCount, uploadStatus, errorSummary);
     }
 
     private void updateCameraLatestImage(String cameraId, String cameraName, String deviceId, String latestImageUrl, LocalDateTime uploadTime) {
@@ -1268,23 +833,8 @@ public class DefectImageServiceImpl implements IDefectImageService {
     }
 
     private List<Map<String, Object>> listDefects(Long imageId) {
-        return jdbcTemplate.query(
-                "SELECT box_id, defect_type, severity, severity_level, x, y, width, height, area FROM defect_image_box WHERE image_id=? ORDER BY box_id ASC",
-                new Object[]{imageId},
-                (rs, rowNum) -> {
-                    Map<String, Object> defect = new LinkedHashMap<>();
-                    defect.put("boxId", rs.getLong("box_id"));
-                    defect.put("type", rs.getString("defect_type"));
-                    defect.put("severity", rs.getString("severity"));
-                    defect.put("severityLevel", rs.getInt("severity_level"));
-                    defect.put("x", rs.getDouble("x"));
-                    defect.put("y", rs.getDouble("y"));
-                    defect.put("width", rs.getDouble("width"));
-                    defect.put("height", rs.getDouble("height"));
-                    defect.put("area", rs.getDouble("area"));
-                    return defect;
-                }
-        );
+        // DDD P3 批次⑤：查询已下沉到 DefectImageRepository
+        return defectImageRepository.listDefects(imageId);
     }
 
     private DefectCounts countDefects(List<DefectImageUploadMetadataDTO.DefectMetadata> defects) {
@@ -1460,90 +1010,13 @@ public class DefectImageServiceImpl implements IDefectImageService {
     }
 
     private void createTables() {
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS defect_image_batch (" +
-                "batch_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY," +
-                "batch_no VARCHAR(100) NOT NULL," +
-                "camera_id VARCHAR(100) NULL," +
-                "camera_name VARCHAR(100) NOT NULL," +
-                "device_id VARCHAR(100) NULL," +
-                "upload_time DATETIME NOT NULL," +
-                "declared_image_count INT DEFAULT 0," +
-                "image_count INT DEFAULT 0," +
-                "success_count INT DEFAULT 0," +
-                "fail_count INT DEFAULT 0," +
-                "defect_count INT DEFAULT 0," +
-                "high_count INT DEFAULT 0," +
-                "medium_count INT DEFAULT 0," +
-                "low_count INT DEFAULT 0," +
-                "upload_status VARCHAR(30) DEFAULT 'SUCCESS'," +
-                "error_summary TEXT NULL," +
-                "metadata_json LONGTEXT NULL," +
-                "create_time DATETIME DEFAULT CURRENT_TIMESTAMP," +
-                "UNIQUE KEY uk_defect_image_batch_no(batch_no)," +
-                "KEY idx_defect_batch_camera(camera_name, upload_time)," +
-                "KEY idx_defect_batch_upload(upload_time)," +
-                "KEY idx_defect_batch_status_time(upload_status, upload_time)" +
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='缺陷图片上传批次'");
-
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS defect_image_file (" +
-                "image_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY," +
-                "batch_id BIGINT NOT NULL," +
-                "camera_id VARCHAR(100) NULL," +
-                "camera_name VARCHAR(100) NOT NULL," +
-                "file_name VARCHAR(255) NOT NULL," +
-                "original_file_name VARCHAR(255) NULL," +
-                "image_path VARCHAR(500) NOT NULL," +
-                "image_url VARCHAR(500) NOT NULL," +
-                "capture_time DATETIME NOT NULL," +
-                "upload_time DATETIME NOT NULL," +
-                "file_size BIGINT DEFAULT 0," +
-                "width INT NULL," +
-                "height INT NULL," +
-                "defect_count INT DEFAULT 0," +
-                "high_count INT DEFAULT 0," +
-                "medium_count INT DEFAULT 0," +
-                "low_count INT DEFAULT 0," +
-                "create_time DATETIME DEFAULT CURRENT_TIMESTAMP," +
-                "KEY idx_defect_file_batch(batch_id)," +
-                "KEY idx_defect_file_camera(camera_name, upload_time)," +
-                "KEY idx_defect_file_upload(upload_time)," +
-                "KEY idx_defect_file_camera_id_time(camera_id, create_time, image_id)," +
-                "KEY idx_defect_file_camera_name_time(camera_name, create_time, image_id)," +
-                "KEY idx_defect_file_capture_time(capture_time, image_id)" +
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='缺陷图片文件'");
-
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS defect_image_box (" +
-                "box_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY," +
-                "image_id BIGINT NOT NULL," +
-                "batch_id BIGINT NOT NULL," +
-                "defect_type VARCHAR(100) NOT NULL," +
-                "severity VARCHAR(20) NOT NULL," +
-                "severity_level INT NOT NULL," +
-                "x DOUBLE DEFAULT 0," +
-                "y DOUBLE DEFAULT 0," +
-                "width DOUBLE DEFAULT 0," +
-                "height DOUBLE DEFAULT 0," +
-                "area DOUBLE DEFAULT 0," +
-                "create_time DATETIME DEFAULT CURRENT_TIMESTAMP," +
-                "KEY idx_defect_box_image(image_id)," +
-                "KEY idx_defect_box_batch(batch_id)," +
-                "KEY idx_defect_box_severity(severity)," +
-                "KEY idx_defect_box_type(defect_type)," +
-                "KEY idx_defect_box_severity_image(severity, image_id)" +
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='缺陷图片缺陷框'");
+        // DDD P3 批次⑤：建表 DDL 已下沉到 DefectImageRepository
+        defectImageRepository.createTables();
     }
 
     private void ensureColumn(String tableName, String columnName, String alterSql) {
-        try {
-            Integer count = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?",
-                    Integer.class, tableName, columnName);
-            if (count == null || count == 0) {
-                jdbcTemplate.execute(alterSql);
-            }
-        } catch (DataAccessException e) {
-            log.warn("检查/新增字段失败 {}.{}: {}", tableName, columnName, e.getMessage());
-        }
+        // DDD P3 批次⑤：列检查已下沉到 DefectImageRepository
+        defectImageRepository.ensureColumn(tableName, columnName, alterSql);
     }
 
     private void ensureIndexes() {
@@ -1562,16 +1035,8 @@ public class DefectImageServiceImpl implements IDefectImageService {
     }
 
     private void ensureIndex(String tableName, String indexName, String alterSql) {
-        try {
-            Integer count = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?",
-                    Integer.class, tableName, indexName);
-            if (count == null || count == 0) {
-                jdbcTemplate.execute(alterSql);
-            }
-        } catch (DataAccessException e) {
-            log.warn("检查/新增索引失败 {}.{}: {}", tableName, indexName, e.getMessage());
-        }
+        // DDD P3 批次⑤：索引检查已下沉到 DefectImageRepository
+        defectImageRepository.ensureIndex(tableName, indexName, alterSql);
     }
 
     private static class SavedImage {
