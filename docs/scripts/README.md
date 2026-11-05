@@ -49,11 +49,16 @@
 | `verify_p3b2_browser.cjs` | **DDD 批次②**：配置页/相机页/缺陷类型页真实数据渲染 + 0 JS 错误 | `node verify_p3b2_browser.cjs`（需 `puppeteer-core` + Chrome） |
 | `compare_structure.py` | **接口快照「键结构树」比对**（只比键路径、忽略值）→ 行为不变的硬指标 | `python3 compare_structure.py <旧快照目录> <新快照目录>`（服务器上执行） |
 | `compare_p3_sql.py` | **SQL 搬运一致性**：还原 Java 字符串拼接后逐条比对原 Controller 与新 Repository | `python3 compare_p3_sql.py <原Controller目录> <新Repository目录>` |
+| `check_sql_columns.py` | **SQL 列名静态校验**：用真实表结构反查 SQL 引用的列（查 `别名.列名` 形式） | 先从 mysql 导出 `表名<TAB>列1,列2` 清单，再 `python3 check_sql_columns.py <清单文件>` |
 
-> **为什么两个 compare 都要**：`api_snapshot.py` 的 diff 比对**归一化后的值**，
-> 运行时数据漂移（相机实时上报、看板聚合、CPU 瞬时值）会报出来，需人工判定；
-> `compare_structure.py` 只比**键路径集合**，才能证明「响应结构零变化」。
-> `compare_p3_sql.py` 保证 P3 阶段「SQL 逐字搬运、零优化」没走样。
+> **为什么三个 compare 都要**：三者查的是**不同维度**，缺一不可 ——
+> - `api_snapshot.py`：比对**归一化后的值**，运行时数据漂移会报出来，需人工判定；
+> - `compare_structure.py`：只比**键路径集合**，才能证明「响应结构零变化」；
+> - `compare_p3_sql.py`：保证 P3 阶段「SQL 逐字搬运、零优化」没走样；
+> - `check_sql_columns.py`：查 **SQL 本身对不对**（列名是否存在）——
+>   ⚠️ **前三个都抓不到列名错误**：2026-11-05 实测发现产线统计兜底 SQL 写的
+>   `w.station_id` 实为 `w.workstation_id`，搬迁前后文本相同（忠实搬运 = bug 一起搬），
+>   只在「聚合表无数据」分支触发 → 整个统计页 500。
 
 ---
 
