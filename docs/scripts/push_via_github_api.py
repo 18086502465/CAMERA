@@ -97,15 +97,55 @@ def main():
     # ★ 支持多提交：取「远端 HEAD → 本地 HEAD」之间的全部提交，按时间正序逐个重建。
     #   原实现只推最后一个提交（HEAD~1 == remote_head 的假设），
     #   本地连续多个提交时会被判为「远端与本地 parent 不一致」而终止。
+    #
+    # ★ 2026-11-05 修正：**远端 commit 是本脚本用 API 重建的，sha 与本地不同**
+    #   （Git Data API 重建 commit 时会用新的时间戳/parent，sha 必然不一样），
+    #   所以本地没有远端 HEAD 这个对象 → `git rev-list remote..HEAD` 报
+    #   "Invalid revision range" → 脚本无法确定待推送范围而终止。
+    #   修法：**按提交 message 匹配** —— 遍历本地历史，找到与远端 HEAD
+    #   提交 message 相同的那一个，它之后的提交才是待推送的。
     commits = []
     if remote_head != head:
-        revs = git('rev-list', '--reverse', '%s..%s' % (remote_head, head)).split()
-        if not revs:
+        remote_msg = ''
+        try:
+            # ★ Git Data API 的 /git/commits/{sha} 返回**扁平结构**
+            #   （顶层直接有 message / tree），不是 /commits/{sha} 那种
+            #   嵌套 commit.message —— 取错了会拿到空串导致匹配失败。
+            _rc = api('GET', '/git/commits/%s' % remote_head)
+            remote_msg = _rc.get('message', '') or ''
+        except Exception:
+            pass
+        local_revs = git('rev-list', '--reverse', head).split()
+        if remote_msg:
+            # 远端 message 首行 = 该提交的标题，用它定位
+            remote_title = remote_msg.strip().split('\n')[0].strip()
+            idx = -1
+            for i, r in enumerate(local_revs):
+                title = git('log', '-1', '--format=%s', r).strip()
+                if title == remote_title:
+                    idx = i
+                    break
+            if idx >= 0:
+                commits = local_revs[idx + 1:]
+                print('按 message 匹配定位到远端提交: %s（%s）' % (local_revs[idx][:7], remote_title[:40]))
+            else:
+                print('!! 未能按 message 匹配到远端提交（标题: %s）' % remote_title[:60])
+        if not commits:
+            # 兜底：远端 message 匹配不上时，用「远端 tree 与本地某提交 tree 相同」定位
+            remote_tree_sha = ''
+            try:
+                remote_tree_sha = api('GET', '/git/trees/%s' % remote_head).get('sha', '')
+            except Exception:
+                pass
+            for i, r in enumerate(local_revs):
+                if git('rev-parse', '%s^{tree}' % r).strip() == remote_tree_sha:
+                    commits = local_revs[i + 1:]
+                    print('按 tree 匹配定位到远端提交: %s' % local_revs[i][:7])
+                    break
+        if not commits:
             print('!! 无法确定待推送的提交范围，终止')
             sys.exit(2)
-        print('待推送提交数:', len(revs))
-        for r in revs:
-            commits.append(r)
+        print('待推送提交数:', len(commits))
 
     remote_tree = {}
     rt = api('GET', '/git/trees/%s?recursive=1' % remote_head)
