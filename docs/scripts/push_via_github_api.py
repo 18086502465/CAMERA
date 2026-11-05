@@ -29,6 +29,11 @@ API = os.environ.get('GITHUB_API') or 'https://api.github.com/repos/18086502465/
 # 本脚本位于 docs/scripts/ 下，仓库根需上溯三级
 LOCAL = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# ★ 单个 blob 的上传上限（原始字节）。Git Data API 对 base64 后的请求体
+#   有约 50MB 的限制，实测 78.6MB 会被拒（HTTP 422 "input was too large"）。
+#   超过此值的 blob 改为复用远端已有 sha，不重新上传。
+MAX_BLOB_BYTES = int(os.environ.get('MAX_BLOB_BYTES', 40 * 1024 * 1024))
+
 if not TOKEN:
     print('请先设置环境变量 GITHUB_TOKEN，例如：')
     print('  Git Bash   : export GITHUB_TOKEN=<你的 classic PAT>')
@@ -125,6 +130,7 @@ def main():
         new_entries = []
         uploaded = 0
         reused = 0
+        skipped_large = []
         for mode, otype, local_sha, path in local_files:
             if otype != 'blob':
                 new_entries.append({'path': path, 'mode': mode, 'type': otype,
@@ -137,6 +143,23 @@ def main():
                 reused += 1
                 continue
             content = git_raw('cat-file', 'blob', local_sha)
+            # ★ 2026-11-05：Git Data API 对单个 blob 的请求体有上限
+            #   （实测 base64 编码后 78.6MB → HTTP 422
+            #   "Sorry, your input was too large to process"），
+            #   而原生 git push 走的 github.com 被本机代理拦截 → 推不动大文件。
+            #   策略：**超大 blob 复用远端已有的 sha**，不重新上传。
+            #   影响：dist-release 下的 jar / tar.gz / exe 在远端保持旧版本，
+            #   源码与文本产物照常推送；本地构建产物始终是最新，不影响交付。
+            if len(content) > MAX_BLOB_BYTES:
+                if r:
+                    new_entries.append({'path': path, 'mode': mode, 'type': 'blob',
+                                        'sha': r[0]})
+                    skipped_large.append((path, len(content), r[0]))
+                    continue
+                raise RuntimeError(
+                    '大文件 %s（%.1f MB）在远端不存在，无法复用；'
+                    '请改用原生 git push（需能连通 github.com）' %
+                    (path, len(content) / 1024.0 / 1024.0))
             b = api('POST', '/git/blobs', {
                 'content': base64.b64encode(content).decode(),
                 'encoding': 'base64'
@@ -147,6 +170,11 @@ def main():
             if uploaded % 20 == 0:
                 print('  已上传 blob %d 个（复用 %d 个）' % (uploaded, reused))
         print('  blob 上传 %d 个，复用 %d 个' % (uploaded, reused))
+        if skipped_large:
+            print('  ⚠ 超大 blob 跳过上传 %d 个（复用远端旧版本）：' % len(skipped_large))
+            for path, size, sha in skipped_large:
+                print('     - %s（%.1f MB → 复用 %s）'
+                      % (path, size / 1024.0 / 1024.0, sha[:8]))
 
         local_paths = {p for _, _, _, p in local_files}
         removed = [p for p in remote_tree if p not in local_paths]

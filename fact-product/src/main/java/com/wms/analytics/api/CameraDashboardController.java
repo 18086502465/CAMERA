@@ -6,18 +6,24 @@ import com.wms.masterdata.domain.model.DimProductionLine;
 import com.wms.masterdata.domain.model.DimWorkstation;
 import com.wms.device.infra.mapper.CameraStatusMapper;
 import com.wms.device.app.ICameraStatusService;
+import com.wms.device.infra.repository.CameraDirectoryRepository;
 import com.wms.masterdata.app.IDimProductionLineService;
 import com.wms.masterdata.app.IDimWorkstationService;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * 相机看板 API。
+ *
+ * <p>DDD P3 批次③：所有 SQL 已下沉到 {@link CameraDirectoryRepository}，
+ * 本类只保留参数校验、依赖判定与响应封装。
+ */
 @RestController
 @RequestMapping("/api/cameras")
 public class CameraDashboardController {
@@ -26,7 +32,7 @@ public class CameraDashboardController {
     @Autowired private CameraStatusMapper cameraStatusMapper;
     @Autowired private IDimWorkstationService workstationService;
     @Autowired private IDimProductionLineService lineService;
-    @Autowired private JdbcTemplate jdbcTemplate;
+    @Autowired private CameraDirectoryRepository cameraDirectoryRepository;
 
     @GetMapping
     public ResultVO<IPage<CameraStatus>> pageQuery(
@@ -153,7 +159,7 @@ public class CameraDashboardController {
         if (exists != null) {
             return ResultVO.fail("设备编号已存在");
         }
-        if (count("SELECT COUNT(*) FROM dim_camera WHERE camera_code = ? AND IFNULL(is_deleted,0)=0", camera.getCameraCode()) > 0) {
+        if (cameraDirectoryRepository.countDimCameraByCode(camera.getCameraCode()) > 0) {
             return ResultVO.fail("设备编号已存在");
         }
         camera.setId(null);
@@ -193,7 +199,7 @@ public class CameraDashboardController {
             );
             if (codeExists != null) return ResultVO.fail("设备编号已存在");
         }
-        if (count("SELECT COUNT(*) FROM dim_camera WHERE camera_code = ? AND camera_id <> ? AND IFNULL(is_deleted,0)=0", camera.getCameraCode(), id) > 0) {
+        if (cameraDirectoryRepository.countDimCameraByCodeExcept(camera.getCameraCode(), id) > 0) {
             return ResultVO.fail("设备编号已存在");
         }
         camera.setId(id);
@@ -218,16 +224,12 @@ public class CameraDashboardController {
         //   原实现查的是 `camera_image` —— **这张表根本不存在**（真实表名是 `camera_images`），
         //   而 count() 内部 catch 掉异常返回 0，导致这项依赖检查**永远失效**。
         //   实测：删除一台有 1347 条图片的相机时，legacyImageCount 恒为 0。
-        int imageCount = count("SELECT COUNT(*) FROM defect_image_file WHERE camera_id = ? OR camera_name = ?",
-                existing.getCameraCode(), existing.getCameraName());
-        int compatImageCount = count("SELECT COUNT(*) FROM camera_images WHERE camera_name = ?",
-                existing.getCameraName());
-        int defectBoxCount = count("SELECT COUNT(*) FROM defect_image_box b JOIN defect_image_file f ON b.image_id = f.image_id WHERE f.camera_id = ? OR f.camera_name = ?",
-                existing.getCameraCode(), existing.getCameraName());
-        int mappingCount = count("SELECT COUNT(*) FROM cfg_camera_defect_mapping WHERE camera_id = ?", id);
-        int tokenCount = count("SELECT COUNT(*) FROM cfg_camera_token WHERE camera_id = ?", id);
-        int heartbeatCount = count("SELECT COUNT(*) FROM fact_camera_heartbeat WHERE camera_code = ?",
-                existing.getCameraCode());
+        int imageCount = cameraDirectoryRepository.countDefectImageFiles(existing.getCameraCode(), existing.getCameraName());
+        int compatImageCount = cameraDirectoryRepository.countCompatImages(existing.getCameraName());
+        int defectBoxCount = cameraDirectoryRepository.countDefectImageBoxes(existing.getCameraCode(), existing.getCameraName());
+        int mappingCount = cameraDirectoryRepository.countDefectMappings(id);
+        int tokenCount = cameraDirectoryRepository.countCameraTokens(id);
+        int heartbeatCount = cameraDirectoryRepository.countHeartbeats(existing.getCameraCode());
 
         int totalImages = imageCount + compatImageCount;
         Map<String, Object> data = new LinkedHashMap<>();
@@ -302,12 +304,9 @@ public class CameraDashboardController {
             return ResultVO.fail("相机已处于停用/删除状态，无需重复删除");
         }
 
-        int imageCount = count("SELECT COUNT(*) FROM defect_image_file WHERE camera_id = ? OR camera_name = ?",
-                existing.getCameraCode(), existing.getCameraName());
-        int compatImageCount = count("SELECT COUNT(*) FROM camera_images WHERE camera_name = ?",
-                existing.getCameraName());
-        int heartbeatCount = count("SELECT COUNT(*) FROM fact_camera_heartbeat WHERE camera_code = ?",
-                existing.getCameraCode());
+        int imageCount = cameraDirectoryRepository.countDefectImageFiles(existing.getCameraCode(), existing.getCameraName());
+        int compatImageCount = cameraDirectoryRepository.countCompatImages(existing.getCameraName());
+        int heartbeatCount = cameraDirectoryRepository.countHeartbeats(existing.getCameraCode());
 
         // 有历史图片或心跳 → 拒绝删除（历史数据不可自动清理，必须人工确认归档）
         if (imageCount + compatImageCount > 0 || heartbeatCount > 0) {
@@ -316,12 +315,12 @@ public class CameraDashboardController {
         }
 
         // ---- 逻辑删除：两表一致 ----
-        jdbcTemplate.update("UPDATE camera_status SET is_active = 0, update_time = NOW() WHERE id = ?", id);
-        jdbcTemplate.update("UPDATE dim_camera SET is_deleted = 1, is_enabled = 0, update_time = NOW() WHERE camera_id = ?", id);
+        cameraDirectoryRepository.softDeleteCameraStatus(id);
+        cameraDirectoryRepository.softDeleteDimCamera(id);
 
         // ---- 级联清理：避免孤儿数据 ----
-        int mappingRows = jdbcTemplate.update("DELETE FROM cfg_camera_defect_mapping WHERE camera_id = ?", id);
-        int tokenRows = jdbcTemplate.update("DELETE FROM cfg_camera_token WHERE camera_id = ?", id);
+        int mappingRows = cameraDirectoryRepository.deleteDefectMappings(id);
+        int tokenRows = cameraDirectoryRepository.deleteCameraTokens(id);
 
         String detail = "缺陷映射 " + mappingRows + " 条、设备令牌 " + tokenRows + " 个已一并清理。";
         return ResultVO.success("删除成功", detail);
@@ -353,24 +352,9 @@ public class CameraDashboardController {
         if (line == null) {
             throw new IllegalArgumentException("产线不存在，无法同步相机维表");
         }
-        jdbcTemplate.update(
-                "INSERT INTO dim_camera(camera_id, factory_id, line_id, workstation_id, camera_code, camera_name, device_id, is_enabled, is_deleted) " +
-                        "VALUES (?,?,?,?,?,?,?,1,0) " +
-                        "ON DUPLICATE KEY UPDATE factory_id=VALUES(factory_id), line_id=VALUES(line_id), workstation_id=VALUES(workstation_id), " +
-                        "camera_code=VALUES(camera_code), camera_name=VALUES(camera_name), device_id=VALUES(device_id), is_enabled=1, is_deleted=0",
-                camera.getId(), line.getFactoryId(), camera.getLineId(), camera.getWorkstationId(),
-                camera.getCameraCode(), camera.getCameraName(), camera.getCameraCode());
-        jdbcTemplate.update(
-                "UPDATE cfg_camera_defect_mapping SET factory_id=?, line_id=?, workstation_id=?, camera_code=? WHERE camera_id=?",
-                line.getFactoryId(), camera.getLineId(), camera.getWorkstationId(), camera.getCameraCode(), camera.getId());
-    }
-
-    private int count(String sql, Object... args) {
-        try {
-            Integer value = jdbcTemplate.queryForObject(sql, Integer.class, args);
-            return value == null ? 0 : value;
-        } catch (Exception e) {
-            return 0;
-        }
+        cameraDirectoryRepository.upsertDimCamera(camera.getId(), line.getFactoryId(), camera.getLineId(),
+                camera.getWorkstationId(), camera.getCameraCode(), camera.getCameraName());
+        cameraDirectoryRepository.syncMappingLocation(line.getFactoryId(), camera.getLineId(),
+                camera.getWorkstationId(), camera.getCameraCode(), camera.getId());
     }
 }

@@ -61,6 +61,20 @@ public class SystemSettingsRepository {
         return values;
     }
 
+    /**
+     * 读取单个设置项的数值型值（DDD P3 批次③）。
+     *
+     * <p>供 device 域的相机告警阈值读取使用。
+     *
+     * @return 设置值；无值 / 非法值 / 查询失败时返回 {@code null}（由调用方决定默认值）
+     */
+    public String findSettingValue(String key) {
+        return jdbcTemplate.queryForObject(
+                "SELECT setting_value FROM sys_system_setting WHERE setting_key=? LIMIT 1",
+                new Object[]{key},
+                String.class);
+    }
+
     // ==================== 写入 ====================
 
     /** 更新单个设置项的值（仅可编辑项生效） */
