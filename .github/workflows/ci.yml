@@ -112,28 +112,27 @@ jobs:
           #
           # ★ 口令串用 printf 拼接，不能写字面量：否则本文件自己被扫到，
           #   只要 ci.yml 出现在变更集里，这个 job 就会 100% 自我命中报红。
+          #
+          # ★ 用 git grep 而不是 for/grep 循环：git grep 单进程扫全部被跟踪文件，
+          #   本机 662 个文件 0.3 秒；循环版要 fork 662 次 grep，本机 48 秒。
+          #   排除规则用 pathspec 的 :(exclude)，比 case 分支更难写漏。
           PAT=$(printf 'CCsh%s889|Pass@%s' 'enda' '1234')
           echo "::group::扫描全仓明文口令"
-          FOUND=0
-          while IFS= read -r f; do
-            case "$f" in
-              # 二进制/归档不含可读口令，跳过以省时间
-              *.png|*.jpg|*.jpeg|*.gif|*.ico|*.jar|*.tar.gz|*.zip|*.woff|*.woff2|*.ttf) continue ;;
-              # 清理工具本身：它的替换规则表里必须有口令字面量，否则没法做替换
-              docs/scripts/sanitize_secrets.py) continue ;;
-            esac
-            [ -f "$f" ] || continue
-            if grep -lE "$PAT" "$f" >/dev/null 2>&1; then
-              echo "❌ $f 含明文口令"
-              FOUND=1
-            fi
-          done < <(git ls-files)
+          # 二进制/归档不含可读口令，跳过以省时间；
+          # docs/scripts/sanitize_secrets.py 是清理工具本身，替换规则表里
+          # 必须有口令字面量，否则没法做替换 —— 唯一合法的例外。
+          HITS=$(git grep -lE "$PAT" -- . \
+            ':(exclude)*.png'  ':(exclude)*.jpg'  ':(exclude)*.jpeg' ':(exclude)*.gif' \
+            ':(exclude)*.ico'  ':(exclude)*.jar'  ':(exclude)*.tar.gz' ':(exclude)*.zip' \
+            ':(exclude)*.woff' ':(exclude)*.woff2' ':(exclude)*.ttf' \
+            ':(exclude)docs/scripts/sanitize_secrets.py' 2>/dev/null || true)
           echo "::endgroup::"
-          if [ "$FOUND" -ne 0 ]; then
+          if [ -n "$HITS" ]; then
+            echo "$HITS" | sed 's/^/❌ 含明文口令: /'
             echo "::error::检测到明文口令，请改用环境变量读取"
             exit 1
           fi
-          echo "✅ 未发现明文口令"
+          echo "✅ 未发现明文口令（扫描 $(git ls-files | wc -l) 个被跟踪文件）"
 
       - name: Shell 脚本行尾检查
         run: |
