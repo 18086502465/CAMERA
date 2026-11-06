@@ -497,11 +497,28 @@ public class DefectImageRepository {
         if (summaries == null || summaries.isEmpty() || safeLatestLimit <= 0) {
             return result;
         }
+        // ★ 2026-11-05 相机身份改为 **code-first**（详见 utils/camera-identity.js 与
+        //   docs/踩坑速查.md §10）：
+        //   现场 camera_name **跨产线重名**（ZK54 的 CV1_Cam1/CV2_Cam1 与 ZK23 同名），
+        //   若按名称匹配/分组，一台相机会拿到另一台的图片与统计。
+        //   规则：只用 camera_id（= camera_code）；仅当它为空、**且**该名称在本次
+        //   汇总结果中全局唯一时，才允许用 camera_name 兜底（老数据兼容）。
+        Map<String, Integer> nameCounts = new LinkedHashMap<>();
+        for (Map<String, Object> item : summaries) {
+            String name = item.get("cameraName") == null ? "" : String.valueOf(item.get("cameraName")).trim();
+            if (!name.isEmpty()) {
+                nameCounts.merge(name, 1, Integer::sum);
+            }
+        }
         List<Object> cameraKeys = new ArrayList<>();
         for (Map<String, Object> item : summaries) {
             Object key = item.get("cameraId");
             if (key == null || String.valueOf(key).isEmpty()) {
-                key = item.get("cameraName");
+                String name = item.get("cameraName") == null ? "" : String.valueOf(item.get("cameraName")).trim();
+                // 名称重名 → 不允许兜底（宁可该相机没有最近图片，也不能拿到别人的）
+                if (!name.isEmpty() && nameCounts.getOrDefault(name, 0) == 1) {
+                    key = name;
+                }
             }
             if (key != null && !String.valueOf(key).isEmpty()) {
                 cameraKeys.add(String.valueOf(key));
