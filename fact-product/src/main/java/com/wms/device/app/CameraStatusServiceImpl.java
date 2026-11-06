@@ -77,17 +77,26 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
                 throw new IllegalArgumentException("无效的相机状态: " + dto.getCameraStatus());
             }
 
+            // ★ 2026-11-06 修正：计数缓存的键改用 **camera_code**（deviceId），不用 camera_name。
+            //   本方法里的 saveCameraStatus 早在 2026-11-04 就改成 code-first 了（防心跳串号），
+            //   但**这处 statusCache 漏改**，仍以 camera_name 为键 —— 现场 camera_name
+            //   跨产线重名（ZK54 的 CV1_Cam1/DA8119487 ↔ ZK23 的 CV1_Cam1/DA8119489，
+            //   CV2_Cam1 同理），于是两台相机**共用同一个缓存槽位**：
+            //     ① 计数互相覆盖 → 两台相机的累计检测数几乎相同（实测 348952 / 348953）；
+            //     ② 互相"变小"→ 误报「检测到 XX 计数器重置」（11-05 07:52 一次冒出 7 条）；
+            //     ③ 一台设备的 resetFlag 会把**另一台**的缓存一起清掉。
+            String cacheKey = countCacheKey(deviceId, dto.getCameraName());
             if (Boolean.TRUE.equals(dto.getResetFlag())) {
-                clearCameraCountCache(dto.getCameraName());
+                clearCameraCountCache(cacheKey, dto.getCameraName());
             }
 
             String cameraName = dto.getCameraName();
-            CameraStatusCache cache = statusCache.get(cameraName);
+            CameraStatusCache cache = statusCache.get(cacheKey);
             if (cache != null && dto.getRecognizeCount() != null && dto.getRecognizeCount() < cache.recognizeCount) {
                 log.info("检测到 {} 计数器重置，old={}, new={}", cameraName, cache.recognizeCount, dto.getRecognizeCount());
             }
             if (dto.getRecognizeCount() != null) {
-                statusCache.put(cameraName, new CameraStatusCache(
+                statusCache.put(cacheKey, new CameraStatusCache(
                         dto.getRecognizeCount(),
                         dto.getCorrectCount() != null ? dto.getCorrectCount() : 0,
                         dto.getAbnormalCount() != null ? dto.getAbnormalCount() : 0
@@ -289,8 +298,20 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
         return response;
     }
 
-    private void clearCameraCountCache(String cameraName) {
-        statusCache.remove(cameraName);
+    /**
+     * 计数缓存的键 —— **camera_code 优先**（camera_name 仅在无编号时兜底）。
+     *
+     * <p>加前缀区分，避免 deviceId 与 cameraName 恰好同值时互相覆盖。
+     */
+    private String countCacheKey(String deviceId, String cameraName) {
+        if (StringUtils.hasText(deviceId)) {
+            return "code:" + deviceId.trim();
+        }
+        return "name:" + (cameraName == null ? "" : cameraName.trim());
+    }
+
+    private void clearCameraCountCache(String cacheKey, String cameraName) {
+        statusCache.remove(cacheKey);
         log.info("已清除相机 {} 的计数缓存", cameraName);
     }
 
