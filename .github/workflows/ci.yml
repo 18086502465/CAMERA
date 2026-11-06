@@ -100,26 +100,34 @@ jobs:
       - name: 硬编码口令检查
         run: |
           # 仓库里不允许出现明文口令（数据库口令、服务器 SSH 口令等）。
-          # 注意：历史已跟踪文件里仍有遗留，此处只检查**本次改动涉及的文件**，
-          # 避免把历史问题变成永久阻塞。
+          #
+          # ★ 这里扫**全仓**，不是只看本次变更集。原因是曾经这么写过：
+          #   CHANGED=$(git diff --name-only HEAD~1 HEAD)
+          #   但 checkout 默认 fetch-depth=1 是**浅克隆**，HEAD~1 不存在 →
+          #   git diff 报错 → CHANGED 为空 → 代码"兜底"回退成扫全仓。
+          #   而兜底分支没有排除 sanitize_secrets.py（清理工具的替换规则表里
+          #   必须写字面量）→ 恒定报红，谁都没注意。
+          #   改成依赖变更集只会把「多 commit 直推时漏掉前几个 commit」变成新坑，
+          #   而全仓扫描实测只要几秒、且当前已干净，就不绕这个弯了。
           #
           # ★ 口令串用 printf 拼接，不能写字面量：否则本文件自己被扫到，
           #   只要 ci.yml 出现在变更集里，这个 job 就会 100% 自我命中报红。
           PAT=$(printf 'CCsh%s889|Pass@%s' 'enda' '1234')
-          echo "::group::扫描本次变更中的明文口令"
-          CHANGED=$(git diff --name-only --diff-filter=ACMR HEAD~1 HEAD 2>/dev/null || true)
-          if [ -z "$CHANGED" ]; then CHANGED=$(git ls-files); fi
+          echo "::group::扫描全仓明文口令"
           FOUND=0
-          for f in $CHANGED; do
-            [ -f "$f" ] || continue
+          while IFS= read -r f; do
             case "$f" in
-              *.png|*.jpg|*.jar|*.tar.gz) continue ;;
+              # 二进制/归档不含可读口令，跳过以省时间
+              *.png|*.jpg|*.jpeg|*.gif|*.ico|*.jar|*.tar.gz|*.zip|*.woff|*.woff2|*.ttf) continue ;;
+              # 清理工具本身：它的替换规则表里必须有口令字面量，否则没法做替换
+              docs/scripts/sanitize_secrets.py) continue ;;
             esac
-            if grep -lE "$PAT" "$f" 2>/dev/null | grep -q .; then
+            [ -f "$f" ] || continue
+            if grep -lE "$PAT" "$f" >/dev/null 2>&1; then
               echo "❌ $f 含明文口令"
               FOUND=1
             fi
-          done
+          done < <(git ls-files)
           echo "::endgroup::"
           if [ "$FOUND" -ne 0 ]; then
             echo "::error::检测到明文口令，请改用环境变量读取"
@@ -214,21 +222,27 @@ jobs:
 
       - name: 校验 JAR 内前端产物已更新
         run: |
+          # 只看「index.html 实际引用的那一个入口 chunk」是否在 JAR 里。
+          # 不能用 glob 找 index-*.js：build-release.sh 会保留 3 个历史版本，
+          # JAR 里同时躺着十几个 index-*.js，glob 命中不代表是当前入口。
           python3 - <<'PY'
           import zipfile, re, sys
           z = zipfile.ZipFile('fact-product/target/time-bucket-demo.jar')
-          names = z.namelist()
+          names = set(z.namelist())
           idx = [n for n in names if n.endswith('static/index.html')]
           if not idx:
               print('❌ JAR 内缺少 static/index.html'); sys.exit(1)
           html = z.read(idx[0]).decode('utf-8')
+          # ★ findall 的匹配结果自带 'assets/' 前缀，拼路径时不能再补一次 assets/，
+          #   否则得到 static/assets/assets/index-xxx.js，恒不存在（本 job 曾因此长期报红）。
           entry = re.findall(r'assets/index-[A-Za-z0-9_-]+\.js', html)
           if not entry:
               print('❌ index.html 未引用入口 chunk'); sys.exit(1)
-          target = 'BOOT-INF/classes/static/assets/' + entry[0]
+          target = 'BOOT-INF/classes/static/' + entry[0]
           if target not in names:
               print(f'❌ 入口 chunk 未打进 JAR: {target}'); sys.exit(1)
-          print(f'✅ 入口 {entry[0]} 已正确打进 JAR')
+          total = len([n for n in names if n.startswith('BOOT-INF/classes/static/')])
+          print(f'✅ 入口 {entry[0]} 已正确打进 JAR（static 资源 {total} 项）')
           PY
 
       - name: 上传最终 JAR

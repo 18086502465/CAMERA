@@ -35,6 +35,11 @@
 *.conf          text
 *.txt           text
 
+# ---- GitHub Actions workflow：强制 LF ----
+# run 块里用了 <<'PY' heredoc，CRLF 会让结束符变成 "PY\r" 匹配不上，
+# 整个脚本被吞进 heredoc 当内容，报错信息还极难看出根因。
+.github/workflows/*.yml   text eol=lf
+
 # ---- Windows 专用脚本：保持 CRLF ----
 *.ps1           text eol=crlf
 *.cmd           text eol=crlf
