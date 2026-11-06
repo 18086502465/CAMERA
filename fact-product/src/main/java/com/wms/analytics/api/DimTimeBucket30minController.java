@@ -7,6 +7,7 @@ import com.wms.analytics.domain.model.DimTimeBucket30min;
 import com.wms.analytics.app.IDimTimeBucket30minService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import java.util.Date;
 import java.util.List;
@@ -26,16 +27,23 @@ public class DimTimeBucket30minController {
     @Autowired
     private IDimTimeBucket30minService DimTimeBucket30minService;
 
+    // SEC-02（2026-11-06）：本控制器映射为 "/DimTimeBucket30min"（无 /api 前缀），
+    // 历史 SecurityConfig 规则写的 /api/DimTimeBucket30min/** 匹配不到真实路径，
+    // 写操作曾落入"仅登录"兜底。方法级鉴权与路径级规则（SecurityConfig）双保险，
+    // 写操作一律 ADMIN；读端点维持登录即可。
+    @PreAuthorize("hasRole('ADMIN')")
     @PostMapping
     public ResponseEntity<Boolean> save(@RequestBody DimTimeBucket30min DimTimeBucket30min) {
         return ResponseEntity.ok(DimTimeBucket30minService.save(DimTimeBucket30min));
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @PutMapping
     public ResponseEntity<Boolean> updateById(@RequestBody DimTimeBucket30min DimTimeBucket30min) {
         return ResponseEntity.ok(DimTimeBucket30minService.updateById(DimTimeBucket30min));
     }
 
+    @PreAuthorize("hasRole('ADMIN')")
     @DeleteMapping("/{id}")
     public ResponseEntity<Boolean> removeById(@PathVariable Integer id) {
         return ResponseEntity.ok(DimTimeBucket30minService.removeById(id));
