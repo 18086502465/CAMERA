@@ -16,12 +16,7 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.web.cors.CorsConfiguration;
-import org.springframework.web.cors.CorsConfigurationSource;
-import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-
 import javax.servlet.http.HttpServletResponse;
-import java.util.Arrays;
 
 /**
  * Spring Security 配置类
@@ -50,8 +45,8 @@ public class SecurityConfig {
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
             .csrf().disable()
-            .cors().configurationSource(corsConfigurationSource())
-            .and()
+            // SEC-04（2026-11-06）：不再启用 CORS（前后端同源部署，见类尾说明）
+            .cors().disable()
             .authorizeRequests()
                 // ==============================================================
                 // 白名单（2026-10-31 服务器实测后再次收紧）
@@ -157,7 +152,8 @@ public class SecurityConfig {
                 ).permitAll()
                 // ---- 认证相关 ----
                 // /api/auth/register 保留匿名：注册角色已固定为普通用户(0)，
-                // 提权路径已堵死。是否关闭自助注册需业务方决策（见评审报告）。
+                // 提权路径已堵死；SEC-03（2026-11-06）已叠加口令强度校验与按 IP 限速。
+                // 前端存在 Register.vue 注册页，是否彻底关闭自助注册仍需业务方决策（见评审报告）。
                 .antMatchers(
                     "/api/auth/login",
                     "/api/auth/register",
@@ -381,15 +377,9 @@ public class SecurityConfig {
         return config.getAuthenticationManager();
     }
 
-    @Bean
-    public CorsConfigurationSource corsConfigurationSource() {
-        CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(Arrays.asList("*"));
-        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(Arrays.asList("*"));
-        configuration.setAllowCredentials(true);
-        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration);
-        return source;
-    }
+    // SEC-04（2026-11-06）：移除全局 CORS 配置。
+    // 原配置 allowedOriginPatterns("*") + allowCredentials(true)，是评审报告点名的反模式。
+    // 前后端同源部署（前端静态产物由本服务 static/ 直接伺服），开发环境经 vite proxy
+    // 转发 /api 也属同源 —— 生产不需要任何跨域。若将来确需跨域（如独立域名前端），
+    // 必须改成显式域名白名单，禁止恢复通配 + 凭证组合。
 }

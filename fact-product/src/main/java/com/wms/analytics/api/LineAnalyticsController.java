@@ -7,6 +7,7 @@ import com.wms.analytics.infra.repository.AnalyticsDashboardRepository;
 import com.wms.analytics.infra.repository.LineAnalyticsQueryRepository;
 import com.wms.analytics.infra.repository.LineAnalyticsRepository;
 import com.wms.shared.common.ResultVO;
+import com.wms.shared.common.TtlCache;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
@@ -18,6 +19,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.ByteArrayOutputStream;
@@ -29,9 +32,9 @@ import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -65,6 +68,23 @@ public class LineAnalyticsController {
 
     private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final int DAILY_AGGREGATION_THRESHOLD_DAYS = 3;
+    /** 近期窗口自动刷新天数：必须覆盖「日聚合阈值」，否则 3 天窗查询会落到未物化的日期上 */
+    private static final int RECENT_REFRESH_WINDOW_DAYS = DAILY_AGGREGATION_THRESHOLD_DAYS;
+    /** 近期窗口刷新间隔（与 @Scheduled 的 fixedDelay 保持一致，仅用于日志/说明） */
+    private static final long RECENT_REFRESH_INTERVAL_MS = 5 * 60 * 1000L;
+    /** 查询侧发现聚合落后时，触发后台补齐的最小间隔（防止高频轮询把重建打成风暴） */
+    private static final long STALE_TRIGGER_MIN_INTERVAL_MS = 10 * 60 * 1000L;
+    /** 孤儿聚合行清理的最小间隔（全表 DELETE + JOIN，很重，不能跟着查询跑） */
+    private static final long ORPHAN_PURGE_MIN_INTERVAL_MS = 60 * 60 * 1000L;
+    /**
+     * 日聚合「失败重试」的最小间隔（NEW-01，2026-11-06）。
+     * 成功时靠 {@code lastRunDate} 拦住当天重复执行；这个节流只对「还没成功」生效，
+     * 防止一个持续失败的任务每分钟都把单线程执行器占满。
+     */
+    private static final long SCHEDULED_RETRY_INTERVAL_MS = 10 * 60 * 1000L;
+    /** line-summary 响应短缓存：TTL 60s（前端 30s 轮询可命中一半以上），容量按并发筛选组合封顶 */
+    private static final long SUMMARY_CACHE_TTL_MS = 60 * 1000L;
+    private static final int SUMMARY_CACHE_MAX_ENTRIES = 64;
     private static final String XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ExecutorService aggregationExecutor = Executors.newSingleThreadExecutor(r -> {
@@ -72,8 +92,50 @@ public class LineAnalyticsController {
         t.setDaemon(true);
         return t;
     });
-    private final AtomicLong aggregationJobSeq = new AtomicLong(1000);
-    private final Map<Long, Map<String, Object>> aggregationJobs = new ConcurrentHashMap<>();
+
+    /**
+     * line-summary 短缓存（v3 H-2 / PERF-03）。
+     *
+     * <p>一次 {@code /line-summary} 要打 69 次 Repository 聚合查询，页面 30s 轮询时
+     * 完全相同的筛选条件会被反复重算。这里按「全部筛选参数 + 时间窗」做键，
+     * 60s 内直接复用上一次的响应。
+     *
+     * <p><b>为什么不缓存到更久</b>：产线是实时看板，超过 1 分钟的数据在现场会被质疑；
+     * 12 次/分钟的重复计算已经足够消除。
+     * <p><b>为什么不用 Spring Cache</b>：现场离线部署，少一个三方依赖少一条发版链。
+     */
+    private final TtlCache<String, Map<String, Object>> summaryCache =
+            new TtlCache<>(SUMMARY_CACHE_TTL_MS, SUMMARY_CACHE_MAX_ENTRIES);
+
+    /** 近期窗口刷新是否在跑（单线程执行器排队时不再重复提交） */
+    private final AtomicBoolean recentRefreshInFlight = new AtomicBoolean(false);
+    /** 上次「查询发现落后 → 触发后台补齐」的时间戳 */
+    private final AtomicLong lastStaleTriggerAt = new AtomicLong(0L);
+    /** 上次孤儿聚合行清理时间戳 */
+    private final AtomicLong lastOrphanPurgeAt = new AtomicLong(0L);
+    /** 上次「每日聚合」提交时间戳（NEW-01：失败重试节流） */
+    private final AtomicLong lastScheduledSubmitAt = new AtomicLong(0L);
+    /** 上次近期窗口刷新完成时间（供 /aggregation/schedule 暴露给运维） */
+    private volatile long lastRecentRefreshAt = 0L;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
+    private TransactionTemplate txTemplate;
+
+    /** 懒建 TransactionTemplate（避免构造期依赖注入顺序问题） */
+    private TransactionTemplate txTemplate() {
+        TransactionTemplate template = this.txTemplate;
+        if (template == null) {
+            synchronized (this) {
+                if (this.txTemplate == null) {
+                    this.txTemplate = new TransactionTemplate(transactionManager);
+                }
+                template = this.txTemplate;
+            }
+        }
+        return template;
+    }
 
     @GetMapping("/metadata")
     public ResultVO<Map<String, Object>> metadata() {
@@ -125,7 +187,41 @@ public class LineAnalyticsController {
                                                      @RequestParam(required = false) String severity) {
         LocalDateTime start = parseTime(startTime, LocalDateTime.of(LocalDate.now(), LocalTime.MIN));
         LocalDateTime end = parseTime(endTime, LocalDateTime.of(LocalDate.now(), LocalTime.MAX.withNano(0)));
-        return ResultVO.success(buildSummary(start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, defectTypeId, severity));
+        return ResultVO.success(buildSummaryCached(start, end, factoryId, lineId, workstationId, cameraId,
+                productId, shiftId, defectTypeId, severity));
+    }
+
+    /**
+     * 带短缓存的汇总入口（v3 H-2 / PERF-03）。
+     *
+     * <p>键 = 全部筛选参数 + 时间窗。缓存值<b>只读</b>（本方法返回后只经 Jackson 序列化，
+     * 没有任何调用方原地修改），因此可以直接复用 Map 实例。
+     */
+    private Map<String, Object> buildSummaryCached(LocalDateTime start, LocalDateTime end,
+                                                  Long factoryId, Long lineId, Long workstationId, Long cameraId,
+                                                  Long productId, Long shiftId, Long defectTypeId, String severity) {
+        String cacheKey = summaryCacheKey(start, end, factoryId, lineId, workstationId, cameraId,
+                productId, shiftId, defectTypeId, severity);
+        Map<String, Object> cached = summaryCache.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+        Map<String, Object> built = buildSummary(start, end, factoryId, lineId, workstationId, cameraId,
+                productId, shiftId, defectTypeId, severity);
+        summaryCache.put(cacheKey, built);
+        return built;
+    }
+
+    private String summaryCacheKey(LocalDateTime start, LocalDateTime end,
+                                   Long factoryId, Long lineId, Long workstationId, Long cameraId,
+                                   Long productId, Long shiftId, Long defectTypeId, String severity) {
+        StringBuilder key = new StringBuilder(96);
+        key.append(start.format(DT)).append('~').append(end.format(DT));
+        key.append('|').append(factoryId).append('|').append(lineId).append('|').append(workstationId)
+                .append('|').append(cameraId).append('|').append(productId).append('|').append(shiftId)
+                .append('|').append(defectTypeId)
+                .append('|').append(severity == null ? "" : severity.trim().toUpperCase(Locale.ROOT));
+        return key.toString();
     }
 
     private Map<String, Object> buildSummary(LocalDateTime start, LocalDateTime end,
@@ -136,22 +232,25 @@ public class LineAnalyticsController {
         }
         boolean daily = shouldUseDailyAggregation(start, end);
         if (daily) {
+            // ================================================================
+            // v3 H-1（PERF-02，2026-11-06）：**读路径不再写库**
+            // ================================================================
+            // 原实现（勿回退到该版本）：
+            //   aggregationRepository.ensureDailyAggregationTables();
+            //   rebuildQualityDaily(start, end, ...);   // DELETE + INSERT 全范围
+            //   rebuildDefectDaily(start, end, ...);    // DELETE + INSERT 全范围
+            //   purgeOrphanAggregationRows();           // 4 张表全表 DELETE + JOIN
+            // 前端 30s 轮询 = 每 30s 一次全范围重建：
+            //   ① 多用户并发互相覆盖中间态（DELETE 已提交、INSERT 未完成时别人查到的就是空）；
+            //   ② binlog / redo 写放大，磁盘 IO 与主从延迟全被报表吃掉；
+            //   ③ 一个"查询接口"在 DB 侧实际是写事务，锁等待反过来拖慢上传主链路。
+            //
+            // 现在：查询只读物化表；新鲜度由下面两个任务保证 ——
+            //   ① @Scheduled refreshRecentDailyAggregation()：每 5 分钟刷新近 3 天窗口；
+            //   ② 查询发现聚合落后时，异步提交一次补齐（10 分钟节流，不阻塞本次请求）；
+            // 表结构自检保留（INFORMATION_SCHEMA 幂等查询，不执行 DDL），
+            // 防止运行期表被删后直接 500。
             aggregationRepository.ensureDailyAggregationTables();
-            // 大范围查询直接使用日聚合表；若当前时间范围尚未聚合，查询前同步补齐一次。
-            rebuildQualityDaily(start.toLocalDate(), end.toLocalDate(), factoryId, lineId);
-            rebuildDefectDaily(start.toLocalDate(), end.toLocalDate(), factoryId, lineId);
-            // ★ 2026-11-05：顺带清理「孤儿聚合行」（产线已删除但聚合表里还留着）。
-            //   这些行会污染"聚合表有无数据"的判断，导致「不筛选产线」时把
-            //   已删除产线的历史数据算进总数（子集比全集大的矛盾）。
-            //   放在重建之后执行，保证产线一旦被删，下次重建就会清掉残留。
-            try {
-                int purged = aggregationRepository.purgeOrphanAggregationRows();
-                if (purged > 0) {
-                    log.info("已清理孤儿聚合行 {} 条（产线已删除但聚合表残留）", purged);
-                }
-            } catch (Exception e) {
-                log.warn("清理孤儿聚合行失败（不影响统计结果）: {}", e.getMessage());
-            }
         }
 
         // ★ 2026-11-05 数据源优先级修正（详见 buildSummary 的完整说明）
@@ -171,6 +270,14 @@ public class LineAnalyticsController {
             data.put("aggregationThresholdDays", DAILY_AGGREGATION_THRESHOLD_DAYS);
             data.put("dataSource", "DEFECT_IMAGE");
             data.put("dataSourceMessage", "当前使用缺陷图片事实表统计（现场设备实际上报通道）；该通道只上报缺陷图，良率不可计算。");
+            // NEW-06（2026-11-06 v5 评审）：两条数据源分支的响应键必须一致。
+            //   改造前「聚合新鲜度」三个键只挂在聚合表分支上，而现场 99% 的请求走这条
+            //   图片事实表分支 → 前端读 aggregationStale 恒为 undefined，判断逻辑静默失效。
+            //   这里补成明确值：图片事实表是**实时读**，不存在"聚合陈旧"概念。
+            data.put("dataFreshness", "REALTIME");
+            data.put("aggregationStale", Boolean.FALSE);
+            data.put("aggregationWatermark", null);
+            data.put("aggregationMessage", "数据实时取自缺陷图片事实表，不依赖聚合表。");
             // ★ 映射异常与数据源无关（独立指标），但必须补上 ——
             //   否则图片表路径的响应会少这个键，与聚合表路径结构不一致。
             data.put("mappingExceptions", queryRepository.queryOpenMappingExceptions());
@@ -218,6 +325,31 @@ public class LineAnalyticsController {
         //   （可能查的是图片保留期之外的历史区间）。此时用质量聚合表兜底。
         data.put("dataSource", "AGGREGATION");
         data.put("dataSourceMessage", "当前范围缺陷图片事实表无数据，已切换到质量聚合表统计。");
+        // NEW-06：与 DEFECT_IMAGE 分支保持同一套键（前端只需判断 dataFreshness）
+        data.put("dataFreshness", "MATERIALIZED");
+
+        // v3 H-1：聚合表水位自检（两列只读查询）。落后时**绝不在请求线程里重建**，
+        // 只异步提交一次补齐任务（10 分钟节流），并如实告诉前端「本次结果可能不完整」。
+        LocalDate expectEnd = end.toLocalDate();
+        LocalDate watermark = aggregationRepository.latestQualityDay();
+        boolean stale = watermark == null || watermark.isBefore(expectEnd);
+        data.put("aggregationWatermark", watermark == null ? null : watermark.toString());
+        data.put("aggregationStale", stale);
+        if (stale) {
+            // ⚠ 只有「曾经物化过、现在落后」才自动补齐。
+            //   watermark 为 null 说明日聚合表从未有数据（现场设备走图片通道、
+            //   agg_quality_30m 本身就是空表），补齐只会产出 0 行并把
+            //   analytics_aggregation_job 刷成一堆无意义的 AUTO_STALE 记录。
+            //   这种情况交给 5 分钟刷新任务（它每次都会重建近期窗口，源表有数据就会自动接上），
+            //   历史区间则由运维显式调用 /aggregation/daily/run。
+            boolean submitted = watermark != null
+                    && requestAsyncAggregation(start.toLocalDate(), end.toLocalDate(), factoryId, lineId);
+            data.put("aggregationMessage", "日聚合表最新水位为 " + (watermark == null ? "无数据" : watermark.toString())
+                    + "，落后于查询区间末 " + expectEnd + "；本次结果仅含已物化部分。"
+                    + (submitted
+                        ? "已提交后台补齐任务，稍后刷新即可看到完整数据。"
+                        : "聚合表尚未物化（或刚提交过补齐），历史区间可用 POST /api/v1/analytics/aggregation/daily/run 显式补齐。"));
+        }
 
         // ---- 工厂厂长视角指标（严重度分布 / 帕累托 / 总览 / 缺陷趋势）----
         // ⚠️ 严重度分布必须用「与主数据源同源」的查询，否则数据源切换时会被空结果覆盖。
@@ -602,7 +734,19 @@ public class LineAnalyticsController {
     @GetMapping("/aggregation/schedule")
     public ResultVO<Map<String, Object>> aggregationSchedule() {
         aggregationRepository.ensureAggregationScheduleTable();
-        return ResultVO.success(findAggregationSchedule());
+        Map<String, Object> data = findAggregationSchedule();
+        // v3 H-1：把「数据新鲜度」一并暴露给运维 —— 改造后查询不再自动重建，
+        // 现场若看到水位落后，可据此判断是定时任务没跑还是数据源本身没数据。
+        LocalDate watermark = aggregationRepository.latestQualityDay();
+        data.put("qualityWatermark", watermark == null ? null : watermark.toString());
+        long refreshedAt = lastRecentRefreshAt;
+        data.put("lastRecentRefreshAt", refreshedAt == 0 ? null
+                : java.time.LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(refreshedAt),
+                        java.time.ZoneId.systemDefault()).format(DT));
+        data.put("recentRefreshIntervalMinutes", RECENT_REFRESH_INTERVAL_MS / 60000);
+        data.put("recentRefreshWindowDays", RECENT_REFRESH_WINDOW_DAYS);
+        data.put("summaryCacheTtlSeconds", SUMMARY_CACHE_TTL_MS / 1000);
+        return ResultVO.success(data);
     }
 
     @PutMapping("/aggregation/schedule")
@@ -660,6 +804,21 @@ public class LineAnalyticsController {
         return ResultVO.success(aggregationRepository.queryRecentAggregationJobs());
     }
 
+    /**
+     * 每日聚合调度检查（每分钟看一眼是否到点）。
+     *
+     * <p><b>NEW-01（2026-11-06 v5 评审）：<code>lastRunDate</code> 不再在提交后立即写。</b>
+     * 改造前是「submit（异步）→ 立刻 updateLastRun(today)」，
+     * 任务在后台 FAILED 时 lastRunDate 已经是今天 → <b>当天不会再重试</b>，
+     * 而 H-1 已拆掉「查询时同步重建」这条自愈通道，一次瞬时故障就是当天数据永久缺口。
+     *
+     * <p>现在：由 {@link #submitDailyAggregation} 在任务<b>成功后</b>回写 lastRunDate；
+     * 失败则保持为空，下一分钟自然重试 —— 但加 10 分钟节流，
+     * 避免一个持续失败的任务每分钟都把整条单线程执行器占住。
+     *
+     * <p>另：原 {@code catch (Exception ignored)} 会把「表不存在」「口令失效」这类
+     * 调度侧故障完全吞掉，本轮改为 ERROR 级日志（这是排查当日数据缺口的唯一线索）。
+     */
     @Scheduled(fixedDelay = 60000)
     public void runScheduledDailyAggregationIfNeeded() {
         try {
@@ -670,12 +829,142 @@ public class LineAnalyticsController {
             LocalDate today = LocalDate.now();
             String lastRunDate = strOrNull(cfg.get("lastRunDate"));
             if (LocalTime.now().isBefore(scheduleTime) || today.toString().equals(lastRunDate)) return;
+            // 失败重试节流：成功后 lastRunDate 已写入，此处只对「还没成功」的情况生效
+            long now = System.currentTimeMillis();
+            long lastSubmit = lastScheduledSubmitAt.get();
+            if (now - lastSubmit < SCHEDULED_RETRY_INTERVAL_MS) return;
+            if (!lastScheduledSubmitAt.compareAndSet(lastSubmit, now)) return;
             int lookbackDays = Math.max(1, Math.min(365, intVal(cfg.get("lookbackDays"), 7)));
             LocalDate startDate = today.minusDays(lookbackDays - 1L);
-            Map<String, Object> job = submitDailyAggregation(startDate, today, longOrNull(cfg.get("factoryId")), longOrNull(cfg.get("lineId")), "SCHEDULE", null);
-            aggregationRepository.updateLastRun(today, longOrNull(job.get("jobId")));
-        } catch (Exception ignored) {
-            // 定时检查不影响主服务；错误会在具体聚合任务中记录。
+            submitDailyAggregation(startDate, today, longOrNull(cfg.get("factoryId")), longOrNull(cfg.get("lineId")), "SCHEDULE", null);
+        } catch (Exception e) {
+            // 定时检查本身不影响主服务，但必须留痕：这是当日数据缺口的唯一线索
+            log.error("日聚合调度检查失败（今日可能没有聚合数据）: {}", e.getMessage(), e);
+        }
+    }
+
+    // ==================== v3 H-1：聚合数据新鲜度（读路径只读，写库只发生在任务里） ====================
+
+    /**
+     * 近期窗口自动刷新（PERF-02 / v3 H-1，2026-11-06）。
+     *
+     * <p><b>为什么必须有它</b>：H-1 把「查询时同步重建」拿掉之后，日聚合表的新鲜度
+     * 就只能由任务保证。原有 02:00 的日任务只跑一次，白天查询的「今天」全是空档 ——
+     * 因此这里补一个 5 分钟粒度的近期窗口刷新。
+     *
+     * <p><b>为什么只刷近 3 天</b>：{@code shouldUseDailyAggregation} 的阈值是 3 天，
+     * 刷这 3 天已能覆盖「今天/昨天/近三天」这类高频看板查询；更早的历史区间属于
+     * 回溯分析，走显式管理端点 {@code POST /aggregation/daily/run}（可指定任意区间），
+     * 不能让一个定时任务每天去重建几个月的数据。
+     *
+     * <p><b>为什么不在任务表里留记录</b>：5 分钟一次 = 288 条/天，会把
+     * {@code analytics_aggregation_job} 变成日志表，运维真正要找的手工/失败任务
+     * 被淹没。这里只写应用日志；手工/失败任务仍然完整留痕。
+     *
+     * <p>并发保护：单线程执行器 + {@code recentRefreshInFlight} 标志，
+     * 上一轮没跑完（数据量大或夜间日任务占着线程）时本轮直接跳过。
+     */
+    @Scheduled(fixedDelay = 300_000, initialDelay = 90_000)
+    public void refreshRecentDailyAggregation() {
+        if (recentRefreshInFlight.get()) {
+            return;
+        }
+        final LocalDate today = LocalDate.now();
+        final LocalDate startDate = today.minusDays(RECENT_REFRESH_WINDOW_DAYS - 1L);
+        if (!recentRefreshInFlight.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            aggregationRepository.ensureDailyAggregationTables();
+        } catch (Exception e) {
+            recentRefreshInFlight.set(false);
+            log.warn("日聚合近期刷新前置检查失败: {}", e.getMessage());
+            return;
+        }
+        aggregationExecutor.submit(() -> {
+            long begin = System.currentTimeMillis();
+            try {
+                int rows = rebuildDailyAtomically(startDate, today, null, null);
+                purgeOrphanAggregationRowsIfDue();
+                lastRecentRefreshAt = System.currentTimeMillis();
+                log.info("日聚合近期窗口刷新完成: {} ~ {}，写入 {} 行，耗时 {} ms",
+                        startDate, today, rows, System.currentTimeMillis() - begin);
+            } catch (Exception e) {
+                log.warn("日聚合近期窗口刷新失败: {} ~ {}，{}", startDate, today, e.getMessage());
+            } finally {
+                recentRefreshInFlight.set(false);
+            }
+        });
+    }
+
+    /**
+     * 把「质量 + 缺陷类型」两张日聚合表的重建放进**一个短事务**。
+     *
+     * <p>原实现 DELETE 与 INSERT 是两条独立语句、各自自动提交 —— 中间窗口内查询会看到
+     * 「今天的数据被删了还没插回来」（表现为看板数字突然掉 0）。放进同一事务后，
+     * InnoDB 的 MVCC 让并发查询要么看到旧版本、要么看到新版本，不会看到空窗。
+     *
+     * <p>注意：事务里只有两条 SQL（INSERT ... SELECT 由 MySQL 内部完成），
+     * 不涉及任何文件 IO / 解码，符合「短事务」要求。
+     */
+    private int rebuildDailyAtomically(LocalDate startDate, LocalDate endDate, Long factoryId, Long lineId) {
+        Integer rows = txTemplate().execute(status -> {
+            int quality = rebuildQualityDaily(startDate, endDate, factoryId, lineId);
+            int defect = rebuildDefectDaily(startDate, endDate, factoryId, lineId);
+            return quality + defect;
+        });
+        return rows == null ? 0 : rows;
+    }
+
+    /**
+     * 查询侧发现聚合落后 → 异步补齐（10 分钟节流）。
+     *
+     * <p>只提交、不等待：本次请求立刻返回已物化结果 + {@code aggregationStale=true}，
+     * 前端据此提示「数据补齐中」。相比改造前每次查询都同步重建，代价从
+     * 「每请求一次全范围写」降到「每 10 分钟最多一次」。
+     */
+    private boolean requestAsyncAggregation(LocalDate startDate, LocalDate endDate, Long factoryId, Long lineId) {
+        long now = System.currentTimeMillis();
+        long last = lastStaleTriggerAt.get();
+        if (now - last < STALE_TRIGGER_MIN_INTERVAL_MS) {
+            return false;
+        }
+        if (!lastStaleTriggerAt.compareAndSet(last, now)) {
+            return false;
+        }
+        try {
+            submitDailyAggregation(startDate, endDate, factoryId, lineId, "AUTO_STALE", null);
+            log.info("检测到日聚合落后（水位不足），已提交后台补齐任务: {} ~ {}", startDate, endDate);
+            return true;
+        } catch (Exception e) {
+            log.warn("提交日聚合补齐任务失败（不影响本次查询）: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 孤儿聚合行清理（产线/工厂已删除但聚合表残留）—— 每小时最多一次。
+     *
+     * <p>改造前这一步跟着每次报表查询跑：4 张表全表 DELETE + LEFT JOIN，
+     * 是最重的写操作之一，却挂在读路径上。现在只有「近期刷新任务」会触发它，
+     * 且 1 小时节流 —— 产线删除是低频人工操作，1 小时延迟完全可接受。
+     */
+    private void purgeOrphanAggregationRowsIfDue() {
+        long now = System.currentTimeMillis();
+        long last = lastOrphanPurgeAt.get();
+        if (now - last < ORPHAN_PURGE_MIN_INTERVAL_MS) {
+            return;
+        }
+        if (!lastOrphanPurgeAt.compareAndSet(last, now)) {
+            return;
+        }
+        try {
+            int purged = aggregationRepository.purgeOrphanAggregationRows();
+            if (purged > 0) {
+                log.info("已清理孤儿聚合行 {} 条（产线已删除但聚合表残留）", purged);
+            }
+        } catch (Exception e) {
+            log.warn("清理孤儿聚合行失败（不影响统计结果）: {}", e.getMessage());
         }
     }
 
@@ -693,9 +982,22 @@ public class LineAnalyticsController {
                 int qualityRows = rebuildQualityDaily(startDate, endDate, factoryId, lineId);
                 int defectRows = rebuildDefectDaily(startDate, endDate, factoryId, lineId);
                 updateAggregationJob(jobId, "SUCCESS", qualityRows, defectRows, "日聚合完成", null);
+                // NEW-01：只有【定时任务】且【真正成功】才把「今天跑过了」写进调度表。
+                // 写在提交之后（改造前的做法）会把失败也记成已完成，导致当天不再重试。
+                if ("SCHEDULE".equals(triggerSource)) {
+                    try {
+                        aggregationRepository.updateLastRun(endDate, jobId);
+                    } catch (Exception e) {
+                        // 回写失败只影响「是否会重复跑一次」，不影响数据本身
+                        log.warn("回写日聚合 lastRunDate 失败: jobId={}, {}", jobId, e.getMessage());
+                    }
+                }
             } catch (Exception e) {
                 String detail = stackTraceText(e);
                 updateAggregationJob(jobId, "FAILED", 0, 0, clip(e.getMessage(), 500), detail);
+                // NEW-01：失败必须留 ERROR 痕，否则「今天数据没了」在日志里查不到原因
+                log.error("日聚合任务失败: jobId={}, {} ~ {}, trigger={}, 原因: {}",
+                        jobId, startDate, endDate, triggerSource, e.getMessage(), e);
             }
         });
         return job;
@@ -755,8 +1057,10 @@ public class LineAnalyticsController {
         try {
             aggregationRepository.ensureAggregationJobTable();
             aggregationRepository.updateAggregationJob(jobId, status, qualityRows, defectRows, message, errorDetail);
-        } catch (Exception ignored) {
-            // 聚合线程中不再向外抛出，避免影响服务主流程。
+        } catch (Exception e) {
+            // 不向外抛（聚合线程里抛出去也没人接），但必须留痕：
+            // 这里写失败意味着任务状态永远停在 RUNNING，DELETE 掉这条日志等于放弃现场唯一线索。
+            log.error("更新聚合任务状态失败: jobId={}, status={}, {}", jobId, status, e.getMessage(), e);
         }
     }
 

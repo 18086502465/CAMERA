@@ -14,6 +14,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * DDD P4 事件化契约测试：device 域发布告警事件 → analytics 监听器落库。
@@ -53,5 +54,25 @@ class CameraAlertEventListenerTest {
                 any(), any(), any(), any(), any(), any());
     }
 
+    @Test
+    @DisplayName("v3 H-4：恢复事件不新增行，只把对应告警置为已恢复")
+    void resolvedEventUpdatesInsteadOfInsert() {
+        listener.onCameraAlert(CameraAlertEvent.resolved(3, 24, "CAMERA_FAULT", "相机故障", 777L));
 
+        verify(anomalyAlertRepository).resolveCameraAlert(eq(777L), eq("AUTO_RECOVER"));
+        verify(anomalyAlertRepository, never()).insertCameraAlert(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("v3 H-4：新建告警后把 alert_id 回填到事件（续报/恢复才能定位）")
+    void alertIdIsBackFilled() {
+        when(anomalyAlertRepository.insertCameraAlert(any(), any(), any(), any(), any(), any()))
+                .thenReturn(12345L);
+        CameraAlertEvent event = new CameraAlertEvent(3, 24, "TEMPERATURE_HIGH", "WARNING",
+                "相机温度过高", "82℃");
+
+        listener.onCameraAlert(event);
+
+        org.junit.jupiter.api.Assertions.assertEquals(12345L, event.getAlertId());
+    }
 }

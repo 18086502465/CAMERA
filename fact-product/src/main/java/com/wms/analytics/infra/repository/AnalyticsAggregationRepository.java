@@ -260,6 +260,28 @@ public class AnalyticsAggregationRepository {
 
     // ==================== 日聚合重建 ====================
 
+    /**
+     * 日聚合表「水位」= {@code agg_quality_day} 里最大的 {@code date_bucket}。
+     *
+     * <p>用途（v3 H-1）：查询侧据此判断物化数据是否落后于查询区间，
+     * 落后时只提示 + 异步补齐，<b>不再同步重建</b>。
+     *
+     * <p>代价：{@code MAX(date_bucket)} 走 {@code idx_quality_day_factory(date_bucket, factory_id)}
+     * 的最左列，是一次索引扫描，毫秒级；与原来「每次查询 2 次全范围 DELETE + INSERT」
+     * 不是一个量级。
+     *
+     * @return 无水化数据或表不存在返回 {@code null}
+     */
+    public LocalDate latestQualityDay() {
+        try {
+            Date latest = jdbcTemplate.queryForObject("SELECT MAX(date_bucket) FROM agg_quality_day", Date.class);
+            return latest == null ? null : latest.toLocalDate();
+        } catch (Exception e) {
+            // 表不存在 / 权限异常：按「无水位」处理，由查询侧提示并异步补齐。
+            return null;
+        }
+    }
+
     /** 重建质量日聚合（先删后插） */
     /**
      * 清理「孤儿聚合行」—— line_id 关联不到有效产线的历史残留。

@@ -63,13 +63,35 @@ public class DefectImageController {
         } catch (IllegalArgumentException e) {
             log.warn("缺陷图片上传参数错误: {}", e.getMessage());
             DefectImageUploadResultDTO failureResult = buildValidationFailureResult(e.getMessage(), deviceId);
+            // QUAL-02（v3 H-5）：HTTP 422 与 body.code 早就对齐了，缺的是**机器可读的错误标识** ——
+            // 监控只能靠 message 文本分类。这里补 errorCode（如 UPLOAD_BATCH_SIZE_EXCEEDED）。
+            // ⚠ 刻意不改 code 数值（仍为 422/500）：现场设备固件可能按 body.code 判定重试策略，
+            //   而 errorCode 是新增字段，老固件忽略即可。
             return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
-                    .body(ResultVO.fail(422, e.getMessage(), failureResult));
+                    .body(ResultVO.<DefectImageUploadResultDTO>fail(422, e.getMessage(), failureResult)
+                            .withErrorCode(mapValidationErrorCode(e.getMessage())));
         } catch (Exception e) {
             log.error("缺陷图片上传异常", e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(ResultVO.fail(500, "缺陷图片上传失败：" + e.getMessage(), null));
+                    .body(ResultVO.<DefectImageUploadResultDTO>fail(500, "缺陷图片上传失败：" + e.getMessage(), null)
+                            .withErrorCode("UPLOAD_INTERNAL_ERROR"));
         }
+    }
+
+    /**
+     * 参数校验错误 → 错误码族（QUAL-02）。
+     *
+     * <p>与 {@link #classifyValidationErrorCode} 的分类口径一致，但返回的是
+     * {@link com.wms.shared.common.ApiErrorCode} 里的族编码（422xx / 401xx），
+     * 便于网关与监控聚合。
+     */
+    private String mapValidationErrorCode(String message) {
+        String code = classifyValidationErrorCode(message);
+        if ("BATCH_SIZE_EXCEEDED".equals(code)) return "UPLOAD_BATCH_SIZE_EXCEEDED";
+        if ("FILE_NAME_MISMATCH".equals(code)) return "UPLOAD_FILE_NAME_MISMATCH";
+        if ("METADATA_INVALID".equals(code)) return "UPLOAD_METADATA_INVALID";
+        if ("AUTH_OR_DEVICE_INVALID".equals(code)) return "AUTH_DEVICE_UNAUTHORIZED";
+        return "PARAM_INVALID";
     }
 
     private DefectImageUploadResultDTO buildValidationFailureResult(String message, String deviceId) {

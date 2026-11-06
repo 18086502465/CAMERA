@@ -52,7 +52,10 @@ mybatis-plus:
   mapper-locations: classpath:mapper/*.xml
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # OPS-01（2026-11-06）：默认值即安全值。原默认 StdOutImpl 会把全部 SQL 打到 stdout
+    # 并进 journald（漏配外部覆盖就是全量 SQL 日志洪灾）。本地调试需要看 SQL 时，
+    # 用 --spring.config.additional-location 或启动参数覆盖，不要改回这里的默认值。
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
     auto-mapping-unknown-column-behavior: NONE
   global-config:
     db-config:
@@ -83,6 +86,14 @@ app:
       hot-days: 31             # 主表热数据保留天数
       retain-days: 730         # 月表保留天数（2 年），超期整表 DROP
       batch-size: 5000         # 每批搬移行数
+  # ---- NEW-02（2026-11-06 v5 评审）：登录/注册限速的客户端 IP 来源 ----
+  #   默认空 = **不信任 X-Forwarded-For**，只用 socket 对端地址。
+  #   原因：安装脚本不部署 nginx，Spring Boot 直连 8091，XFF 完全由客户端伪造
+  #   —— 采信它等于把限速关掉（换一个头就换一个限速桶）。
+  #   将来若在应用前加代理，把代理地址填进来（逗号分隔，支持 CIDR）：
+  #     trusted-proxies: 127.0.0.1,10.2.77.0/24
+  security:
+    trusted-proxies: ""
 
 upload:
   path: ${app.home}/data/uploads
@@ -91,7 +102,9 @@ upload:
 
 logging:
   level:
-    com.wms.mapper: DEBUG
+    # OPS-01（2026-11-06）：默认 INFO。原默认 DEBUG 会把每条 SQL/参数打进日志文件；
+    # 需要排查时在启动参数临时开 --logging.level.com.wms.mapper=DEBUG。
+    com.wms.mapper: INFO
   file:
     name: ${app.home}/logs/camera-detection-system.log
 

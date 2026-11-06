@@ -152,7 +152,11 @@ public class OperationLogAspect {
      * <p>其余排除项维持 2026-11-02 口径：
      * <ul>
      *   <li>操作日志页面自身的查询/删除/清空不再写入，避免“删除后又新增一条日志”的自记录问题；</li>
-     *   <li>服务器监控 5 秒轮询接口（否则每天 17280 条无意义记录）。</li>
+     *   <li>服务器监控 5 秒轮询接口（否则每天 17280 条无意义记录）；</li>
+     *   <li>设备心跳 POST（PERF-NEW-01，2026-11-06）：5s × 16 台 = 满载 27.6 万行/天，
+     *       实测占审计日志 97%~98%。心跳状态由 {@code camera_status} 快照与告警表承接，
+     *       审计日志不应记录遥测。与 server-metrics、图片 GET 同属“遥测/轮询端点必须
+     *       显式排除审计”纪律——本类已是该反模式第三次出现，新增高频端点时先来此豁免。</li>
      * </ul>
      * 注意：登录/注册为 POST，<b>继续记录</b>（含失败记录，是 SEC-03 登录限速的数据基础）。
      */
@@ -167,6 +171,10 @@ public class OperationLogAspect {
         String uri = request.getRequestURI();
         if (uri == null) {
             return false;
+        }
+        // 设备心跳遥测（5s 周期 POST，量级远超全部人工操作之和）
+        if (uri.startsWith("/api/v1/camera/status/")) {
+            return true;
         }
         // 操作日志自身的查询/清理
         if (uri.startsWith("/api/logs/operation")) {

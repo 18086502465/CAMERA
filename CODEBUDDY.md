@@ -41,9 +41,14 @@ MYSQL_PASSWORD=xxx JWT_SECRET=xxx mvn spring-boot:run -Dspring-boot.run.argument
 
 ```bash
 npm ci                 # CI 用 npm ci，本地也建议与 lock 严格一致
-npm run dev            # 3000，/api 代理到 8091
+npm run dev            # 3000（--host 0.0.0.0），/api 代理到 localhost:8091
 npm run build          # vite build，内置 element-plus-guard 构建期断言
+npm run preview        # 预览 dist 产物
 ```
+
+前端**没有 lint、没有单元测试**（`package.json` 只有 dev/build/preview 三个脚本）。所以 `npm run build` 就是前端唯一的门禁 —— 它挂了才算挂，它过了不代表逻辑对，行为正确性只能靠 `docs/scripts/verify_*_browser.cjs` 浏览器回归。
+
+> `README.md` 里的前端/发版命令是旧口径（`npm install`、`sync_static.py`），以本文件为准。
 
 ### 发版链路
 
@@ -70,7 +75,9 @@ sudo env VERIFY_PASSWORD='xxx' MYSQL_PASSWORD='xxx' bash installer/linux/scripts
 
 ### CI（`.github/workflows/ci.yml`）
 
-4 个 job：后端构建+测试、前端 `npm ci` + build、静态检查、产物一致性校验。静态检查拦三类问题，本地改完先自查：**明文口令（`CCshenda889|Pass@1234`）**、**shell 脚本 CRLF 行尾**、**前端残留 `TODO: 替换为真实 API` 假数据**。产物一致性 job 会解包 JAR 校验 `index.html` 引用的入口 chunk 确实在 `BOOT-INF/classes/static/assets/` 里。
+4 个 job：后端构建+测试（**JDK 8**）、前端 `npm ci` + build、静态检查、产物一致性校验。静态检查拦四类问题，本地改完先自查：**明文口令（数据库/SSH 口令两个固定串，正则见 `ci.yml`）**、**shell 脚本 CRLF 行尾**、**前端残留 `TODO: 替换为真实 API` 假数据**、**Java 9+ API**。产物一致性 job 会解包 JAR 校验 `index.html` 引用的入口 chunk 确实在 `BOOT-INF/classes/static/assets/` 里。
+
+> 后端 job 用 JDK 8 编译，而本机常用 JDK 17。`-source 1.8` **不做 API 白名单检查**，所以 `List.of()` 这类 Java 9+ API 在本机全绿、在 CI 直接 `testCompile` 失败。写测试一律用 Java 8 等价写法（`Collections.emptyList()` / `Collections.singletonList()`）。
 
 ## 后端架构
 
@@ -90,11 +97,13 @@ com.wms
 └── system/       系统设置、数据清理、Excel 导入导出、映射维护
 ```
 
-每域四层：`api/`（Controller + DTO/VO）→ `app/`（应用服务、事件、跨域端口）→ `domain/model/`（被动实体）→ `infra/`（`mapper/` MyBatis-Plus + `repository/` JdbcTemplate + `task/`）。
+每域分层：`api/`（Controller + DTO/VO）→ `app/`（应用服务、事件、跨域端口）→ `domain/model/`（被动实体）→ `infra/`（`mapper/` MyBatis-Plus + `repository/` JdbcTemplate + `task/`）。层不齐是既有状态：`defect` 没有 `domain/`，`system` 没有 `app/` —— 别为了"整齐"新建空层。
+
+规模参考（2026-11）：28 个 Controller、136 个 `@*Mapping` 端点、19 个测试类 / 128 个 `@Test`。
 
 ### ArchUnit 三条铁律（`com.wms.arch.ArchitectureTest`）
 
-1. 跨域只走 `app` 层，业务域不得依赖**其他域**的 `infra`（Repository/Mapper 各域私有）。现存 12 处冻结在 `FROZEN_CROSS_DOMAIN`，**只许清零，不许新增**。
+1. 跨域只走 `app` 层，业务域不得依赖**其他域**的 `infra`（Repository/Mapper 各域私有）。现存 **13 处**冻结在 `FROZEN_CROSS_DOMAIN`，**只许清零，不许新增**。注意 `ArchitectureTest` 类注释里写的"存量 5 处"是旧值，**以 `FROZEN_CROSS_DOMAIN` 集合里实际行数为准**（改完顺手改注释）。
 2. `shared` 不得反向依赖业务域。
 3. `domain/model` 不得依赖 `api`/`app`/`infra`。
 
@@ -146,11 +155,23 @@ com.wms
 
 `axios` 实例在 `utils/request.js`，`baseURL = '/api'`，所以 `api/*.js` 里写的是 `/cameras` 这种相对路径。拦截器只做认证分流，权限判定集中在 `utils/auth-redirect.js`（401 → 清 token 跳登录；403 → 仅未登录才跳，权限不足只透传提示），登录上下文存 sessionStorage `camera_login_redirect`，用后即焚。
 
-路由里有一批**重定向兼容桩**（`/factories`、`/lines`、`/workstations`、`/companies`、`/brands`、`/users`、`/defect-types`、`/holidays` 全部 redirect 到 `/system/config`）。这是既有状态，不代表对应页面可用。仓库里另有 15 个无路由引用的孤立视图。
+路由里有一批**重定向兼容桩**（`/factories`、`/lines`、`/workstations`、`/companies`、`/brands`、`/users`、`/defect-types`、`/holidays` 全部 redirect 到 `/system/config`）。这是既有状态，不代表对应页面可用。真正**无路由引用的孤立页面只有 3 个**：`views/stats/DefectTrend.vue`、`views/stats/ProductShiftYield.vue`、`views/system/SystemSettings.vue`（31 个 `.vue` − 16 个路由引用 = 15，这个算法把子组件也算进去了，别照抄；`ConfigImportDialog.vue` 就是 `ConfigView` 的子组件）。
 
 `vite.config.js` 里 element-plus 的 alias **必须精确匹配到 `node_modules/element-plus/lib/index.js`**（CJS 完整入口），配合 `optimizeDeps.include`；配错则 `ElMessage` / `ElMessageBox` 解析成 `undefined`，构建不报错、运行全站弹窗静默失效（表现为"点删除没反应"）。`elementPlusGuard()` 插件就是把这个坑提前到构建期。
 
 `utils/resource-version.js` 负责部署后旧标签页自愈：Vite chunk 名带内容哈希，每次构建全改名，旧标签页懒加载 404 会让 vue-router 导航**静默中断**（URL 不变、无请求）。它轮询版本并自动刷新一次；`build-release.sh` 另外保留最近 3 个版本 chunk（`KEEP_STATIC_VERSIONS`）。
+
+## 改动落点速查
+
+| 要改什么 | 往哪写 |
+|---|---|
+| 新增/修改 HTTP 端点 | `com.wms.<域>/api/*Controller.java` + `@PreAuthorize`；同时在 `SecurityConfig` 与 `installer/linux/scripts/verify.sh` 补回归项 |
+| 新增查询/写入 SQL | `com.wms.<域>/infra/repository/`（表属哪个域就放哪个域，跟调用方无关） |
+| 新增 MyBatis 查询 | `com.wms.<域>/infra/mapper/` + `resources/mapper/*.xml`（XML 优先于 `@Select`，id 不得与 BaseMapper 方法重名） |
+| 跨域取数 | 消费方定义端口接口 → 提供方 `app/` 下写 Adapter；或走 `ApplicationEvent` |
+| 定时任务 | `infra/task/`，cron 用 `${app.xxx.cron:默认值}` 形式，别硬编码 |
+| 前端新页面 | `frontend/src/views/` + `router/index.js` + `api/*.js`；日期/相机身份一律用 `utils/` 下的公共函数 |
+| 表结构变更 | `sql/deploy/` 新增 `0X_*.sql`（不改已发布的 01~04），并在对应域 Repository 的 `ensureXxx`（`ensureColumn` / `ensureSchemaFull`）里做幂等补列/补索引 —— `init/SchemaInitializer` 启动期统一调度，失败只记 ERROR 不阻断启动 |
 
 ## 改代码前必须知道的纪律
 
@@ -164,10 +185,20 @@ com.wms
 - **配置与密钥分离**：唯一密钥源 `/etc/default/camera-detection`（640 root），systemd `EnvironmentFile` 注入。占位符写成 `${MYSQL_PASSWORD}`，**绝不能带空默认值** —— 带空默认值是"服务 active 但业务全错"，无默认值才会启动即报 `Could not resolve placeholder`。生产还须显式覆盖 `mybatis-plus.configuration.log-impl=Slf4jImpl` 与 `logging.level.com.wms.mapper=INFO`。
 - **测试数据只用 `ZZTEST*` 前缀**，验证后清理；现场（杭州临平二期）数据一律不得动。
 - **清理脚本的顺序是先删库记录、再删磁盘文件**；测试相机清理脚本有三道防误删防线（双表 OR 保护集 / 保护集为空即中止 / 单轮超阈值即中止），改脚本时必须保留。
+- **4 个脚本有两份副本**：`docs/scripts/` 与 `installer/linux/scripts/` 下的 `deploy_jar.sh`、`jar_manifest.py`、`prune_legacy_chunks.py`、`recover_legacy_chunks.py` 内容完全相同（前者供本地/手工调用，后者进发布包上服务器）。改一份必须同步另一份，否则线上跑的是旧版。
 
 ## 验证顺序（每轮改动照此走）
 
 `mvn test` → 打包 → 部署 → `verify.sh` 全绿 → 接口快照键结构 diff（`api_snapshot.py` + `compare_structure.py`，比键路径不比值）→ 写接口业务回归 → 浏览器回归（`docs/scripts/verify_*_browser.cjs`，登录必须用 `browser-helper.cjs`）→ 清理测试数据。
+
+碰到对应区域时额外跑回归脚本，别靠肉眼：
+
+| 改动区域 | 回归脚本 |
+|---|---|
+| 清理脚本 / `camera_type` 判定 | `docs/scripts/test_cleanup_protect_set.sh`、`verify_camera_type_guards.sh` |
+| 前端 API 路径 | `docs/scripts/probe_api_paths.sh`（防 `/users` vs `/api/user` 这类断裂） |
+| SQL 列名 | `docs/scripts/check_sql_columns.py`（information_schema 反查） |
+| 老 chunk / 旧标签页 | `recover_legacy_chunks.py`、`prune_legacy_chunks.py`、`verify-legacy-nav.cjs` |
 
 `verify.sh` 必须 **root + 正确 `VERIFY_PASSWORD`**，否则会有一批项误报失败。
 
@@ -178,7 +209,7 @@ com.wms
 | `docs/踩坑速查.md` | **改任何东西之前**；按主题记录了真实事故与根因 |
 | `docs/架构说明.md` | 分层规则、依赖铁律、关键机制 |
 | `docs/模块设计.md` | 每域职责边界、类清单、设计决策记录 |
-| `docs/接口文档.md` | 134 个端点，可 `python docs/scripts/gen_api_doc.py` 再生成 |
+| `docs/接口文档.md` | 端点清单（文档 134 条，代码里 136 个 `@*Mapping`），可 `python docs/scripts/gen_api_doc.py` 再生成 |
 | `docs/部署与运维手册.md` | 安装、增量/全量升级、备份恢复、故障排查 |
 | `docs/配置项清单.md` | 生产配置项与密钥注入口径 |
 | `docs/scripts/README.md` | 运维 / 验证脚本索引（每个脚本解决什么坑） |

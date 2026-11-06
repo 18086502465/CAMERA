@@ -146,7 +146,12 @@ public class JwtRequestFilter extends OncePerRequestFilter {
         if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
             SysUser user = userService.findByUsername(username);
 
-            if (user != null && jwtUtil.validateToken(jwtToken)) {
+            // SEC-03（2026-11-06）：禁用账号的存量 token（24h）即时失效。
+            // 本过滤器每请求本就执行 findByUsername，这里只加一次内存判断，无额外 DB 开销。
+            // 禁用后不写入 SecurityContext → 请求按匿名处理 → 受保护端点统一返回 403。
+            boolean userDisabled = user != null && user.getIsDisabled() != null && user.getIsDisabled() == 1;
+
+            if (user != null && !userDisabled && jwtUtil.validateToken(jwtToken)) {
                 // ★ 关键：把认证结果写入 SecurityContext。
                 //   缺了这一行，Spring Security 认为当前是匿名请求，
                 //   白名单里的路径全都能匿名访问 —— 这就是之前的鉴权失效根因。
