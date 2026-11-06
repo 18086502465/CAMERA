@@ -146,6 +146,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import BasePagination from '@/components/common/BasePagination.vue'
 import ImageViewer from '@/components/common/ImageViewer.vue'
 import { useCameraStatusTable } from './useCameraStatusTable'
+import { buildCameraSummaryIndex, countCameraNames, findCameraSummary } from '@/utils/camera-identity'
 
 const router = useRouter()
 
@@ -228,18 +229,23 @@ const normalizeImage = (img) => ({
   lowCount: Number(img.lowCount || 0)
 })
 
-const cameraIdentityKeys = (item) => {
-  const code = item?.cameraCode || item?.deviceId || item?.cameraId
-  const name = item?.cameraName
-  return [code, item?.cameraId, item?.cameraCode, name].filter(Boolean)
-}
-
-const imageSummaryMap = computed(() => {
-  const map = new Map()
+// ★ 2026-11-05：相机身份匹配改为 **code-first**（详见 utils/camera-identity.js）。
+//   现场 camera_name 跨产线重名（ZK54 的 CV1_Cam1/CV2_Cam1 与 ZK23 同名），
+//   此前把 cameraName 也当匹配键 → ZK54 的相机拿到了 ZK23 的图片统计 →
+//   「近批次图片/高危缺陷」在"不筛选产线"时多算一整条产线（3133 变 6266）。
+const imageSummaryIndex = computed(() => {
+  const rows = []
   recentImages.value.forEach(summaryRow => {
     const latestImages = Array.isArray(summaryRow.latestImages) ? summaryRow.latestImages : []
     const latestImage = latestImages[0] || null
-    const summary = {
+    rows.push({
+      source: summaryRow,
+      // ★ 必须透传身份字段：buildCameraSummaryIndex 靠 cameraCode/cameraId 建索引，
+      //   不透传会导致 byCode 为空 → 所有相机都匹配不到 → 统计全变 0。
+      cameraCode: summaryRow.cameraCode,
+      cameraId: summaryRow.cameraId,
+      deviceId: summaryRow.deviceId,
+      cameraName: summaryRow.cameraName,
       latestImage,
       lastUploadTime: toTimeText(summaryRow.latestTime || latestImage?.receiveTime || latestImage?.createTime || latestImage?.uploadTime),
       sortTime: toTimeText(summaryRow.latestTime || latestImage?.receiveTime || latestImage?.createTime || latestImage?.uploadTime || latestImage?.captureTime),
@@ -248,12 +254,13 @@ const imageSummaryMap = computed(() => {
       highCount: Number(summaryRow.highCount || 0),
       mediumCount: Number(summaryRow.mediumCount || 0),
       lowCount: Number(summaryRow.lowCount || 0)
-    }
-    cameraIdentityKeys(summaryRow).forEach(k => {
-      if (!map.has(k)) map.set(k, summary)
     })
   })
-  return map
+  const index = buildCameraSummaryIndex(rows)
+  return {
+    byCode: index.byCode,
+    byUniqueName: index.byUniqueName
+  }
 })
 
 const stationLabel = (item = {}) => {
@@ -269,12 +276,19 @@ const stationLabel = (item = {}) => {
   return name || code || '未配置工位'
 }
 
-const normalizeRows = (list) => list.map((item, index) => {
+const normalizeRows = (list) => {
+  // ★ 名称唯一性必须按**相机列表**判定，而不是按 summaries 判定 ——
+  //   summaries 里只有真实相机（ZK23 两台），'CV1_Cam1' 只出现 1 次会被误判为"唯一"，
+  //   从而放行名称兜底 → ZK54 的同名相机又拿到 ZK23 的统计（问题依旧）。
+  //   相机列表里 'CV1_Cam1' 出现 2 次（ZK54/ZK23 各一台）→ 正确判定为重名 → 不兜底。
+  const nameCounts = countCameraNames(list)
+  return list.map((item, index) => {
   const reportTime = toTimeText(item.reportTime || item.timestamp || item.lastHeartbeatAt)
   const cameraCode = item.cameraCode || item.deviceId || item.cameraId || '-'
   const cameraName = item.cameraName || cameraCode
   const rawDbId = Number(item.id ?? item.cameraStatusId ?? item.statusId)
-  const imageSummary = cameraIdentityKeys({ ...item, cameraCode, cameraName }).map(k => imageSummaryMap.value.get(k)).find(Boolean) || {}
+  // ★ code-first 匹配：先按 code，名称仅在**两侧都唯一**时兜底
+  const imageSummary = findCameraSummary(imageSummaryIndex.value, { ...item, cameraCode, cameraName }, nameCounts) || {}
   const lastUploadTime = imageSummary.lastUploadTime || toTimeText(item.lastUploadAt) || ''
   return {
     ...item,
@@ -300,7 +314,8 @@ const normalizeRows = (list) => list.map((item, index) => {
     dbSortId: Number.isFinite(rawDbId) ? rawDbId : Number.MAX_SAFE_INTEGER,
     sourceIndex: index
   }
-})
+  })
+}
 
 const isInvalidImage = (img) => {
   if (!img || !img.imageUrl || img.loadError) return true

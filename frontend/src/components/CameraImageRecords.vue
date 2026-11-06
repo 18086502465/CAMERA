@@ -170,6 +170,8 @@ import { getCameraList, getDefectImageCameraSummaries, getDefectImageHistory } f
 import EmptyState from '@/components/EmptyState.vue'
 import BasePagination from '@/components/common/BasePagination.vue'
 import ImageViewer from '@/components/common/ImageViewer.vue'
+// ★ 2026-11-05：相机身份匹配统一走 code-first 工具（名称重名会导致错配）
+import { buildCameraSummaryIndex, countCameraNames, findCameraSummary } from '@/utils/camera-identity'
 
 const props = defineProps({
   embedded: { type: Boolean, default: false },
@@ -368,15 +370,17 @@ const stationLabel = (item = {}) => {
 }
 const cameraPageKey = cam => String(cam?.id || cam?.name || 'unknown')
 const allCards = computed(() => {
-  const summaryGroups = new Map()
-  summaries.value.forEach(summary => {
-    const keys = [cameraIdentityKey(summary), summary.cameraCode, summary.cameraId, summary.cameraName].filter(Boolean)
-    keys.forEach(key => { if (!summaryGroups.has(key)) summaryGroups.set(key, summary) })
-  })
+  // ★ 2026-11-05：改为 **code-first** 索引（详见 utils/camera-identity.js）。
+  //   此前把 cameraName 也当键 → 现场跨产线重名（ZK54 的 CV1_Cam1 与 ZK23 的
+  //   CV1_Cam1 同名）会让一台相机拿到另一台的统计，图片数与缺陷数翻倍。
+  const summaryIndex = buildCameraSummaryIndex(summaries.value)
+  const summaryGroups = summaryIndex.byCode
+  const cameraNameCounts = countCameraNames(cameras.value)
   const matchedSummaryKeys = new Set()
   const cards = cameras.value.map((cam, index) => {
     const name = cam.cameraName || cam.cameraCode || `相机-${index + 1}`
-    const summary = summaryGroups.get(cameraIdentityKey(cam)) || summaryGroups.get(cam.cameraCode) || summaryGroups.get(cam.cameraId) || summaryGroups.get(name)
+    // ★ code-first：先按 code，名称仅在两侧都唯一时兜底（重名宁可 0 不错配）
+    const summary = findCameraSummary(summaryIndex, cam, cameraNameCounts)
     if (summary) matchedSummaryKeys.add(summary)
     const cardId = cam.id || cam.cameraId || cam.cameraCode || name
     const historyState = cameraHistoryState[cameraPageKey({ id: cardId, name })] || {}
