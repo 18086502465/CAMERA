@@ -1,0 +1,1 @@
+import{I as t}from"./index-CQDN-14y.js";function s(r){return t.post("/auth/login",r)}function o(r){return t.post("/auth/register",r)}function a(){return t.get("/auth/me")}function n(r){return Promise.reject(new Error("系统暂不支持页面自助改密，请在服务器上执行：sudo /opt/camera-detection-system/scripts/reset-password.sh --password '新口令'"))}export{a as g,s as l,o as r,n as u};

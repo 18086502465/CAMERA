@@ -12,7 +12,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>2.7.15</version>
+        <version>2.7.18</version>
         <relativePath/>
     </parent>
 
@@ -93,11 +93,8 @@
             <artifactId>poi-ooxml</artifactId>
             <version>5.2.4</version>
         </dependency>
-        <dependency>
-            <groupId>com.alibaba</groupId>
-            <artifactId>fastjson</artifactId>
-            <version>1.2.83</version>
-        </dependency>
+        <!-- SEC-05（2026-11-06）：移除 fastjson 1.2.83 —— 全仓零引用的死依赖，带历史 CVE。
+             如将来确需 JSON 工具，统一用 Jackson（Spring 自带）。 -->
         <!-- JWT -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
@@ -208,7 +205,7 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
-                <version>2.7.15</version>
+                <version>2.7.18</version>
                 <configuration>
                     <!-- 必须配置：指定项目的启动类全路径，自动生成主清单 -->
                     <mainClass>com.wms.TimeBucketApplication</mainClass>

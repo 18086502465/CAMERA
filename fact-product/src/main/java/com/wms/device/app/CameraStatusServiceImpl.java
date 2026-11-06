@@ -50,6 +50,9 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
     /** DDD P4：告警经事件发布，analytics 域监听落库（解耦跨域依赖） */
     @Autowired
     private ApplicationEventPublisher eventPublisher;
+    /** v3 H-4：告警去重节流（同相机同类型 30 分钟内只落 1 条） */
+    @Autowired
+    private CameraAlertThrottle alertThrottle;
 
     private final Map<String, CameraStatusCache> statusCache = new ConcurrentHashMap<>();
 
@@ -199,49 +202,123 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
         }
     }
 
+    /**
+     * 心跳告警判定（v3 H-4 改造，2026-11-06）。
+     *
+     * <p><b>改造前</b>：4 类条件各自 {@code insertAnomalyAlert}，每条心跳（5s）都判定一次
+     * → 一台相机持续故障就是 17,280 条 CRITICAL/天，告警表被同一条信息刷满。
+     *
+     * <p><b>改造后</b>：所有判定统一走 {@link CameraAlertThrottle#evaluate}，
+     * 由它给出 RAISE / SUPPRESS / RECOVER / NONE 四种动作：
+     * <ul>
+     *   <li>新增故障：插入 1 条；</li>
+     *   <li>30 分钟内重复：只累加抑制计数，<b>不写库</b>；</li>
+     *   <li>超过 30 分钟仍持续：续报 1 条并把上一条置 SUPERSEDED（同时刻只有 1 条未恢复）；</li>
+     *   <li>条件消失并稳定 2 分钟：把未恢复条目标记为已恢复（AUTO_RECOVER）。</li>
+     * </ul>
+     *
+     * <p>键用 {@code camera_code|alert_type}：camera_code 是设备第一身份标识，
+     * camera_name 现场跨产线重名（详见 saveCameraStatus 的注释），不能做键。
+     */
     private void checkAndAlert(CameraStatusHeartbeatDTO dto, String deviceId) {
         CameraStatus camera = findCameraForAlert(dto, deviceId);
         Integer lineId = camera != null && camera.getLineId() != null ? camera.getLineId() : 0;
         Integer workstationId = camera != null && camera.getWorkstationId() != null ? camera.getWorkstationId() : 0;
         String cameraCode = camera != null && StringUtils.hasText(camera.getCameraCode()) ? camera.getCameraCode() : deviceId;
         String cameraName = camera != null && StringUtils.hasText(camera.getCameraName()) ? camera.getCameraName() : dto.getCameraName();
+        String subject = "相机 " + safe(cameraName) + "(" + safe(cameraCode) + ")";
+        long now = System.currentTimeMillis();
 
-        if (dto.getCameraStatus() != null && dto.getCameraStatus() == 2) {
-            log.warn("【告警】相机 {} 故障: {}", dto.getCameraName(), dto.getErrorMessage());
-            insertAnomalyAlert(lineId, workstationId, "CAMERA_FAULT", "CRITICAL",
-                    "相机故障",
-                    "相机 " + safe(cameraName) + "(" + safe(cameraCode) + ") 上报故障状态；故障信息：" + safe(dto.getErrorMessage()));
-        }
+        // ---- 1) 相机故障 ----
+        boolean fault = dto.getCameraStatus() != null && dto.getCameraStatus() == 2;
+        evaluateAlert(cameraCode, "CAMERA_FAULT", fault, lineId, workstationId, "CRITICAL", "相机故障",
+                subject + " 上报故障状态；故障信息：" + safe(dto.getErrorMessage()), now);
+
+        // ---- 2) 计数逻辑异常 ----
+        boolean countMismatch = false;
+        int diff = 0;
         if (dto.getRecognizeCount() != null && dto.getCorrectCount() != null && dto.getAbnormalCount() != null) {
-            int diff = Math.abs(dto.getRecognizeCount() - (dto.getCorrectCount() + dto.getAbnormalCount()));
-            if (diff > 1) {
-                log.warn("【告警】相机 {} 计数逻辑异常: recognize={}, correct={}, abnormal={}, diff={}",
-                        dto.getCameraName(), dto.getRecognizeCount(), dto.getCorrectCount(), dto.getAbnormalCount(), diff);
-                insertAnomalyAlert(lineId, workstationId, "COUNT_MISMATCH", "WARNING",
-                        "相机计数异常",
-                        "相机 " + safe(cameraName) + "(" + safe(cameraCode) + ") 识别总数与 OK/缺陷数不一致，差值：" + diff);
-            }
+            diff = Math.abs(dto.getRecognizeCount() - (dto.getCorrectCount() + dto.getAbnormalCount()));
+            countMismatch = diff > 1;
         }
+        evaluateAlert(cameraCode, "COUNT_MISMATCH", countMismatch, lineId, workstationId, "WARNING", "相机计数异常",
+                subject + " 识别总数与 OK/缺陷数不一致，差值：" + diff, now);
+
+        // ---- 3~5) 资源阈值（CPU / 内存 / 温度）----
         double cpuWarning = getDecimalSetting("alert.cpuWarning", 90D);
         double memoryWarning = getDecimalSetting("alert.memoryWarning", 90D);
         double temperatureWarning = getDecimalSetting("alert.temperatureWarning", 70D);
-        if (dto.getCpuUsage() != null && dto.getCpuUsage() > cpuWarning) {
-            log.warn("【预警】相机 {} CPU 使用率过高: {}%", dto.getCameraName(), dto.getCpuUsage());
-            insertAnomalyAlert(lineId, workstationId, "CPU_HIGH", "WARNING",
-                    "相机CPU过高",
-                    "相机 " + safe(cameraName) + "(" + safe(cameraCode) + ") CPU 使用率 " + dto.getCpuUsage() + "%，超过阈值 " + cpuWarning + "%。建议检查算法进程、设备散热和后台任务。");
+
+        boolean cpuHigh = dto.getCpuUsage() != null && dto.getCpuUsage() > cpuWarning;
+        evaluateAlert(cameraCode, "CPU_HIGH", cpuHigh, lineId, workstationId, "WARNING", "相机CPU过高",
+                subject + " CPU 使用率 " + dto.getCpuUsage() + "%，超过阈值 " + cpuWarning
+                        + "%。建议检查算法进程、设备散热和后台任务。", now);
+
+        boolean memoryHigh = dto.getMemoryUsage() != null && dto.getMemoryUsage() > memoryWarning;
+        evaluateAlert(cameraCode, "MEMORY_HIGH", memoryHigh, lineId, workstationId, "WARNING", "相机内存过高",
+                subject + " 内存使用率 " + dto.getMemoryUsage() + "%，超过阈值 " + memoryWarning
+                        + "%。建议检查内存泄漏、缓存堆积和服务重启策略。", now);
+
+        boolean temperatureHigh = dto.getTemperature() != null && dto.getTemperature() > temperatureWarning;
+        evaluateAlert(cameraCode, "TEMPERATURE_HIGH", temperatureHigh, lineId, workstationId, "WARNING", "相机温度过高",
+                subject + " 设备温度 " + dto.getTemperature() + "℃，超过阈值 " + temperatureWarning
+                        + "℃。建议检查机柜散热、风扇和环境温度。", now);
+    }
+
+    /**
+     * 单类告警的统一判定 + 动作执行。
+     *
+     * <p>消息在真正需要落库时才拼装"已持续 X 分钟 / 期间抑制 N 条"，
+     * 恢复时也落一条 INFO 日志 —— 现场排障时"什么时候恢复的"和"什么时候坏的"一样重要。
+     */
+    private void evaluateAlert(String cameraCode, String alertType, boolean active,
+                               Integer lineId, Integer workstationId, String level,
+                               String title, String message, long now) {
+        String key = (StringUtils.hasText(cameraCode) ? cameraCode.trim() : "unknown") + "|" + alertType;
+        CameraAlertThrottle.Outcome outcome = alertThrottle.evaluate(key, active, now);
+
+        if (outcome.shouldRaise()) {
+            Long supersedeId = outcome.getSupersedeAlertId();
+            if (supersedeId != null) {
+                // 续报：先关掉上一条，保证同一时刻同一相机同一类型只有 1 条未恢复
+                resolveAlertQuietly(lineId, workstationId, alertType, title, supersedeId);
+            }
+            String text = message;
+            if (outcome.getSuppressedCount() > 0) {
+                long lastingMinutes = Math.max(1L, (now - outcome.getActiveSinceMillis()) / 60_000L);
+                text = message + "（该告警已持续约 " + lastingMinutes + " 分钟，期间抑制重复告警 "
+                        + outcome.getSuppressedCount() + " 条）";
+            }
+            CameraAlertEvent event = new CameraAlertEvent(lineId, workstationId, alertType, level, title, text);
+            eventPublisher.publishEvent(event);
+            alertThrottle.bindAlertId(key, event.getAlertId());
+            log.warn("【告警】{}", text);
+        } else if (outcome.shouldRecover()) {
+            Long alertId = outcome.getResolvedAlertId();
+            if (alertId != null) {
+                resolveAlertQuietly(lineId, workstationId, alertType, title, alertId);
+            }
+            long lastingMinutes = outcome.getActiveSinceMillis() > 0
+                    ? Math.max(1L, (now - outcome.getActiveSinceMillis()) / 60_000L) : 0L;
+            log.info("【恢复】相机 {} 的告警 {} 已恢复，持续约 {} 分钟，期间抑制 {} 条",
+                    cameraCode, alertType, lastingMinutes, outcome.getSuppressedCount());
         }
-        if (dto.getMemoryUsage() != null && dto.getMemoryUsage() > memoryWarning) {
-            log.warn("【预警】相机 {} 内存使用率过高: {}%", dto.getCameraName(), dto.getMemoryUsage());
-            insertAnomalyAlert(lineId, workstationId, "MEMORY_HIGH", "WARNING",
-                    "相机内存过高",
-                    "相机 " + safe(cameraName) + "(" + safe(cameraCode) + ") 内存使用率 " + dto.getMemoryUsage() + "%，超过阈值 " + memoryWarning + "%。建议检查内存泄漏、缓存堆积和服务重启策略。");
-        }
-        if (dto.getTemperature() != null && dto.getTemperature() > temperatureWarning) {
-            log.warn("【预警】相机 {} 温度过高: {}℃", dto.getCameraName(), dto.getTemperature());
-            insertAnomalyAlert(lineId, workstationId, "TEMPERATURE_HIGH", "WARNING",
-                    "相机温度过高",
-                    "相机 " + safe(cameraName) + "(" + safe(cameraCode) + ") 设备温度 " + dto.getTemperature() + "℃，超过阈值 " + temperatureWarning + "℃。建议检查机柜散热、风扇和环境温度。");
+    }
+
+    /**
+     * 关闭一条未恢复告警（续报接续 / 条件恢复）。
+     *
+     * <p><b>为什么走事件而不是直接调 Repository</b>：{@code fact_anomaly_alert} 属于
+     * analytics 域，device 域直接写它就是 P4 已经消灭掉的跨域违规（ArchUnit 会拦）。
+     * 恢复事件由 analytics 监听器执行 UPDATE，失败只记 WARN，绝不阻断心跳。
+     */
+    private void resolveAlertQuietly(Integer lineId, Integer workstationId, String alertType,
+                                     String title, Long alertId) {
+        try {
+            eventPublisher.publishEvent(CameraAlertEvent.resolved(lineId, workstationId,
+                    alertType, title, alertId));
+        } catch (Exception e) {
+            log.warn("发布告警关闭事件失败: alertId={}, {}", alertId, e.getMessage());
         }
     }
 
@@ -274,16 +351,6 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
             log.debug("读取系统设置 {} 失败，使用默认值 {}", key, defaultValue);
         }
         return defaultValue;
-    }
-
-    private void insertAnomalyAlert(Integer lineId, Integer workstationId, String alertType, String alertLevel,
-                                    String alertTitle, String alertMessage) {
-        // DDD P4：原直接调 analytics 域 AnomalyAlertRepository（跨域违规），
-        // 改为发布事件由 analytics 监听器落库。同步事件（发布线程执行），落库失败
-        // 由监听器吞掉（原 catch 语义在监听器侧保持），此处不感知失败 —— 行为不变。
-        eventPublisher.publishEvent(new CameraAlertEvent(
-                lineId, workstationId, alertType, alertLevel,
-                alertTitle, alertMessage));
     }
 
     private String safe(String value) {

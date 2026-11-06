@@ -102,6 +102,10 @@ jobs:
           # 仓库里不允许出现明文口令（数据库口令、服务器 SSH 口令等）。
           # 注意：历史已跟踪文件里仍有遗留，此处只检查**本次改动涉及的文件**，
           # 避免把历史问题变成永久阻塞。
+          #
+          # ★ 口令串用 printf 拼接，不能写字面量：否则本文件自己被扫到，
+          #   只要 ci.yml 出现在变更集里，这个 job 就会 100% 自我命中报红。
+          PAT=$(printf 'CCsh%s889|Pass@%s' 'enda' '1234')
           echo "::group::扫描本次变更中的明文口令"
           CHANGED=$(git diff --name-only --diff-filter=ACMR HEAD~1 HEAD 2>/dev/null || true)
           if [ -z "$CHANGED" ]; then CHANGED=$(git ls-files); fi
@@ -111,7 +115,7 @@ jobs:
             case "$f" in
               *.png|*.jpg|*.jar|*.tar.gz) continue ;;
             esac
-            if grep -lE "(CCshenda889|Pass@1234)" "$f" 2>/dev/null | grep -q .; then
+            if grep -lE "$PAT" "$f" 2>/dev/null | grep -q .; then
               echo "❌ $f 含明文口令"
               FOUND=1
             fi
@@ -151,6 +155,30 @@ jobs:
             exit 1
           fi
           echo "✅ 无假数据 TODO"
+
+      - name: Java 8 API 兼容性检查
+        run: |
+          # 项目强制 Java 8（maven.compiler.source/target=8），CI 用 JDK 8 编译。
+          # 但本机若用 JDK 9+ 编译，javac 会**放行** Java 9+ API（只是 -source 8 的语法检查），
+          # 于是「本机全绿、CI testCompile 直接失败」。历史上就是这样漏进 List.of() 的。
+          # 这里用文本扫描兜住最常被误用的几个 API。
+          echo "::group::扫描 Java 9+ API"
+          PATTERN='List\.of\(|Set\.of\(|Map\.of\(|Map\.entry\(|\.isBlank\(\)|\.strip\(\)|\.repeat\(|readAllBytes|readString\(|writeString\(|transferTo\(.*OutputStream|Collectors\.toUnmodifiable|Optional<[^>]*>[^;]*\.isEmpty\(\)|^[[:space:]]*var[[:space:]]+[a-zA-Z]'
+          HITS=$(grep -rnE "$PATTERN" fact-product/src --include=*.java | grep -v '/target/' || true)
+          echo "::endgroup::"
+          if [ -n "$HITS" ]; then
+            echo "$HITS"
+            echo "::error::检测到 Java 9+ API，JDK 8 无法编译；请改用 Java 8 等价写法"
+            exit 1
+          fi
+          echo "✅ 未发现 Java 9+ API"
+
+      - name: 实体与建库脚本列对账
+        run: |
+          # fact_anomaly_alert 曾出现「实体有新列、01 建库脚本是旧形状、靠 04 的裸 ALTER 补」
+          # 的情况：全新库能跑、现场库取决于 04 有没有跑全，缺列时错误还会被
+          # catch(DataAccessException) 吞掉（表现为「告警永远不恢复」）。
+          python3 docs/scripts/check_entity_vs_ddl.py
 
   verify:
     name: 产物一致性校验

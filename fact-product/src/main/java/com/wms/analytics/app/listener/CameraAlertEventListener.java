@@ -18,8 +18,16 @@ import org.springframework.stereotype.Component;
  * {@link AnomalyAlertRepository#insertCameraAlert}（本就存在于该 Repository）。
  *
  * <p>行为保持：① 与原实现一致使用**同步** @EventListener（发布线程内执行，无时序变化）；
- * ② 吞异常不阻断主流程（DataAccessException 只记 WARN，与原 catch 语义一致）；
- * ③ 幂等：纯 INSERT，每次心跳告警各插一条（原语义如此，未做去重）。
+ * ② 吞异常不阻断主流程（DataAccessException 只记 WARN，与原 catch 语义一致）。
+ *
+ * <p><b>v3 H-4（2026-11-06）起不再是"每次心跳各插一条"</b>：
+ * 去重与节流已上移到 device 域的 {@code CameraAlertThrottle}（它需要相机维度的状态，
+ * 而本表没有 camera_code 列，只能进程内做）。本监听器现在承担两件事：
+ * <ul>
+ *   <li>新建告警：插入后把 {@code alert_id} 回填到事件上（同步执行保证发布方读得到），
+ *       供节流器下次续报/恢复时定位；</li>
+ *   <li>恢复事件：不再插入新行，直接把对应告警置为已解决。</li>
+ * </ul>
  */
 @Component
 public class CameraAlertEventListener {
@@ -32,10 +40,18 @@ public class CameraAlertEventListener {
     @EventListener
     public void onCameraAlert(CameraAlertEvent event) {
         try {
-            anomalyAlertRepository.insertCameraAlert(
+            if (event.isResolved()) {
+                int rows = anomalyAlertRepository.resolveCameraAlert(event.getAlertId(), "AUTO_RECOVER");
+                if (rows == 0) {
+                    log.debug("告警 {} 已处于关闭状态（并发/重启导致），忽略恢复事件", event.getAlertId());
+                }
+                return;
+            }
+            Long alertId = anomalyAlertRepository.insertCameraAlert(
                     event.getLineId(), event.getWorkstationId(),
                     event.getAlertType(), event.getAlertLevel(),
                     event.getAlertTitle(), event.getAlertMessage());
+            event.setAlertId(alertId);
         } catch (DataAccessException e) {
             log.warn("写入相机异常告警失败: type={}, title={}, error={}",
                     event.getAlertType(), event.getAlertTitle(), e.getMessage());

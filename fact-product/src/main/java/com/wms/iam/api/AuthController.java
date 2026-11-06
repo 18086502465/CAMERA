@@ -2,12 +2,17 @@ package com.wms.iam.api;
 
 import com.wms.iam.domain.model.SysUser;
 import com.wms.iam.app.ISysUserService;
+import com.wms.iam.domain.ClientIpResolver;
 import com.wms.iam.domain.JwtUtil;
+import com.wms.iam.domain.LoginRateLimiter;
+import com.wms.shared.common.ApiErrorCode;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletRequest;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -24,13 +29,43 @@ public class AuthController {
     @Autowired
     private JwtUtil jwtUtil;
 
+    /** SEC-03：登录/注册失败限速（2026-11-06） */
+    @Autowired
+    private LoginRateLimiter rateLimiter;
+
+    /**
+     * NEW-02：可信代理白名单（逗号分隔，默认空）。
+     *
+     * <p>空值表示<b>不信任任何 {@code X-Forwarded-For}</b> —— 本项目安装脚本不部署 nginx，
+     * 请求直连 8091，此时 XFF 完全由客户端控制，采信它等于把限速关掉。
+     * 将来若前面加了代理，在这里填代理地址（支持 CIDR，如 {@code 10.0.0.0/8}）。
+     */
+    @Value("${app.security.trusted-proxies:}")
+    private String trustedProxies;
+
+    private volatile ClientIpResolver clientIpResolver;
+
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
+
+    /** 懒建解析器（配置值注入完成后再读，避免初始化顺序问题） */
+    private ClientIpResolver clientIpResolver() {
+        ClientIpResolver resolver = this.clientIpResolver;
+        if (resolver == null) {
+            synchronized (this) {
+                if (this.clientIpResolver == null) {
+                    this.clientIpResolver = new ClientIpResolver(trustedProxies);
+                }
+                resolver = this.clientIpResolver;
+            }
+        }
+        return resolver;
+    }
 
     /**
      * 登录
      */
     @PostMapping("/login")
-    public ResultVO<Map<String, Object>> login(@RequestBody LoginRequest request) {
+    public ResultVO<Map<String, Object>> login(@RequestBody LoginRequest request, HttpServletRequest httpRequest) {
         // 入参防御（2026-10-31 服务器实测发现）：
         //  1. password 为 null 时，BCryptPasswordEncoder.matches(null, hash) 会抛
         //     IllegalArgumentException("rawPassword cannot be null") → 被 Spring 兜成
@@ -41,17 +76,31 @@ public class AuthController {
         String username = (request == null) ? null : trimToNull(request.getUsername());
         String password = (request == null) ? null : request.getPassword();
         if (username == null || password == null || password.isEmpty()) {
-            return ResultVO.error("用户名或密码错误");
+            // QUAL-02：凭据类错误码 → HTTP 401（改造前是 HTTP 200 + code 500，网关/APM 看不见）
+            return ResultVO.of(ApiErrorCode.AUTH_INVALID_CREDENTIALS);
+        }
+
+        // SEC-03 限速：用户名+IP 维度，5 次失败/分钟 → 锁 5 分钟（防爆破与 BCrypt CPU DoS）
+        String limitKey = "login|" + username.toLowerCase() + "|" + clientIp(httpRequest);
+        if (rateLimiter.isBlocked(limitKey)) {
+            long min = (rateLimiter.remainingLockMs(limitKey) + 59_999) / 60_000;
+            return ResultVO.of(ApiErrorCode.AUTH_RATE_LIMITED,
+                    "失败次数过多，账号已临时锁定，请约 " + min + " 分钟后再试");
         }
 
         SysUser user = userService.findByUsername(username);
         if (user == null || (user.getIsDisabled() != null && user.getIsDisabled() == 1)) {
-            return ResultVO.error("用户不存在或已被禁用");
+            // 不存在的用户也计入失败：不给爆破者区分“用户不存在/口令错误”的侧信道
+            rateLimiter.recordFailure(limitKey);
+            return ResultVO.of(ApiErrorCode.AUTH_INVALID_CREDENTIALS);
         }
 
         if (!passwordEncoder.matches(password, user.getPasswordHash())) {
-            return ResultVO.error("用户名或密码错误");
+            rateLimiter.recordFailure(limitKey);
+            return ResultVO.of(ApiErrorCode.AUTH_INVALID_CREDENTIALS);
         }
+
+        rateLimiter.recordSuccess(limitKey);
 
         // 更新最后登录时间
         userService.updateLastLoginAt(user.getUserId());
@@ -83,7 +132,7 @@ public class AuthController {
      * 注册（仅管理员可调用，或开放注册）
      */
     @PostMapping("/register")
-    public ResultVO<String> register(@RequestBody RegisterRequest request) {
+    public ResultVO<String> register(@RequestBody RegisterRequest request, HttpServletRequest httpRequest) {
         // === 安全修复（2026-10-31 服务器实测发现的严重漏洞）===
         //
         // 原实现直接采用请求传入的 role：
@@ -100,12 +149,27 @@ public class AuthController {
         String username = (request == null) ? null : trimToNull(request.getUsername());
         String password = (request == null) ? null : request.getPassword();
         if (username == null || password == null || password.isEmpty()) {
-            return ResultVO.error("用户名或密码不能为空");
+            return ResultVO.of(ApiErrorCode.PARAM_MISSING, "用户名或密码不能为空");
+        }
+
+        // SEC-03 注册限速：按 IP 维度（弱口令批量注册成本抬高；配合下面的强度校验）
+        String regKey = "reg|" + clientIp(httpRequest);
+        if (rateLimiter.isBlocked(regKey)) {
+            long min = (rateLimiter.remainingLockMs(regKey) + 59_999) / 60_000;
+            return ResultVO.of(ApiErrorCode.AUTH_RATE_LIMITED,
+                    "注册尝试过于频繁，请约 " + min + " 分钟后再试");
+        }
+
+        // SEC-03 口令最小强度：≥8 位 + 至少两类字符（QUAL-NEW-03）
+        String strengthError = passwordStrengthError(password);
+        if (strengthError != null) {
+            rateLimiter.recordFailure(regKey);
+            return ResultVO.of(ApiErrorCode.PARAM_WEAK_PASSWORD, strengthError);
         }
 
         // 检查用户名是否已存在
         if (userService.findByUsername(username) != null) {
-            return ResultVO.error("用户名已存在");
+            return ResultVO.of(ApiErrorCode.CONFLICT_USERNAME_EXISTS);
         }
 
         SysUser user = new SysUser();
@@ -118,7 +182,48 @@ public class AuthController {
         user.setIsDisabled(0);
 
         userService.save(user);
+        rateLimiter.recordSuccess(regKey);
         return ResultVO.success("注册成功");
+    }
+
+    /**
+     * SEC-03/QUAL-NEW-03：最小口令强度 —— 长度 ≥8 且至少包含字母/数字两类。
+     * 现场系统不强制符号（避免产线工口令难记反贴便签），够挡住纯弱口令字典。
+     *
+     * @return null 表示通过；否则返回给前端的错误文案
+     */
+    private static String passwordStrengthError(String password) {
+        if (password.length() < 8) {
+            return "密码长度至少 8 位";
+        }
+        boolean hasLetter = false;
+        boolean hasDigit = false;
+        for (int i = 0; i < password.length(); i++) {
+            char c = password.charAt(i);
+            if (Character.isLetter(c)) {
+                hasLetter = true;
+            } else if (Character.isDigit(c)) {
+                hasDigit = true;
+            }
+        }
+        if (!hasLetter || !hasDigit) {
+            return "密码需同时包含字母和数字";
+        }
+        return null;
+    }
+
+    /**
+     * 取用于限速键的客户端 IP。
+     *
+     * <p>NEW-02（2026-11-06 v5 评审）：原实现「有 X-Forwarded-For 就取首段」，
+     * 但本系统是直连 8091（安装脚本不部署 nginx），XFF 完全由客户端伪造 ——
+     * 换头即换限速桶。现改为：默认只用 socket 对端地址，
+     * 只有对端命中 {@code app.security.trusted-proxies} 才采信 XFF。
+     * 判定细节见 {@link ClientIpResolver}。
+     */
+    private String clientIp(HttpServletRequest request) {
+        String xff = request.getHeader("X-Forwarded-For");
+        return clientIpResolver().resolve(request.getRemoteAddr(), xff);
     }
 
     /**
@@ -127,17 +232,22 @@ public class AuthController {
     @GetMapping("/me")
     public ResultVO<Map<String, Object>> me(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            return ResultVO.error("缺少认证令牌");
+            return ResultVO.of(ApiErrorCode.AUTH_TOKEN_INVALID, "缺少认证令牌");
         }
         String token = authHeader.replace("Bearer ", "");
         if (!jwtUtil.validateToken(token)) {
-            return ResultVO.error("Token无效或已过期");
+            return ResultVO.of(ApiErrorCode.AUTH_TOKEN_INVALID, "Token无效或已过期");
         }
         Long userId = jwtUtil.getUserIdFromToken(token);
         SysUser user = userService.getById(userId);
 
         if (user == null) {
-            return ResultVO.error("用户不存在");
+            return ResultVO.of(ApiErrorCode.AUTH_TOKEN_INVALID, "用户不存在");
+        }
+        // SEC-03：/api/auth/me 在白名单内自行校验 token，必须同步检查禁用状态，
+        // 否则禁用账号的存量 token 仍可通过本端点读到自己（受保护端点已 401）。
+        if (user.getIsDisabled() != null && user.getIsDisabled() == 1) {
+            return ResultVO.of(ApiErrorCode.AUTH_ACCOUNT_DISABLED);
         }
 
         Map<String, Object> data = new HashMap<>();

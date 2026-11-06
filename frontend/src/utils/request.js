@@ -11,6 +11,25 @@ const request = axios.create({
   timeout: 15000
 })
 
+/**
+ * NEW-03（2026-11-06 v5 评审）：不参与 401/403 分流的匿名认证端点。
+ *
+ * 这类端点本身就是"还没有会话"时调用的，返回 401 只是"这次请求没通过"，
+ * 不是"你的登录态失效了"。若让它们走 401 分支，拦截器会：
+ *   清 token → 把**当前页**（登录页）写成回跳来源 → 跳登录页。
+ * 而 `/login` 不在回跳白名单里，会被回退成默认首页，
+ * 用户下次登录成功就被送到 `/camera-status`，原来想去的页面丢了。
+ *
+ * 后端也已把"凭据错误"从 401 改成 400（ApiErrorCode.AUTH_INVALID_CREDENTIALS），
+ * 这里是第二道保险：即使将来某个匿名端点又返回 401，也不会污染登录上下文。
+ */
+const ANONYMOUS_AUTH_PATHS = ['/auth/login', '/auth/register']
+
+function isAnonymousAuthRequest(error) {
+  const url = (error && error.config && error.config.url) || ''
+  return ANONYMOUS_AUTH_PATHS.some(p => url.startsWith(p))
+}
+
 // 请求拦截器：注入 Token
 request.interceptors.request.use(config => {
   const token = getToken()
@@ -50,6 +69,11 @@ request.interceptors.response.use(
 
     if (response) {
       const status = response.status
+
+      // ---- 匿名认证端点：401/403 只透传，不动登录态、不写回跳上下文 ----
+      if ((status === 401 || status === 403) && isAnonymousAuthRequest(error)) {
+        return Promise.reject(error)
+      }
 
       // ---- 401：未认证（token 无效 / 已过期）----
       if (status === 401) {

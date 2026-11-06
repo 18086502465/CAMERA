@@ -54,50 +54,70 @@ class DddBaselineContractTest {
     @Mock
     private JwtUtil jwtUtil;
 
+    /** SEC-03（2026-11-06）：AuthController 新增的登录限速器，Mock 下空实现即放行 */
+    @Mock
+    private com.wms.iam.domain.LoginRateLimiter rateLimiter;
+
     @InjectMocks
     private AuthController authController;
 
     @Test
-    @DisplayName("login: 缺 password → 不 500，返回业务错误 code=500（防 NPE 回归）")
+    @DisplayName("login: 缺 password → HTTP 400 + code=40004（防 NPE 回归；NEW-03 后凭据错误不再用 401）")
     void loginMissingPassword() throws Exception {
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(authController).build();
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(authController)
+                .setControllerAdvice(new com.wms.shared.web.ApiStatusAdvice())
+                .build();
         mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"admin\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(500))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(40004))
+                .andExpect(jsonPath("$.errorCode").value("AUTH_INVALID_CREDENTIALS"))
                 .andExpect(jsonPath("$.message").isNotEmpty());
     }
 
     @Test
-    @DisplayName("login: 未知用户 → 业务错误 code=500 而非 HTTP 500")
+    @DisplayName("login: 未知用户 → 400 + 40004（不暴露用户是否存在）")
     void loginUnknownUser() throws Exception {
         when(userService.findByUsername("nobody")).thenReturn(null);
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(authController).build();
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(authController)
+                .setControllerAdvice(new com.wms.shared.web.ApiStatusAdvice())
+                .build();
         mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"nobody\",\"password\":\"x\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(500));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(40004))
+                .andExpect(jsonPath("$.errorCode").value("AUTH_INVALID_CREDENTIALS"));
     }
 
     @Test
-    @DisplayName("login: 禁用用户 → 业务错误 code=500")
+    @DisplayName("login: 禁用用户 → 400 + 40004（与未知用户同一响应，不产生侧信道）")
     void loginDisabledUser() throws Exception {
         com.wms.iam.domain.model.SysUser u = new com.wms.iam.domain.model.SysUser();
         u.setUsername("admin");
         u.setIsDisabled(1);
         when(userService.findByUsername("admin")).thenReturn(u);
 
-        MockMvc mvc = MockMvcBuilders.standaloneSetup(authController).build();
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(authController)
+                .setControllerAdvice(new com.wms.shared.web.ApiStatusAdvice())
+                .build();
         Map<String, String> body = new java.util.HashMap<>();
         body.put("username", "admin");
         body.put("password", "whatever");
         mvc.perform(post("/api/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(om.writeValueAsString(body)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(500));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(40004));
+    }
+
+    @Test
+    @DisplayName("login: 存量 ResultVO.fail(500) 语义未被牵连 —— 未登记 code 不改 HTTP 状态")
+    void legacyFailStaysHttp200() {
+        com.wms.shared.common.ResultVO<String> legacy = com.wms.shared.common.ResultVO.fail("老接口失败");
+        org.junit.jupiter.api.Assertions.assertEquals(500, legacy.getCode());
+        org.junit.jupiter.api.Assertions.assertNull(com.wms.shared.common.ApiErrorCode.httpStatusOf(legacy.getCode()));
     }
 
     // ---------------- 2. 级联树契约 ----------------

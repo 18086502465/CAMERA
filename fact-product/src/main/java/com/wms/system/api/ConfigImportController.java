@@ -27,7 +27,8 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -64,6 +65,10 @@ public class ConfigImportController {
     @Autowired private DimWorkstationMapper workstationMapper;
     @Autowired private CameraStatusMapper cameraStatusMapper;
     @Autowired private ConfigImportRepository configImportRepository;
+
+    /** v3 H-3：Excel 解析在事务外，只有落库阶段用事务 */
+    @Autowired private PlatformTransactionManager transactionManager;
+    private volatile TransactionTemplate txTemplate;
 
     @GetMapping("/template")
     public void downloadTemplate(HttpServletResponse response) throws Exception {
@@ -114,8 +119,27 @@ public class ConfigImportController {
         }
     }
 
+    /**
+     * 配置整体导入。
+     *
+     * <p><b>v3 H-3（PERF-04，2026-11-06）：解析出事务，事务只包 DB 写。</b>
+     *
+     * <p>改造前 {@code @Transactional} 盖住了整段：{@code WorkbookFactory.create}
+     * 把整个 xlsx 解析进内存（POI 的 shared strings 解析是重活，大文件数百毫秒到数秒），
+     * 期间<b>一条数据库连接一直挂着</b>。生产库连接池是有限的共享资源，
+     * 一次导入就能让上传/心跳/统计一起等连接。
+     *
+     * <p>改造后分两段：
+     * <ol>
+     *   <li><b>解析段（无事务、无连接）</b>：读文件 + 逐行解析 + 字段校验，
+     *       产出 {@code ParsedRow} 列表（含每行的行号与解析错误）；</li>
+     *   <li><b>写入段（单个短事务）</b>：逐行 upsert 工厂/产线/工位/相机。</li>
+     * </ol>
+     *
+     * <p>错误语义保持不变：单行失败仍被 catch 后计入 {@code failedRows} 并追加
+     * 「第 N 行：xxx」，不会回滚其他行（原实现也从未因单行失败回滚）。
+     */
     @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @Transactional
     public ResultVO<ConfigImportResultDTO> importConfig(@RequestParam("file") MultipartFile file,
                                                         @RequestParam(defaultValue = MODE_INCREMENTAL) String mode) {
         ConfigImportResultDTO result = new ConfigImportResultDTO();
@@ -134,7 +158,8 @@ public class ConfigImportController {
             return ResultVO.fail("导入失败", result);
         }
 
-        ImportContext context = new ImportContext();
+        // ---------- 第一段：解析（事务外，不占用数据库连接） ----------
+        List<ParsedRow> parsedRows = new ArrayList<>();
         try (InputStream inputStream = file.getInputStream(); Workbook workbook = WorkbookFactory.create(inputStream)) {
             Sheet sheet = workbook.getNumberOfSheets() > 0 ? workbook.getSheetAt(0) : null;
             if (sheet == null) {
@@ -151,45 +176,92 @@ public class ConfigImportController {
                     continue;
                 }
                 result.setTotalRows(result.getTotalRows() + 1);
+                ParsedRow parsed = new ParsedRow();
+                parsed.rowNumber = rowIndex + 1;
                 try {
                     ImportRow data = readImportRow(row, formatter, evaluator);
                     validateRow(data, rowIndex + 1);
-                    if (context.processedCameraCodes.contains(data.cameraCode)) {
-                        result.setSkippedRows(result.getSkippedRows() + 1);
-                        result.addWarning("第 " + (rowIndex + 1) + " 行相机编号 " + data.cameraCode + " 重复，已跳过重复行。");
-                        continue;
-                    }
-
-                    DimFactory factory = upsertFactory(data, context, result);
-                    DimProductionLine line = upsertLine(data, factory, context, result);
-                    DimWorkstation workstation = upsertWorkstation(data, line, context, result);
-                    upsertCamera(data, line, workstation, context, result);
-                    context.processedCameraCodes.add(data.cameraCode);
-                    result.setSuccessRows(result.getSuccessRows() + 1);
+                    parsed.data = data;
                 } catch (Exception rowError) {
-                    result.setFailedRows(result.getFailedRows() + 1);
-                    result.addError("第 " + (rowIndex + 1) + " 行：" + rowError.getMessage());
+                    parsed.error = rowError.getMessage();
                 }
+                parsedRows.add(parsed);
             }
-
-            if (result.getTotalRows() == 0) {
-                result.addError("Excel 没有可导入的数据行，请保留表头并从第 2 行开始填写。");
-                result.setFailedRows(1);
-                return ResultVO.fail("导入失败", result);
-            }
-            if (MODE_FULL.equals(normalizedMode) && result.getSuccessRows() > 0) {
-                disableCamerasNotInFile(context.processedCameraCodes, result);
-                result.addWarning("全量导入本期采用安全策略：文件内配置新增/更新；文件外相机标记为停用和离线；工厂、产线、工位不做物理删除。");
-            }
-            if (result.getFailedRows() > 0) {
-                return ResultVO.fail("导入完成，但存在失败行", result);
-            }
-            return ResultVO.success(result, "导入成功");
         } catch (Exception e) {
             result.addError("解析 Excel 失败：" + e.getMessage());
             result.setFailedRows(result.getFailedRows() + 1);
             return ResultVO.fail("导入失败", result);
         }
+
+        if (result.getTotalRows() == 0) {
+            result.addError("Excel 没有可导入的数据行，请保留表头并从第 2 行开始填写。");
+            result.setFailedRows(1);
+            return ResultVO.fail("导入失败", result);
+        }
+
+        // ---------- 第二段：写入（单事务，仅 DB 操作） ----------
+        final String writeMode = normalizedMode;
+        txTemplate().executeWithoutResult(status -> applyParsedRows(parsedRows, writeMode, result));
+
+        if (result.getFailedRows() > 0) {
+            return ResultVO.fail("导入完成，但存在失败行", result);
+        }
+        return ResultVO.success(result, "导入成功");
+    }
+
+    /** 逐行 upsert（在事务内执行，语义与改造前的循环体完全一致） */
+    private void applyParsedRows(List<ParsedRow> parsedRows, String normalizedMode, ConfigImportResultDTO result) {
+        ImportContext context = new ImportContext();
+        for (ParsedRow parsed : parsedRows) {
+            if (parsed.error != null) {
+                result.setFailedRows(result.getFailedRows() + 1);
+                result.addError("第 " + parsed.rowNumber + " 行：" + parsed.error);
+                continue;
+            }
+            ImportRow data = parsed.data;
+            try {
+                if (context.processedCameraCodes.contains(data.cameraCode)) {
+                    result.setSkippedRows(result.getSkippedRows() + 1);
+                    result.addWarning("第 " + parsed.rowNumber + " 行相机编号 " + data.cameraCode + " 重复，已跳过重复行。");
+                    continue;
+                }
+
+                DimFactory factory = upsertFactory(data, context, result);
+                DimProductionLine line = upsertLine(data, factory, context, result);
+                DimWorkstation workstation = upsertWorkstation(data, line, context, result);
+                upsertCamera(data, line, workstation, context, result);
+                context.processedCameraCodes.add(data.cameraCode);
+                result.setSuccessRows(result.getSuccessRows() + 1);
+            } catch (Exception rowError) {
+                result.setFailedRows(result.getFailedRows() + 1);
+                result.addError("第 " + parsed.rowNumber + " 行：" + rowError.getMessage());
+            }
+        }
+
+        if (MODE_FULL.equals(normalizedMode) && result.getSuccessRows() > 0) {
+            disableCamerasNotInFile(context.processedCameraCodes, result);
+            result.addWarning("全量导入本期采用安全策略：文件内配置新增/更新；文件外相机标记为停用和离线；工厂、产线、工位不做物理删除。");
+        }
+    }
+
+    /** 解析结果：行号 + 数据或错误（H-3 两段式改造的中间产物） */
+    private static class ParsedRow {
+        int rowNumber;
+        ImportRow data;
+        String error;
+    }
+
+    private TransactionTemplate txTemplate() {
+        TransactionTemplate template = this.txTemplate;
+        if (template == null) {
+            synchronized (this) {
+                if (this.txTemplate == null) {
+                    this.txTemplate = new TransactionTemplate(transactionManager);
+                }
+                template = this.txTemplate;
+            }
+        }
+        return template;
     }
 
     @GetMapping("/export")

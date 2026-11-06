@@ -19,7 +19,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.util.UriUtils;
@@ -74,6 +74,12 @@ public class DefectImageServiceImpl implements IDefectImageService {
     @Autowired
     private CameraStatusMapper cameraStatusMapper;
 
+    /** v3 H-3：单张图片写入的短事务（文件 IO 在事务外） */
+    @Autowired
+    private org.springframework.transaction.PlatformTransactionManager transactionManager;
+
+    private volatile org.springframework.transaction.support.TransactionTemplate txTemplate;
+
     /**
      * 表结构自检的时间戳缓存（避免每次请求都跑 DDL 与元数据查询）。
      *
@@ -87,8 +93,35 @@ public class DefectImageServiceImpl implements IDefectImageService {
     // DDD P5：启动期完整建表已由 com.wms.init.SchemaInitializer 统一调度；
     // 本类的 ensureSchema() 限频自愈守卫保留（表运行期被删时最多 5 分钟自愈）。
 
+    /**
+     * 缺陷图片批量上传。
+     *
+     * <p><b>v3 H-3（PERF-04，2026-11-06）：事务边界收窄 —— 方法级 {@code @Transactional} 已移除。</b>
+     *
+     * <p>改造前整个请求（最多 100 张图）被一个事务包住，事务内包含：
+     * 磁盘写入（{@code Files.copy}）、{@code ImageIO.read} 解码、base64/JSON 解析，
+     * 以及后续所有 INSERT。后果：
+     * <ul>
+     *   <li>一批 100 图会让<b>一条数据库连接被占用数秒</b>；心跳/统计/查询同时在抢连接，
+     *       连接池（默认 200）一旦见底，故障会从"上传慢"直接扩散成全站 500；</li>
+     *   <li>事务期间持有行锁/间隙锁，上传与归档、清理任务互相等待；</li>
+     *   <li>解码慢（大图/网络盘）时事务时间不可控，binlog 里是一条巨大的长事务。</li>
+     * </ul>
+     *
+     * <p>改造后：
+     * <ul>
+     *   <li>校验、解码、落盘<b>全部在事务外</b>（本来也不需要回滚能力，失败直接删文件）；</li>
+     *   <li>每张图的「图片行 + 缺陷框 + 兼容表」收敛为一个<b>独立的短事务</b>
+     *       （{@link #persistImageRows}），单张失败只回滚这一张，与原有的
+     *       "逐张收集成功/失败"语义一致；</li>
+     *   <li>批次行、批次汇总、相机最新图各是单条语句（自动提交），不需要事务。</li>
+     * </ul>
+     *
+     * <p>行为等价性：原实现逐张 {@code try/catch} 并把失败记进 {@code results}，
+     * 从不因单张失败回滚整批 —— 所以"整批事务"从来没有提供过真正的整批原子性，
+     * 只是白白把文件 IO 关进了事务。
+     */
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public DefectImageUploadResultDTO upload(MultipartFile[] files, String metadataJson, String authorization, String deviceId) {
         ensureSchema();
 
@@ -164,9 +197,8 @@ public class DefectImageServiceImpl implements IDefectImageService {
                 LocalDateTime captureTime = parseTime(imageMeta.getCaptureTime(), uploadTime);
                 DefectCounts counts = countDefects(imageMeta.getDefects());
 
-                imageId = insertImageFile(batchId, cameraId, cameraName, imageMeta, saved, captureTime, uploadTime, counts);
-                insertDefectBoxes(batchId, imageId, imageMeta.getDefects());
-                insertLegacyCameraImage(cameraName, saved, captureTime);
+                // v3 H-3：DB 写入收敛到一个短事务（文件 IO / 解码已在上一步事务外完成）
+                imageId = persistImageRows(batchId, cameraId, cameraName, imageMeta, saved, captureTime, uploadTime, counts);
 
                 fileResult.setSuccess(true);
                 fileResult.setImageId(imageId);
@@ -530,6 +562,42 @@ public class DefectImageServiceImpl implements IDefectImageService {
         // DDD P3 批次⑤：INSERT 已下沉到 DefectImageRepository
         return defectImageRepository.insertBatch(batchNo, cameraId, cameraName, deviceId,
                 uploadTime, declaredImageCount, metadataJson);
+    }
+
+    /**
+     * 单张图片的数据库写入（v3 H-3：短事务边界）。
+     *
+     * <p>三件事要么全成、要么全不成：图片主记录、缺陷框、兼容表 {@code camera_images}。
+     * 事务内只有 INSERT，没有任何文件 IO / 解码 / 网络调用，正常耗时在毫秒级。
+     *
+     * <p>为什么用编程式事务而不是给私有方法加 {@code @Transactional}：
+     * Spring 的事务是代理实现，<b>同类内部调用不走代理</b>，注解会静默失效 ——
+     * 这是最容易"改了以为生效、其实没生效"的坑。
+     */
+    private Long persistImageRows(Long batchId, String cameraId, String cameraName,
+                                  DefectImageUploadMetadataDTO.ImageMetadata imageMeta,
+                                  SavedImage saved, LocalDateTime captureTime, LocalDateTime uploadTime,
+                                  DefectCounts counts) {
+        return txTemplate().execute(status -> {
+            Long imageId = insertImageFile(batchId, cameraId, cameraName, imageMeta, saved, captureTime, uploadTime, counts);
+            insertDefectBoxes(batchId, imageId, imageMeta.getDefects());
+            insertLegacyCameraImage(cameraName, saved, captureTime);
+            return imageId;
+        });
+    }
+
+    /** 懒建 TransactionTemplate（避免字段注入顺序问题） */
+    private TransactionTemplate txTemplate() {
+        TransactionTemplate template = this.txTemplate;
+        if (template == null) {
+            synchronized (this) {
+                if (this.txTemplate == null) {
+                    this.txTemplate = new TransactionTemplate(transactionManager);
+                }
+                template = this.txTemplate;
+            }
+        }
+        return template;
     }
 
     private Long insertImageFile(Long batchId, String cameraId, String cameraName,

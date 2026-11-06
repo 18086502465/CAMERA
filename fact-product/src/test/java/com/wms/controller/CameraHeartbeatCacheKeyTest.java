@@ -14,7 +14,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
-import java.util.List;
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -72,6 +72,8 @@ class CameraHeartbeatCacheKeyTest {
         inject(service, "cameraStatusMapper", cameraStatusMapper);
         inject(service, "cameraDirectoryRepository", cameraDirectoryRepository);
         inject(service, "eventPublisher", eventPublisher);
+        // v3 H-4：告警判定统一走节流器，心跳路径必须有实例（否则 NPE）
+        inject(service, "alertThrottle", new com.wms.device.app.CameraAlertThrottle());
 
         // 心跳要求设备已在系统配置中维护（否则抛「设备未在系统配置中维护」）→ mock 出已存在的行
         when(cameraStatusMapper.selectOne(any())).thenAnswer(inv -> {
@@ -84,7 +86,7 @@ class CameraHeartbeatCacheKeyTest {
             s.setIsActive(1);
             return s;
         });
-        when(cameraStatusMapper.selectList(any())).thenReturn(List.of());
+        when(cameraStatusMapper.selectList(any())).thenReturn(Collections.emptyList());
 
         CameraStatusHeartbeatDTO dto = new CameraStatusHeartbeatDTO();
         dto.setCameraName("CV1_Cam1");     // ★ 两台相机同名
@@ -128,6 +130,8 @@ class CameraHeartbeatCacheKeyTest {
         inject(service, "cameraStatusMapper", cameraStatusMapper);
         inject(service, "cameraDirectoryRepository", cameraDirectoryRepository);
         inject(service, "eventPublisher", eventPublisher);
+        // v3 H-4：告警判定统一走节流器，心跳路径必须有实例（否则 NPE）
+        inject(service, "alertThrottle", new com.wms.device.app.CameraAlertThrottle());
         when(cameraStatusMapper.selectOne(any())).thenAnswer(inv -> {
             CameraStatus s = new CameraStatus();
             s.setId(1L);
@@ -139,7 +143,7 @@ class CameraHeartbeatCacheKeyTest {
             return s;
         });
         // 无 deviceId → 走名称兜底，名称必须唯一（selectList 返回 1 行）
-        when(cameraStatusMapper.selectList(any())).thenReturn(List.of(namedStatus()));
+        when(cameraStatusMapper.selectList(any())).thenReturn(Collections.singletonList(namedStatus()));
 
         CameraStatusHeartbeatDTO dto = new CameraStatusHeartbeatDTO();
         dto.setCameraName("CV1_Cam1");
@@ -162,6 +166,8 @@ class CameraHeartbeatCacheKeyTest {
         inject(service, "cameraStatusMapper", cameraStatusMapper);
         inject(service, "cameraDirectoryRepository", cameraDirectoryRepository);
         inject(service, "eventPublisher", eventPublisher);
+        // v3 H-4：告警判定统一走节流器，心跳路径必须有实例（否则 NPE）
+        inject(service, "alertThrottle", new com.wms.device.app.CameraAlertThrottle());
         when(cameraStatusMapper.selectOne(any())).thenAnswer(inv -> {
             CameraStatus s = new CameraStatus();
             s.setId(1L);
@@ -172,7 +178,7 @@ class CameraHeartbeatCacheKeyTest {
             s.setIsActive(1);
             return s;
         });
-        when(cameraStatusMapper.selectList(any())).thenReturn(List.of());
+        when(cameraStatusMapper.selectList(any())).thenReturn(Collections.emptyList());
 
         CameraStatusHeartbeatDTO dto = new CameraStatusHeartbeatDTO();
         dto.setCameraName("CV1_Cam1");
