@@ -50,7 +50,9 @@ public class DefectImageServiceImpl implements IDefectImageService {
     private static final DateTimeFormatter SECOND_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final DateTimeFormatter MILLIS_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
     private static final DateTimeFormatter DAY_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
-    private static final Set<String> IMAGE_EXTENSIONS = new HashSet<>(Arrays.asList("jpg", "jpeg", "png", "bmp", "gif", "webp", "svg"));
+    // SEC-01（2026-11-06）：SVG 可携带 <script>，且不属于 ImageIO 可校验格式，一旦入库即构成存储型 XSS。
+    // 白名单移除 svg，禁止其进入图片上传通道；如未来确需支持，必须先做内容消毒 + 附件下载双保险。
+    private static final Set<String> IMAGE_EXTENSIONS = new HashSet<>(Arrays.asList("jpg", "jpeg", "png", "bmp", "gif", "webp"));
     private static final Set<String> IMAGEIO_REQUIRED_EXTENSIONS = new HashSet<>(Arrays.asList("jpg", "jpeg", "png", "bmp", "gif"));
 
     @Value("${defect-image.upload.dir:D:/45344/runtime/uploads/defect-images/}")
@@ -302,6 +304,16 @@ public class DefectImageServiceImpl implements IDefectImageService {
             Resource resource = new FileSystemResource(filePath);
             if (!resource.exists() || !resource.isReadable()) {
                 return ResponseEntity.notFound().build();
+            }
+            // SEC-01 存量兜底（2026-11-06）：白名单收紧前已入库的历史 SVG 行不再以 image/svg+xml 同源渲染，
+            // 一律作为附件下载返回，浏览器不会执行其中的脚本。上传通道已拒绝新 SVG。
+            if ("svg".equalsIgnoreCase(extension(decoded))) {
+                return ResponseEntity.ok()
+                        .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                        .header(HttpHeaders.CONTENT_DISPOSITION,
+                                "attachment; filename=\"" + filePath.getFileName() + "\"")
+                        .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                        .body(resource);
             }
             String contentType = Files.probeContentType(filePath);
             if (!StringUtils.hasText(contentType)) {
@@ -933,7 +945,7 @@ public class DefectImageServiceImpl implements IDefectImageService {
         if ("bmp".equals(ext)) return "image/bmp";
         if ("gif".equals(ext)) return "image/gif";
         if ("webp".equals(ext)) return "image/webp";
-        if ("svg".equals(ext)) return "image/svg+xml";
+        // SEC-01：svg 分支已删除——即使 probeContentType 探测出 svg，loadImage 也会走存量兜底（见 loadImage）
         return "application/octet-stream";
     }
 

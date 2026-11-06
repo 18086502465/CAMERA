@@ -547,13 +547,16 @@ public class DefectImageRepository {
             sql.append(i == 0 ? "?" : ",?");
             params.add(cameraKeys.get(i));
         }
-        sql.append(") ) r ")
-                .append("LEFT JOIN camera_status cs ON cs.camera_code = r.camera_id ")
-                .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
-                .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
-                .append("WHERE r.rn <= ?");
-        params.add(safeLatestLimit);
-        // 行级过滤（内层只有 f 表）
+        // 先闭合相机 IN (...) 的右括号，后续筛选条件才能作为 WHERE 的 AND 子句拼接
+        sql.append(") ");
+        // BUG-01/BUG-02 修复（2026-11-06）：行级筛选必须放在<b>内层派生表</b>（别名 f）的 WHERE 里、
+        // ROW_NUMBER 计算之前：
+        //   1. 语法：派生表含窗口函数，MySQL 不做派生表合并，别名 f 在外层不可见——
+        //      原写法把筛选拼在外层 WHERE r.rn 之后，任一筛选启用即
+        //      Error 1054 "Unknown column 'f.xxx' in 'where clause'"，接口 500；
+        //   2. 语义：筛选先于 ROW_NUMBER，口径为「每相机满足筛选条件的最新一张」；
+        //      原设计筛选后置会导致「最新图不满足筛选则整台相机消失」（静默少图）。
+        // 下推后窗内无匹配图的相机不出现在结果中（与图像记录页"有图才显示"逻辑一致）。
         appendKeywordFilterRowLevel(sql, params, keyword);
         if (hasText(severity)) {
             sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bs WHERE bs.image_id = f.image_id AND UPPER(bs.severity) = ?) ");
@@ -571,6 +574,13 @@ public class DefectImageRepository {
             sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) <= ? ");
             params.add(Timestamp.valueOf(endTime));
         }
+        // 相机 IN (...) 的右括号已在上方闭合，这里只需闭合内层派生表
+        sql.append(") r ")
+                .append("LEFT JOIN camera_status cs ON cs.camera_code = r.camera_id ")
+                .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
+                .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
+                .append("WHERE r.rn <= ?");
+        params.add(safeLatestLimit);
 
         List<Map<String, Object>> rows = jdbcTemplate.query(sql.toString(), params.toArray(), (rs, rowNum) -> {
             Map<String, Object> item = new LinkedHashMap<>();

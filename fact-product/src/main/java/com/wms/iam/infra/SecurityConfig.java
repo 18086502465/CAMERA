@@ -217,7 +217,11 @@ public class SecurityConfig {
                     "/api/DimTimeBucket30min/**",
                     "/api/v1/config/**",
                     "/api/v1/analytics/**",
-                    "/api/v1/system/**"
+                    "/api/v1/system/**",
+                    // SEC-02：DimTimeBucket30minController 真实映射无 /api 前缀，
+                    // 上面的 /api/DimTimeBucket30min/** 是匹配不到的历史死规则（P2 清理）。
+                    // 前端已无调用方；写操作 ADMIN，与控制器 @PreAuthorize 双保险。
+                    "/DimTimeBucket30min/**"
                 ).hasRole("ADMIN")
                 .antMatchers(HttpMethod.PUT,
                     "/api/cameras/**",
@@ -233,7 +237,9 @@ public class SecurityConfig {
                     "/api/DimTimeBucket30min/**",
                     "/api/v1/config/**",
                     "/api/v1/analytics/**",
-                    "/api/v1/system/**"
+                    "/api/v1/system/**",
+                    // SEC-02：无 /api 前缀的真实路径（同上）
+                    "/DimTimeBucket30min/**"
                 ).hasRole("ADMIN")
                 .antMatchers(HttpMethod.DELETE,
                     "/api/cameras/**",
@@ -250,6 +256,8 @@ public class SecurityConfig {
                     "/api/v1/config/**",
                     "/api/v1/analytics/**",
                     "/api/v1/system/**",
+                    // SEC-02：无 /api 前缀的真实路径（同上）
+                    "/DimTimeBucket30min/**",
                     "/api/detection-history/clean-history"
                 ).hasRole("ADMIN")
                 // 配置导入导出（批量改配置，绝不能给普通用户）

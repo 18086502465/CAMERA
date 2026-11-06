@@ -75,6 +75,12 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- H2（仅 test 作用域）：Repository SQL 回归测试（BUG-01/02 修复配套，2026-11-06） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- Apache POI 核心库 -->
         <dependency>
             <groupId>org.apache.poi</groupId>

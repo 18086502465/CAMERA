@@ -3,6 +3,7 @@ package com.wms.iam.infra;
 import com.wms.iam.domain.model.SysOperationLog;
 import com.wms.iam.app.ISysOperationLogService;
 import com.wms.iam.domain.JwtUtil;
+import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
@@ -16,8 +17,10 @@ import java.util.Date;
 
 /**
  * 操作日志 AOP 切面
- * 自动记录所有 Controller 的操作日志
+ * 自动记录所有 Controller 的<b>写操作</b>日志（PERF-01，2026-11-06 起 GET 一律不记，见
+ * {@link #shouldSkipOperationLog}）
  */
+@Slf4j
 @Aspect
 @Component
 public class OperationLogAspect {
@@ -50,8 +53,8 @@ public class OperationLogAspect {
             try {
                 saveOperationLog(joinPoint, executionTime, success, errorMessage);
             } catch (Exception e) {
-                // 日志记录失败不影响业务
-                e.printStackTrace();
+                // 日志记录失败不影响业务（PERF-01：printStackTrace 会污染 stdout/journald，改为标准日志）
+                log.warn("操作日志写入失败: {}", joinPoint.getSignature().toShortString(), e);
             }
         }
 
@@ -137,18 +140,29 @@ public class OperationLogAspect {
     }
 
     /**
-     * 操作日志页面本身的查询、删除、清空不再写入操作日志，避免出现“删除后又新增一条日志”
-     * 或“清空后马上又出现一条查询/清空日志”的自记录问题。
+     * PERF-01（2026-11-06 改造）：<b>GET 请求一律不写操作日志</b>，只保留写操作（POST/PUT/DELETE）审计。
      *
-     * <p><b>2026-11-02 新增：服务器监控轮询接口也必须排除。</b>
-     * 前端以 5 秒周期轮询 {@code GET /api/v1/system/server/metrics}，
-     * 若不排除，每天会往 {@code sys_operation_log} 写入
-     * 86400 / 5 = <b>17280 条</b>无意义记录，
-     * 把真正的操作日志淹没，还会让这张表以每天 1.7 万行的速度膨胀。
+     * <p>原因：切点拦截全部 Controller 方法，GET（含每张图片请求、30s 轮询）全部落库——
+     * 相机状态页 80 张图 × 30s 轮询 ≈ 9600 行/小时/用户，把真实操作日志淹没、表无限膨胀。
+     *
+     * <p><b>前提（改此方法前必须复核）</b>：全仓 {@code @GetMapping} 不得有写语义端点
+     * （2026-11-06 已核实：仅 ConfigImportController 的模板下载/导出为 GET，均属读操作）。
+     * 若将来新增 GET 写端点，必须改为 POST 或在本方法显式豁免。
+     *
+     * <p>其余排除项维持 2026-11-02 口径：
+     * <ul>
+     *   <li>操作日志页面自身的查询/删除/清空不再写入，避免“删除后又新增一条日志”的自记录问题；</li>
+     *   <li>服务器监控 5 秒轮询接口（否则每天 17280 条无意义记录）。</li>
+     * </ul>
+     * 注意：登录/注册为 POST，<b>继续记录</b>（含失败记录，是 SEC-03 登录限速的数据基础）。
      */
     private boolean shouldSkipOperationLog(HttpServletRequest request) {
         if (request == null) {
             return false;
+        }
+        // 只审计写操作：GET（查询、图片加载、轮询）一律跳过
+        if ("GET".equalsIgnoreCase(request.getMethod())) {
+            return true;
         }
         String uri = request.getRequestURI();
         if (uri == null) {
