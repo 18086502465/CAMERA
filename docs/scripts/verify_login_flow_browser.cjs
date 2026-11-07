@@ -102,8 +102,11 @@ function check(name, ok, detail) {
     check('未被送到默认页 /camera-status', finalPath !== '/camera-status', finalPath)
 
     // ---- ⑤ JS 错误（过滤掉预期的 401/400/404 网络日志）----
+    // 注意：axios 的错误文本有两种形态 —— "status of 401"（老）与
+    // "status code 401"（AxiosError，现网实测）；两者都是 ② 步
+    // 「主动清 token 制造 401」在 console 留下的必然日志，均属预期内。
     const unexpected = jsErrors.filter(e =>
-      !/favicon|404 \(Not Found\)|status of 401|status of 400|Failed to load resource/i.test(e))
+      !/favicon|404 \(Not Found\)|status of 401|status code 401|status of 400|status code 400|Failed to load resource/i.test(e))
     check('无预期外 JS 错误', unexpected.length === 0, unexpected.slice(0, 2).join(' | ') || '无')
   } catch (e) {
     check('脚本执行异常', false, String((e && e.message) || e))
