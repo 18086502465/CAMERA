@@ -18,7 +18,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 
-import java.io.File;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -30,17 +29,25 @@ import java.util.stream.Collectors;
 /**
  * 数据清理定时任务。
  *
- * <p><b>2026-11-07 重构（P0-3，评审见 docs/备份与清理链路评审与优化方案-20261107.md）</b>：
+ * <p><b>2026-11-07 重构（P0-3，评审见 docs/archive/备份与清理链路评审与优化方案-20261107.md）</b>：
  * <ul>
  *   <li><b>三步拆成三个独立事务</b>：原实现整体 {@code @Transactional}，任何一步抛异常
  *       全部回滚（"操作日志清理失败"连累"图片清理"），故障面被放大。各步现在独立提交、
  *       独立 try/catch，失败只跳过该步并留 ERROR 日志，下一轮自动补齐（三步均幂等）。</li>
- *   <li><b>图片清理改为「先删行、后删文件」</b>：原来先 {@code file.delete()} 再删行且同事务，
- *       删行失败回滚后文件已不可恢复 → 行指向已删文件（裂图）。反过来最坏只留孤儿文件，
- *       由磁盘清理脚本按日期目录最终兜底回收。</li>
  *   <li><b>图片清理分批</b>：原实现一次 {@code selectList} 全量载入内存再逐个删，
  *       表大时 OOM / 长事务；现在按 {@value #IMAGE_BATCH_SIZE} 行/批循环。</li>
  * </ul>
+ *
+ * <p><b>2026-11-07 v3 修复（裂图，见 docs/archive/备份与清理链路评审与优化方案-v3-20261107.md）</b>：
+ * 原实现在删行后还会 {@code file.delete()} 删掉物理文件。实测 {@code camera_images} 与
+ * {@code defect_image_file} 的 {@code image_path} 是 100% 重叠（现场 9696/9696）——
+ * 同一个 jpg 被两张表引用。而 {@code defect_image_file} 的记录要留 730 天
+ * （归档任务搬进月表，月表 730 天 DROP），{@code camera_images} 只留 30 天。
+ * 于是 T+30 天就把文件删了、记录却要留到 T+730 天，30~730 天之间的历史全部裂图。
+ *
+ * <p>现在磁盘文件的生命周期只有一个 owner：{@code cleanup-defect-images.sh} 按
+ * {@code {yyyyMMdd}} 日期目录整目录删除（730 天，与月表 retain-days 同口径）。
+ * 本类只负责让兼容表保持在「近 30 天」，不再碰磁盘。
  */
 @Component
 public class DataCleanupTask {
@@ -99,19 +106,19 @@ public class DataCleanupTask {
     }
 
     /**
-     * camera_images 兼容表清理：先删行（事务内）、后删文件（尽力而为），按批循环。
+     * camera_images 兼容表清理：**只删行，不碰磁盘**（2026-11-07 v3 裂图修复）。
      *
-     * <p>删行失败最坏留孤儿文件（无害，磁盘脚本按 730 天日期目录兜底回收）；
-     * 删文件失败只 WARN —— 行已删，该文件成为孤儿，同样由磁盘脚本回收。
+     * <p>物理文件由 {@code cleanup-defect-images.sh} 按 730 天日期目录统一回收；
+     * 这里若也删文件，会因为两张表共用同一 {@code image_path} 而让 30~730 天的
+     * 历史记录变成「有记录无文件」。
      */
     private void cleanupExpiredImages(LocalDate deadline) {
         LocalDateTime deadlineTime = deadline.atTime(LocalTime.MAX);
         int totalRows = 0;
-        int failedFiles = 0;
         while (true) {
-            // 分批取（只取主键与路径两列）：一次全量 selectList 在表大时会占满内存
+            // 分批取（只取主键）：一次全量 selectList 在表大时会占满内存
             LambdaQueryWrapper<CameraImage> wrapper = new LambdaQueryWrapper<>();
-            wrapper.select(CameraImage::getImageId, CameraImage::getImagePath)
+            wrapper.select(CameraImage::getImageId)
                    .le(CameraImage::getCaptureTime, deadlineTime)
                    .last("LIMIT " + IMAGE_BATCH_SIZE);
             List<CameraImage> batch = cameraImageMapper.selectList(wrapper);
@@ -126,19 +133,11 @@ public class DataCleanupTask {
                 break;
             }
             totalRows += deleted;
-            for (CameraImage img : batch) {
-                File file = new File(img.getImagePath());
-                if (file.exists() && !file.delete()) {
-                    failedFiles++;
-                    log.warn("[数据清理] camera_images 文件删除失败（留待磁盘脚本兜底）: {}",
-                            img.getImagePath());
-                }
-            }
             if (batch.size() < IMAGE_BATCH_SIZE) {
                 break;
             }
         }
-        log.info("[数据清理] camera_images 清理完成: 删除 {} 行, 文件删除失败 {} 个", totalRows, failedFiles);
+        log.info("[数据清理] camera_images 清理完成: 删除 {} 行（磁盘文件由 730 天清理脚本负责）", totalRows);
     }
 
     /** 30min 聚合数据归档（>3 个月搬入 archive 表后删源）。量级小（48 行/天/工位），单事务整搬 */

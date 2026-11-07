@@ -19,6 +19,10 @@ TimeoutStartSec=1800
 
 # 写备份目录需要权限（若 BACKUP_DIR 指向 /data 下的路径）
 ReadWritePaths=/data/camera-detection
+# 跨盘副本（2026-11-07 v3）：DB 副本与图片热窗口落在 vda 的 /var 上，
+# 与 /data 所在的 vdb 是两块物理盘 —— 这才是能抗单盘故障的那一份。
+# 路径写错会直接 EROFS 失败，比"以为有副本其实没写进去"好。
+ReadWritePaths=/var/backups/camera-detection
 
 # 失败不重试：下次 timer 触发自然会再跑，重试反而可能叠加写满磁盘
 Restart=no

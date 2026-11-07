@@ -19,7 +19,7 @@
 #
 # 清理范围 = 保护集合之外的一切（TEST 相机 + 不在任何相机表中的孤儿数据）。
 #
-# 三道防误删防线（详见 docs/方案-相机类型隔离与测试相机数据清理-20261105.md）：
+# 三道防误删防线（详见 docs/archive/方案-相机类型隔离与测试相机数据清理-20261105.md）：
 #   防线一：双表 OR 保护（任一表标 REAL 即跳过）
 #   防线二：保护集合为空 → 判定"标记被整体误改" → 中止本轮 + 告警
 #   防线三：单轮待删量超阈值 → 中止本轮 + 告警
@@ -32,6 +32,22 @@
 #   若顺序反过来（先删文件），删库失败会留下"有记录无文件"的坏数据（页面裂图）；
 #   先删库后删文件失败，最坏只是留下孤儿文件，下一轮自动清。
 #
+# 【2026-11-07 删目录改为「先改名后删除」】
+#   现象：CLEANUP_FAILED 间歇性报「删除磁盘目录失败」，集中在 TEST 相机目录
+#         （DA9467294 单目录 907MB / 数千文件，且每小时仍在上传），
+#         同一目录 18:15 失败、19:15 成功；rm 在 3 秒内返回，权限正常。
+#   根因：TEST 相机持续上传，`rm -rf` 递归删完内容后 `rmdir` 时新文件刚被创建
+#         → ENOTEMPTY。删除失败但目录其实已空 99%，下一轮又从头删，形成拉锯。
+#   修复：先把目录原子 `mv` 到 trash 区（同文件系统，rename 是原子操作），
+#         上传端随即在原路径重新 mkdir 并写入新目录，旧目录瞬间静止 → 再 rm 干净。
+#         同时记录 rm 的真实 stderr 与目录状态，失败不再只有一句「失败」。
+#
+# 【2026-11-07 告警改为「同一问题只占一行 + 自动恢复」】
+#   现象：同一失败原因连 4 轮 = 4 条未恢复告警，且成功后永不关闭（现场累积 12 条）。
+#   修复：本轮失败时若已有未恢复的 CLEANUP_FAILED 就原地更新（不新增行）；
+#         本轮全绿时把未恢复的 CLEANUP_FAILED 全部置为已恢复。
+#         告警页反映「当前状态」，不是「历史次数」。
+#
 # 频率：cron 每小时 :15（root）
 # 日志：/data/camera-detection/backup/cleanup_zk54.log（追加，分级 INFO/WARN/ERROR）
 #
@@ -43,6 +59,8 @@
 #   DB_NAME / DB_HOST / DB_USER
 #   PROTECTED_CODES         额外保护的真实相机编号（逗号分隔，运维临时加码用）
 #   MAX_SINGLE_DELETE       单轮允许删除的 defect_image_file 最大行数（默认 50000）
+#   TRASH                   待删中转目录（默认 /data/camera-detection/images/.cleanup-trash，
+#                           必须与 IMG_ROOT 同文件系统；勿指到 IMG_ROOT 内部）
 #
 # 参数：
 #   --dry-run          只统计与打印将要删除的范围，不实际删除
@@ -62,6 +80,9 @@ if [[ -z "${MYSQL_PASSWORD:-}" && -r /etc/default/camera-detection ]]; then
 fi
 
 IMG_ROOT="${IMG_ROOT:-/data/camera-detection/images/defect-images}"
+# 待删中转区：必须与 IMG_ROOT 在同一文件系统（rename 不能跨盘），
+# 但要放在 IMG_ROOT **之外** —— 放里面会被其他清理任务和备份脚本当成日期目录扫到。
+TRASH="${TRASH:-/data/camera-detection/images/.cleanup-trash}"
 LOG="${LOG:-/data/camera-detection/backup/cleanup_zk54.log}"
 LOCK="${LOCK:-/var/run/camera-detection-cleanup.lock}"
 DB_NAME="${DB_NAME:-wms-new}"
@@ -109,24 +130,81 @@ SQL()  { mysql -h"$DB_HOST" -u"$DB_USER" -p"$MP" -N -B -D "$DB_NAME" -e "$1"; }
 SQLQ() { mysql -h"$DB_HOST" -u"$DB_USER" -p"$MP" -N -B -D "$DB_NAME" -e "$1" 2>/dev/null; }
 
 FAILED=0
+FAIL_DETAIL=""
 fail_step() {
   FAILED=$((FAILED+1))
   err "$1"
+  # 汇总进告警正文（alert_message 是 varchar(500)，最后统一截断）
+  case "$1" in
+    *磁盘*|*中转区*) FAIL_DETAIL="${FAIL_DETAIL}${FAIL_DETAIL:+；}$1" ;;
+  esac
+}
+
+# 失败时把目录的真实状态打出来 —— 「删除失败」四个字对排障毫无价值。
+# 记录：是否还存在、顶层条目数、属主权限、所在文件系统/挂载点。
+diag_dir() {
+  local p="$1" n own mnt
+  if [[ ! -e "$p" ]]; then
+    printf '目录已不存在'
+    return 0
+  fi
+  n=$(find "$p" -maxdepth 1 2>/dev/null | wc -l)
+  own=$(stat -c '%U:%G %a' "$p" 2>/dev/null)
+  mnt=$(df --output=fstype,source,target "$p" 2>/dev/null | tail -1 | tr -s ' \t' ' ')
+  printf '仍存在，顶层条目=%s，属主=%s，挂载=%s' "${n:-?}" "${own:-?}" "${mnt:-?}"
 }
 
 # --- 告警落库 ----------------------------------------------------------------
 # 清理失败/中止时写 fact_anomaly_alert，前端告警页可见（不只是文本日志）。
 # 该表 message 列为 NOT NULL，必须一并赋值。
+# 同一问题只占一行：已有未恢复的 CLEANUP_FAILED 就原地更新，不新增。
 alert() {
-  local level="$1" title="$2" message="$3" esc
-  esc=$(printf "%s" "$message" | sed "s/'/''/g")
+  local level="$1" title="$2" message="$3" esc_t esc_m existing
+  esc_t=$(printf "%s" "$title"   | sed "s/'/''/g")
+  esc_m=$(printf "%s" "$message" | sed "s/'/''/g")
+  if [[ "${#esc_m}" -gt 480 ]]; then esc_m="${esc_m:0:480}…"; fi
+  existing=$(SQLQ "SELECT alert_id FROM fact_anomaly_alert
+                    WHERE alert_type='CLEANUP_FAILED' AND is_resolved=0
+                    ORDER BY alert_id DESC LIMIT 1" | tail -1)
+  case "${existing:-}" in ''|*[!0-9]*) existing="" ;; esac
+  if [[ -n "$existing" ]]; then
+    if SQL "UPDATE fact_anomaly_alert
+                SET alert_level='$level', alert_title='$esc_t',
+                    alert_message='$esc_m', message='$esc_m',
+                    detect_time=NOW(), update_time=NOW()
+              WHERE alert_id=$existing" >/dev/null 2>&1; then
+      log "已更新告警（alert_id=$existing，未恢复不新增）：[$level] $title"
+    else
+      warn "告警更新失败（不影响清理结果）：[$level] $title"
+    fi
+    return 0
+  fi
   if SQL "INSERT INTO fact_anomaly_alert(line_id, workstation_id, detection_id, alert_type, alert_level,
         alert_title, alert_message, message, detect_time, is_resolved, create_time, update_time)
        VALUES(0, 0, NULL, 'CLEANUP_FAILED', '$level',
-        '$title', '$esc', '$esc', NOW(), 0, NOW(), NOW())" >/dev/null 2>&1; then
+        '$esc_t', '$esc_m', '$esc_m', NOW(), 0, NOW(), NOW())" >/dev/null 2>&1; then
     log "已写入告警：[$level] $title"
   else
     warn "告警写入失败（不影响清理结果）：[$level] $title"
+  fi
+}
+
+# 本轮全部成功 → 把历史未恢复的 CLEANUP_FAILED 置为已恢复。
+# 只在「真的成功了」时调用：DRY_RUN 和 VIOLATION 分支都不调。
+resolve_alerts() {
+  local n
+  [[ "$DRY_RUN" == "1" ]] && return 0
+  n=$(SQLQ "SELECT COUNT(*) FROM fact_anomaly_alert
+             WHERE alert_type='CLEANUP_FAILED' AND is_resolved=0")
+  case "${n:-}" in ''|*[!0-9]*) warn "无法统计未恢复告警，跳过自动恢复"; return 0 ;; esac
+  [[ "$n" -eq 0 ]] && return 0
+  if SQL "UPDATE fact_anomaly_alert
+             SET is_resolved=1, resolved_at=NOW(), resolved_by='cleanup-zk54',
+                 resolve_comment='本轮清理全部成功，自动恢复', update_time=NOW()
+           WHERE alert_type='CLEANUP_FAILED' AND is_resolved=0" >/dev/null 2>&1; then
+    log "已自动恢复 ${n} 条 CLEANUP_FAILED 告警"
+  else
+    warn "自动恢复 CLEANUP_FAILED 告警失败（不影响清理结果）：${n} 条"
   fi
 }
 
@@ -247,7 +325,26 @@ fi
 # ==============================================================================
 DISK=0
 DISK_FAILED=0
+DISK_RETRIED=0
 if [[ -d "$IMG_ROOT" ]]; then
+  # 先清上一轮的中转残留，**清不掉就算本轮失败**。
+  # ★ 为什么必须这样：`mv` 成功但 `rm` 失败时，源路径已经不存在了 —— 下一轮
+  #   的 find 扫不到它，会直接报「全部成功」并把告警自动恢复，而残留仍在占 /data。
+  #   这里把「中转区清空」当作清理成功的必要条件，失败才能持续可见。
+  #   flock 保证同一时刻只有一轮在跑，所以中转区里的东西一定属于之前的轮次。
+  if [[ "$DRY_RUN" != "1" ]]; then
+    mkdir -p "$TRASH" 2>/dev/null || warn "无法创建中转目录：${TRASH}（将退化为直接 rm）"
+    while IFS= read -r t; do
+      [[ -z "$t" ]] && continue
+      if rm -rf -- "$t" 2>/dev/null; then
+        log "已清除上轮中转残留：$(basename "$t")"
+      else
+        DISK_FAILED=$((DISK_FAILED+1))
+        fail_step "中转区目录无法删除：$t（$(diag_dir "$t")；占用 $(du -sh "$t" 2>/dev/null | cut -f1)）"
+      fi
+    done < <(find "$TRASH" -mindepth 1 -maxdepth 1 2>/dev/null)
+  fi
+
   while IFS= read -r d; do
     [[ -z "$d" ]] && continue
     name="$(basename "$d")"
@@ -257,13 +354,50 @@ if [[ -d "$IMG_ROOT" ]]; then
       if [[ "$name" == "$c" ]]; then skip=1; break; fi
     done
     [[ "$skip" == "1" ]] && continue
+
     if [[ "$DRY_RUN" == "1" ]]; then
+      log "DRY-RUN 将删除：$d（$(du -sh "$d" 2>/dev/null | cut -f1)）"
       DISK=$((DISK+1))
-    elif rm -rf "$d"; then
+      continue
+    fi
+
+    # 先原子改名再删（详见文件头 2026-11-07 说明）
+    stamp=$(date '+%Y%m%d%H%M%S')
+    tgt="${TRASH}/${name}.${stamp}.$$"
+    rm_ok=0
+    moved=0
+    rm_err=""
+    for attempt in 1 2; do
+      # ★ moved 必须显式跟踪：改名成功后原路径就不存在了，若拿「原路径不存在」
+      #   当成功标志，rm 失败会被第二次重试判成成功（曾经踩：中转区里躺着删不掉的
+      #   目录，本轮却报 diskFailed=0）。
+      if [[ "$moved" == "0" ]]; then
+        if [[ ! -d "$d" ]]; then rm_ok=1; break; fi   # 上一轮/并发已删干净
+        if mv_out=$(mv -- "$d" "$tgt" 2>&1); then
+          moved=1
+        else
+          rm_err="mv(stderr)=$(printf '%s' "$mv_out" | head -3 | tr '\n' ' ')"
+          mkdir -p "$TRASH" 2>/dev/null || true        # 中转目录可能被同轮清掉
+        fi
+      fi
+      if [[ "$moved" == "1" ]]; then
+        if rm_out=$(rm -rf -- "$tgt" 2>&1); then rm_ok=1; break; fi
+        rm_err="rm(stderr)=$(printf '%s' "$rm_out" | head -3 | tr '\n' ' ')"
+      fi
+      if [[ "$attempt" == "1" ]]; then
+        DISK_RETRIED=$((DISK_RETRIED+1))
+        sleep 1                                          # 让并发写入落定后重试一次
+      fi
+    done
+
+    if [[ "$rm_ok" == "1" ]]; then
       DISK=$((DISK+1))
     else
       DISK_FAILED=$((DISK_FAILED+1))
-      fail_step "删除磁盘目录失败：$d"
+      # 改了名却删不掉时，数据在中转区 —— 必须把位置告诉运维，否则空间占用查不到
+      residue=""
+      [[ "$moved" == "1" ]] && residue="；已移入中转区 ${tgt}"
+      fail_step "删除磁盘目录失败：$d（${rm_err:-无 stderr}；$(diag_dir "${tgt:-$d}")${residue}）"
     fi
   done < <(find "$IMG_ROOT" -mindepth 2 -maxdepth 2 -type d 2>/dev/null)
 
@@ -297,18 +431,20 @@ fi
 # ==============================================================================
 REMAIN=$(SQLQ "SELECT COUNT(*) FROM defect_image_file")
 REMAIN="${REMAIN:-0}"
-log "box=${N1:-0} file=${N2:-0} batch=${N3:-0} camera_images=${N4:-0} diskDirs=${DISK} diskFailed=${DISK_FAILED} remain_file=${REMAIN} protected=${PROTECTED_COUNT}"
+log "box=${N1:-0} file=${N2:-0} batch=${N3:-0} camera_images=${N4:-0} diskDirs=${DISK} diskFailed=${DISK_FAILED} diskRetried=${DISK_RETRIED} remain_file=${REMAIN} protected=${PROTECTED_COUNT}"
 
 if [[ "$FAILED" -gt 0 ]]; then
   err "本轮存在 ${FAILED} 个步骤失败，退出码 2"
   alert "HIGH" "测试相机清理部分失败" \
-        "本轮有 ${FAILED} 个步骤失败，详见 /data/camera-detection/backup/cleanup_zk54.log。清理为幂等操作，下一轮会自动重试未完成部分。"
+        "本轮 ${FAILED} 个步骤失败（含重试 ${DISK_RETRIED} 次磁盘删除）。明细：${FAIL_DETAIL:-见日志}。清理为幂等操作，下一轮会自动重试未完成部分；本轮成功后该告警自动恢复。"
   exit 2
 fi
 
 if [[ "$VIOLATION" == "1" ]]; then
+  # 数据被误删的告警**不**自动恢复 —— 需要人确认 camera_type 标记是否改错。
   exit 2
 fi
 
+resolve_alerts
 log "清理完成"
 exit 0

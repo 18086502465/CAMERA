@@ -141,6 +141,147 @@ else
   check "缺陷图片目录" false "${DEFECT_IMAGE_DIR} 不存在 —— 图片上传会「成功但不落盘」"
 fi
 
+# 从 /etc/default 读数据库口令（640 root）。**定义必须放在第一个使用点之前** ——
+# 3d 与第 7 节都要用；原先定义在第 7 节，早于它的段落只能各自重复读取逻辑。
+_read_db_pw() {
+  local pw="${MYSQL_PASSWORD:-}"
+  if [[ -z "$pw" && -r /etc/default/camera-detection ]]; then
+    pw="$(sed -n 's/^MYSQL_PASSWORD=["'\'']\{0,1\}\([^"'\'']*\)["'\'']\{0,1\}$/\1/p' \
+      /etc/default/camera-detection | head -1)"
+  fi
+  echo "$pw"
+}
+
+# --- 3b. 保留期口径一致性（v2 P0-4）-----------------------------------------
+# 背景：图片归档月表按 config/application.yml 的 app.archive.images.retain-days
+# （730 天）保留，磁盘上的日期目录却是由 /etc/cron.d 里的 KEEP_DAYS 删的。
+# 两边口径必须一致 —— install.sh 曾经把 cron 写成 KEEP_DAYS=7，重装一次就会把
+# 7 天前的图片删掉、库里记录仍在（大面积裂图）。这个检查把「跨进程的隐式契约」
+# 变成可验证项：改了一边忘了另一边，verify 直接报红。
+YML_FILE="${INSTALL_DIR}/config/application.yml"
+# 可用环境变量覆盖，仅为便于在非现场环境做「口径不一致必须报红」的负向测试
+CRON_FILE="${CRON_FILE:-/etc/cron.d/cleanup-defect-images}"
+
+# ★ 注意「外部配置不全」是常态：Spring 按 key 合并，外部 application.yml 只覆盖它写了
+#   的键，没写的走 JAR 内 BOOT-INF/classes/application.yml。现场实测外部配置 100 行里
+#   一个 app.archive.* 都没有（归档任务日志里 hotDays=31 就是 JAR 默认值）。
+#   所以取不到时必须回退到 JAR 内默认值 —— 否则这个检查会变成「外部配置没写就报红」，
+#   那是误报，会训练人直接忽略它。
+ARCHIVE_RETAIN="$(awk '/^[[:space:]]*retain-days:/{v=$2; gsub(/[^0-9]/,"",v); print v; exit}' \
+  "$YML_FILE" 2>/dev/null)"
+RETAIN_SOURCE="$YML_FILE"
+if [[ -z "$ARCHIVE_RETAIN" && -f "${INSTALL_DIR}/app/time-bucket-demo.jar" ]] \
+     && command -v unzip >/dev/null 2>&1; then
+  ARCHIVE_RETAIN="$(unzip -p "${INSTALL_DIR}/app/time-bucket-demo.jar" \
+    BOOT-INF/classes/application.yml 2>/dev/null \
+    | awk '/^[[:space:]]*retain-days:/{v=$2; gsub(/[^0-9]/,"",v); print v; exit}')"
+  RETAIN_SOURCE="JAR 内默认（外部配置未覆盖）"
+fi
+CRON_KEEP="$(grep -oE 'KEEP_DAYS=[0-9]+' "$CRON_FILE" 2>/dev/null | head -1 | cut -d= -f2)"
+
+if [[ -z "$ARCHIVE_RETAIN" || -z "$CRON_KEEP" ]]; then
+  check "保留期口径" false "取不到值（retain-days='${ARCHIVE_RETAIN}' 来源=${RETAIN_SOURCE}，cron KEEP_DAYS='${CRON_KEEP}'）"
+elif [[ "$ARCHIVE_RETAIN" == "$CRON_KEEP" ]]; then
+  check "保留期口径" true "归档与磁盘清理均为 ${CRON_KEEP} 天（${RETAIN_SOURCE}）"
+else
+  check "保留期口径" false "归档 ${ARCHIVE_RETAIN} 天（${RETAIN_SOURCE}）vs 磁盘清理 ${CRON_KEEP} 天 —— 不一致会导致裂图或磁盘泄漏"
+fi
+
+# /etc/cron.d/* 是 644 全局可读的，把 MYSQL_PASSWORD 写进去等于把库口令
+# 公开给所有本地用户。这是 H2 的回归防线，别再写回 cron。
+#
+# ★ 2026-11-07 v3：从「只查 CRON_FILE 单文件」改为「遍历整个目录」。
+#   实测现场残留 /etc/cron.d/cleanup-defect-images.bak-20261105 与 .bak-20261107：
+#   644 root:root、`sudo -u nobody cat` 可读、内容是改造前的旧 cron 行、
+#   里面躺着**当前有效**的数据库 root 口令。单文件检查对此完全看不见——
+#   改造时新文件写对了，旧文件没删，防线就漏在这一步。
+#   注意 find 必须带 dotfile（cron 目录里出现 .swp/.bak 是常态）。
+CRON_DIR="${CRON_DIR:-$(dirname "$CRON_FILE")}"
+LEAK_FILES=""
+if [[ -d "$CRON_DIR" ]]; then
+  while IFS= read -r _f; do
+    [[ -f "$_f" ]] || continue
+    if grep -q 'MYSQL_PASSWORD' "$_f" 2>/dev/null; then
+      LEAK_FILES="${LEAK_FILES} $(basename "$_f")"
+    fi
+  done < <(find "$CRON_DIR" -maxdepth 1 -type f 2>/dev/null)
+fi
+
+if [[ -n "$LEAK_FILES" ]]; then
+  check "cron 无明文口令" false "${CRON_DIR} 下这些文件含 MYSQL_PASSWORD：${LEAK_FILES} —— 应改为脚本自读 /etc/default/camera-detection"
+elif [[ -d "$CRON_DIR" ]]; then
+  check "cron 无明文口令" true "${CRON_DIR}（整个目录，$(find "$CRON_DIR" -maxdepth 1 -type f 2>/dev/null | wc -l) 个文件）"
+fi
+
+# --- 3c. 备份新鲜度（v3 P0-4）------------------------------------------------
+# 「备份文件存在」和「备份能恢复」是两件事；「备份一直在更新」是第三件事。
+# timer 被 disable、机器时间漂移、有人 `systemctl stop` 了 service —— 这三种情况
+# **不产生任何错误日志**，因为没有失败，只是没有发生。备份唯一的失败模式正是
+# 「静默停摆」，而这个模式此前没有任何检查项能发现。
+# 阈值 26h：每日 01:00 跑 + 最多 5 分钟随机延迟，留 1 小时余量。
+BACKUP_FULL_DIR="${BACKUP_FULL_DIR:-/data/camera-detection/backup/db/full}"
+BACKUP_MAX_AGE_H="${BACKUP_MAX_AGE_H:-26}"
+if [[ -d "$BACKUP_FULL_DIR" ]]; then
+  LATEST_BACKUP="$(ls -1t "$BACKUP_FULL_DIR"/*.sql.zst 2>/dev/null | head -1)"
+  if [[ -z "$LATEST_BACKUP" ]]; then
+    check "备份新鲜度" false "${BACKUP_FULL_DIR} 下没有任何 .sql.zst —— 从未成功备份过"
+  else
+    BACKUP_AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$LATEST_BACKUP") ) / 3600 ))
+    # sha256 存在则顺手校验：要证明的是「文件没坏」，不只是「文件在」
+    BACKUP_SHA_STATE="未提供 .sha256"
+    if [[ -f "${LATEST_BACKUP}.sha256" ]]; then
+      if ( cd "$(dirname "$LATEST_BACKUP")" && sha256sum -c "$(basename "$LATEST_BACKUP").sha256" ) >/dev/null 2>&1; then
+        BACKUP_SHA_STATE="sha256 通过"
+      else
+        BACKUP_SHA_STATE="sha256 不匹配（备份已损坏）"
+      fi
+    fi
+    if [[ "$BACKUP_AGE_H" -le "$BACKUP_MAX_AGE_H" && "$BACKUP_SHA_STATE" != *"不匹配"* ]]; then
+      check "备份新鲜度" true "$(basename "$LATEST_BACKUP")，${BACKUP_AGE_H} 小时前，${BACKUP_SHA_STATE}"
+    elif [[ "$BACKUP_SHA_STATE" == *"不匹配"* ]]; then
+      check "备份新鲜度" false "$(basename "$LATEST_BACKUP") ${BACKUP_SHA_STATE} —— 这份备份不可用于恢复"
+    else
+      check "备份新鲜度" false "最新备份已 ${BACKUP_AGE_H} 小时（阈值 ${BACKUP_MAX_AGE_H}h）—— 备份定时器可能已停止：systemctl status camera-detection-backup.timer"
+    fi
+  fi
+fi
+
+# --- 3d. 图片副本不含 TEST 相机（2026-11-07）----------------------------------
+# 背景：TEST 相机（压测）单日写 907MB，源侧每小时清掉；副本侧按「30 天窗口 +
+# 不用 --delete」把它们全留着 → 副本 3.6G vs 源 911M，长期挤占 /var 系统盘。
+# backup-database.sh 已改为排除 TEST 目录并加总量上限；这里把「副本真的干净」
+# 变成可验证项 —— 改了排除逻辑而忘记验证，问题会静默重现。
+# 数据库不可用时不判红（无法确定哪些是 TEST），只提示。
+IMAGES_DST="${IMAGES_DST:-/var/backups/camera-detection/images}"
+IMAGES_MAX_GB="${IMAGE_BACKUP_MAX_GB:-20}"
+if [[ -d "$IMAGES_DST" ]]; then
+  _VERIFY_DBPW="$(_read_db_pw)"
+  _TEST_CODES=""
+  if [[ -n "$_VERIFY_DBPW" ]]; then
+    _TEST_CODES="$(MYSQL_PWD="$_VERIFY_DBPW" mysql -h127.0.0.1 -uroot -D "${VERIFY_DB_NAME:-wms-new}" -N -B -e "
+      SELECT DISTINCT camera_code FROM dim_camera    WHERE camera_type='TEST' AND IFNULL(is_deleted,0)=0
+      UNION
+      SELECT DISTINCT camera_code FROM camera_status WHERE camera_type='TEST'" 2>/dev/null | sed '/^[[:space:]]*$/d')"
+  fi
+  _DIRTY=""
+  for _c in $_TEST_CODES; do
+    for _d in "$IMAGES_DST"/*/"$_c"; do
+      [[ -d "$_d" ]] && _DIRTY="${_DIRTY} ${_d#"$IMAGES_DST"/}"
+    done
+  done
+  _DST_KB="$(du -sk "$IMAGES_DST" 2>/dev/null | cut -f1 || true)"
+  case "${_DST_KB:-}" in ''|*[!0-9]*) _DST_KB=0 ;; esac
+  if [[ -n "$_DIRTY" ]]; then
+    check "图片副本无 TEST 相机" false "副本残留 TEST 目录：${_DIRTY# } —— backup-database.sh 的 --exclude 未生效"
+  elif [[ -z "$_TEST_CODES" ]]; then
+    check "图片副本无 TEST 相机" true "无 TEST 相机（或数据库不可用），副本 $(du -sh "$IMAGES_DST" 2>/dev/null | cut -f1)"
+  elif [[ "$_DST_KB" -gt $(( IMAGES_MAX_GB * 1024 * 1024 )) ]]; then
+    check "图片副本无 TEST 相机" false "副本 $(( _DST_KB / 1024 / 1024 ))GB 超过上限 ${IMAGES_MAX_GB}GB —— 总量回收未生效"
+  else
+    check "图片副本无 TEST 相机" true "已排除 ${_TEST_CODES//$'\n'/, }；副本 $(du -sh "$IMAGES_DST" 2>/dev/null | cut -f1) / 上限 ${IMAGES_MAX_GB}GB"
+  fi
+fi
+
 # --- 4. 服务状态 -------------------------------------------------------------
 echo
 echo "${C_HEAD}[4] 服务状态${C_OFF}"
@@ -265,16 +406,7 @@ echo "${C_HEAD}[7] 设备上报接口${C_OFF}"
 #   现场把「杭州工厂」配置删除后（只保留临平二期），
 #   CAM-001 已不存在 → 批量上报恒返回 422 → 自检永远失败 1 项。
 #   现在改为**从库里动态取一台真实存在的相机与产品**，换机器/换配置都不会失效。
-# 从 /etc/default 读数据库口令（640 root），供 db_query 自行使用。
-# 单独抽成函数，避免依赖后面第 9 节才赋值的 MYSQL_PW 变量（顺序陷阱）。
-_read_db_pw() {
-  local pw="${MYSQL_PASSWORD:-}"
-  if [[ -z "$pw" && -r /etc/default/camera-detection ]]; then
-    pw="$(sed -n 's/^MYSQL_PASSWORD=["'\'']\{0,1\}\([^"'\'']*\)["'\'']\{0,1\}$/\1/p' \
-      /etc/default/camera-detection | head -1)"
-  fi
-  echo "$pw"
-}
+# 口令读取见 3b 之前的 _read_db_pw()（3d 与本节共用，定义必须靠前）
 db_query() {
   local pw; pw="$(_read_db_pw)"
   [[ -z "$pw" ]] && return 1

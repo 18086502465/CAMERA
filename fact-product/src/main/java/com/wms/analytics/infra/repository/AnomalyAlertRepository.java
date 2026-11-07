@@ -4,6 +4,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
+
 /**
  * 异常告警仓储（DDD P3 批次③ 收敛）。
  *
@@ -33,6 +35,31 @@ public class AnomalyAlertRepository {
         //
         // ★ 2026-11-06（v3 H-4）：改为回传自增主键 —— 告警节流器需要它来标记
         //   「续报接续」与「自动恢复」，否则只能靠 message 文本匹配（不可接受）。
+        //
+        // ★ 2026-11-07（v2 P0-1）：落库前去重。原因：CameraAlertThrottle 是**进程内**
+        //   状态，应用一重启就清零，下一个心跳重新 shouldRaise() → 又插一条新行，
+        //   而上一条永远没人关。现场 78 条未恢复 TEMPERATURE_HIGH 全指向同一工位、
+        //   同一类型，就是这么攒出来的（这也把 7 条 HIGH 级 CLEANUP_FAILED 挤出了
+        //   前端 LIMIT 窗口）。
+        //   命中同 (line, workstation, type) 的未恢复行时：只刷新内容与时间、返回原
+        //   alert_id —— 节流器拿到后照常 bind，后续恢复事件会关掉它，语义不变。
+        //
+        //   不用唯一索引兜底的原因：现场已有 78 条重复数据，加唯一索引会直接建不上；
+        //   且 line_id/workstation_id 允许为 NULL（历史行为写 0），唯一索引对 NULL 不去重。
+        //   并发风险可控：同一相机同一类型的告警由单线程心跳串行产生。
+        Integer lineIdKey = lineId == null ? 0 : lineId;
+        Integer workstationIdKey = workstationId == null ? 0 : workstationId;
+        if (alertType != null) {
+            Long existing = findUnresolvedAlertId(lineIdKey, workstationIdKey, alertType);
+            if (existing != null) {
+                jdbcTemplate.update(
+                        "UPDATE fact_anomaly_alert SET alert_level=?, alert_title=?, alert_message=?, message=?, " +
+                                "detect_time=NOW(), update_time=NOW() WHERE alert_id=?",
+                        alertLevel, alertTitle, alertMessage, alertMessage, existing);
+                return existing;
+            }
+        }
+
         org.springframework.jdbc.support.KeyHolder keyHolder =
                 new org.springframework.jdbc.support.GeneratedKeyHolder();
         jdbcTemplate.update(connection -> {
@@ -40,8 +67,8 @@ public class AnomalyAlertRepository {
                     "INSERT INTO fact_anomaly_alert(line_id, workstation_id, detection_id, alert_type, alert_level, alert_title, alert_message, message, detect_time, is_resolved, create_time, update_time) " +
                             "VALUES(?, ?, NULL, ?, ?, ?, ?, ?, NOW(), 0, NOW(), NOW())",
                     java.sql.Statement.RETURN_GENERATED_KEYS);
-            ps.setObject(1, lineId == null ? 0 : lineId);
-            ps.setObject(2, workstationId == null ? 0 : workstationId);
+            ps.setObject(1, lineIdKey);
+            ps.setObject(2, workstationIdKey);
             ps.setString(3, alertType);
             ps.setString(4, alertLevel);
             ps.setString(5, alertTitle);
@@ -51,6 +78,23 @@ public class AnomalyAlertRepository {
         }, keyHolder);
         Number key = keyHolder.getKey();
         return key == null ? null : key.longValue();
+    }
+
+    /**
+     * 查同 (line, workstation, type) 的未恢复告警主键。
+     *
+     * <p>只取最新一条：历史脏数据可能有多条重复未恢复行（见 {@code insertCameraAlert} 注释），
+     * 取最新那条继续使用，其余旧行保持原状 —— 不在这里顺手清理，避免在心跳热路径上做
+     * 非幂等写。存量重复由运维一次性处理。
+     */
+    private Long findUnresolvedAlertId(Integer lineId, Integer workstationId, String alertType) {
+        List<Long> ids = jdbcTemplate.queryForList(
+                "SELECT alert_id FROM fact_anomaly_alert " +
+                        "WHERE alert_type=? AND IFNULL(line_id,0)=? AND IFNULL(workstation_id,0)=? " +
+                        "AND (is_resolved IS NULL OR is_resolved=0) " +
+                        "ORDER BY alert_id DESC LIMIT 1",
+                Long.class, alertType, lineId, workstationId);
+        return ids.isEmpty() ? null : ids.get(0);
     }
 
     /**

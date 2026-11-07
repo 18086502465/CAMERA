@@ -159,6 +159,9 @@ CREATE TABLE `camera_images` (
     `create_time`        DATETIME  DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     KEY `idx_camera_name` (`camera_name`),
     KEY `idx_upload_time` (`upload_time`),
+    -- 2026-11-07 v3：capture_time 是两处清理的判据（DataCleanupTask 的 1000 行/批循环、
+    -- cleanup-defect-images.sh 的 DELETE），01 原先没给它建索引 —— 没索引就是每批一次全表扫。
+    KEY `idx_capture_time` (`capture_time`),
     KEY `idx_bucket` (`bucket_date`, `bucket_index`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='相机图片表';
 

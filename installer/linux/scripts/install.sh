@@ -358,8 +358,37 @@ ${WORK_DIR}/logs/*.log {
     copytruncate
     su ${SERVICE_USER} ${SERVICE_GROUP}
 }
+
+# 备份日志（cdsys 所有）
+/data/camera-detection/backup/db/logs/backup.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su ${SERVICE_USER} ${SERVICE_GROUP}
+}
+
+# 清理与巡检日志（root 所有）
+# 2026-11-07 v3：这三条此前完全没纳入轮转。cleanup_zk54.log 每小时追加、
+# 约 300KB/月，长期不轮转会缓慢吃掉 /data —— 而 /data 正是被水位监控的那块盘，
+# 形成闭环噪声。
+/var/log/camera-detection-cleanup.log
+/var/log/camera-detection-disk-alert.log
+/data/camera-detection/backup/cleanup_zk54.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}
 EOF
-  ok "logrotate 规则已写入"
+  ok "logrotate 规则已写入（业务日志 + 备份日志 + 清理/巡检日志）"
 fi
 
 # --- 7b. journald 限额（2026-11-04 补充）---------------------------------
@@ -516,6 +545,16 @@ if [[ -f "${SOURCE_DIR}/systemd/camera-detection-backup.service" && \
   chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${BACKUP_BASE}" 2>/dev/null || true
   chmod 700 "${BACKUP_BASE}" 2>/dev/null || true
 
+  # --- 跨盘副本目录（2026-11-07 v3）--------------------------------------------
+  # 主备份在 /data（vdb），副本落在 /var（vda）—— 两块物理盘，才抗得住单盘故障。
+  # 之前副本在 /data/camera-detection/backup/offsite，与源同盘，日志却写「异机」。
+  CROSS_BASE="/var/backups/camera-detection"
+  mkdir -p "${CROSS_BASE}/db/full" "${CROSS_BASE}/db/binlog" "${CROSS_BASE}/images"
+  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${CROSS_BASE}" 2>/dev/null || true
+  chmod 750 "$(dirname "${CROSS_BASE}")" 2>/dev/null || true
+  chmod 700 "${CROSS_BASE}" 2>/dev/null || true
+  ok "跨盘副本目录：${CROSS_BASE}（$(df --output=source "${CROSS_BASE}" 2>/dev/null | tail -1)）"
+
   # 口令与备份参数写进 /etc/default/camera-detection（640 root）
   # unit 里不写口令 —— unit 文件是全局可读的
   # 口令来源见第 8 节（已从 application.yml 提取到 MYSQL_PASSWORD）
@@ -537,7 +576,7 @@ if [[ -f "${SOURCE_DIR}/systemd/camera-detection-backup.service" && \
   #   现在把 JWT_SECRET 一并写回，保证「删了就要补上」。
   sed -i '/^# ---- 备份相关（供 camera-detection-backup.service 使用）----$/d' \
     /etc/default/camera-detection 2>/dev/null || true
-  sed -i '/^MYSQL_PASSWORD=/d; /^BACKUP_DIR=/d; /^KEEP_FULL_DAYS=/d; /^MAX_DISK_USE=/d; /^JWT_SECRET=/d' \
+  sed -i '/^MYSQL_PASSWORD=/d; /^BACKUP_DIR=/d; /^KEEP_FULL_DAYS=/d; /^MAX_DISK_USE=/d; /^JWT_SECRET=/d; /^OFFSITE_DIR=/d; /^IMAGES_SRC=/d; /^IMAGES_DST=/d; /^IMAGE_BACKUP_MAX_GB=/d' \
     /etc/default/camera-detection 2>/dev/null || true
   # 折叠因删除而产生的连续空行（最多留一个）
   awk 'BEGIN{blank=0} {if ($0=="") {blank++; if (blank>1) next} else {blank=0} print}' \
@@ -550,6 +589,12 @@ MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 BACKUP_DIR="${BACKUP_BASE}/db"
 KEEP_FULL_DAYS=14
 MAX_DISK_USE=85
+OFFSITE_DIR="${CROSS_BASE}/db"
+IMAGES_SRC="/data/camera-detection/images/defect-images"
+IMAGES_DST="${CROSS_BASE}/images"
+# 图片副本总量上限（GB）。超限时从最旧日期目录开始回收 ——
+# 防 REAL 相机台数增长后 30 天窗口本身撑满系统盘。
+IMAGE_BACKUP_MAX_GB=20
 
 # ---- JWT 签名密钥（application.yml 用 \${JWT_SECRET} 引用）----
 # 被上面 sed 删除后在此写回，缺了会导致服务启动失败。
@@ -581,7 +626,7 @@ echo "    sudo ${INSTALL_DIR}/scripts/verify.sh"
 echo
 log "访问地址：http://<服务器IP>:${PORT}"
 log "查看日志：journalctl -u ${SERVICE_NAME} -f"
-log "排查手册：docs/服务器运行与问题排查手册.md"
+log "排查手册：docs/部署与运维手册.md（现场故障速查 §7）与 docs/踩坑速查.md"
 
 # 退出码：0=全部就绪；1=缺数据库（装完了但要先建库）；2=服务真起不来
 case "${DB_PENDING:-0}" in
