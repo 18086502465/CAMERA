@@ -47,8 +47,35 @@ log() {
 
 die() { log "ERROR: $*"; exit 1; }
 
+# --- 告警落库 ----------------------------------------------------------------
+# 备份失败/跳过时写 fact_anomaly_alert（alert_type=BACKUP_FAILED），前端告警页可见。
+# 之前只写 journal：清理失败会写告警而备份不写，备份静默停摆数月都不会有人发现。
+# 注意：告警写不进去不能阻塞主流程 —— 很可能正是数据库有问题才导致备份失败。
+alert() {
+  local level="$1" title="$2" message="$3" esc
+  esc=$(printf "%s" "$message" | sed "s/'/''/g")
+  if ! command -v mysql >/dev/null 2>&1; then
+    log "WARN: 无法写告警（mysql 客户端不可用）：[$level] $title"
+    return
+  fi
+  # MYSQL_PWD 环境变量传口令，避免口令出现在进程列表（-p"$DB_PASS" 会被 ps 看到）
+  if MYSQL_PWD="$DB_PASS" mysql -h"$DB_HOST" -u"$DB_USER" -N -B -D "$DB_NAME" \
+      -e "INSERT INTO fact_anomaly_alert(line_id, workstation_id, detection_id, alert_type, alert_level,
+            alert_title, alert_message, message, detect_time, is_resolved, create_time, update_time)
+          VALUES(0, 0, NULL, 'BACKUP_FAILED', '$level',
+            '$title', '$esc', '$esc', NOW(), 0, NOW(), NOW())" >/dev/null 2>&1; then
+    log "已写入告警：[$level] $title"
+  else
+    log "WARN: 告警写入失败（不影响备份结果）：[$level] $title"
+  fi
+}
+
 # --- 前置检查 ------------------------------------------------------------------
-[[ -n "$DB_PASS" ]] || die "未提供数据库口令（设置环境变量 MYSQL_PASSWORD）"
+if [[ -z "$DB_PASS" ]]; then
+  alert "HIGH" "数据库备份未执行：缺少数据库口令" \
+        "环境变量 MYSQL_PASSWORD 为空，本次备份未执行。请检查 /etc/default/camera-detection。"
+  die "未提供数据库口令（设置环境变量 MYSQL_PASSWORD）"
+fi
 mkdir -p "$FULL_DIR" "$LOG_DIR" "${BACKUP_DIR}/binlog" "${BACKUP_DIR}/images"
 chmod 700 "$BACKUP_DIR" 2>/dev/null || true
 
@@ -56,6 +83,8 @@ chmod 700 "$BACKUP_DIR" 2>/dev/null || true
 # 备份与数据可能同盘；水位过高时再写备份会把磁盘彻底写满，反而丢数据
 DISK_USE=$(df --output=pcent "$(dirname "$BACKUP_DIR")" | tail -1 | tr -d ' %')
 if [[ "$DISK_USE" -gt "$MAX_DISK_USE" ]]; then
+  alert "HIGH" "数据库备份已跳过：备份分区水位超阈值" \
+        "备份分区使用率 ${DISK_USE}% 超过阈值 ${MAX_DISK_USE}%，本次备份跳过。磁盘越满越不备份 —— 请尽快扩盘或清理空间。"
   log "WARN: 备份分区使用率 ${DISK_USE}% 超过阈值 ${MAX_DISK_USE}%，跳过本次备份"
   exit 1
 fi
@@ -78,12 +107,16 @@ if ! mysqldump -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -p"$DB_PASS" \
       --default-character-set=utf8mb4 \
       "$DB_NAME" 2>/dev/null | zstd -3 -T4 -o "$OUT.tmp"; then
   rm -f "$OUT.tmp"
+  alert "HIGH" "数据库备份失败：mysqldump 执行出错" \
+        "全量备份 ${DB_NAME} 失败（mysqldump/zstd 管道错误），今日无备份。详见 ${LOG_FILE}。"
   die "mysqldump 执行失败"
 fi
 
 # 管道里 mysqldump 失败时 zstd 仍可能返回 0，必须单独校验文件
 if [[ ! -s "$OUT.tmp" ]]; then
   rm -f "$OUT.tmp"
+  alert "HIGH" "数据库备份失败：备份文件为空" \
+        "全量备份 ${DB_NAME} 产物为空（mysqldump 可能已失败），今日无备份。详见 ${LOG_FILE}。"
   die "备份文件为空（mysqldump 可能已失败）"
 fi
 mv "$OUT.tmp" "$OUT"
@@ -92,6 +125,8 @@ mv "$OUT.tmp" "$OUT"
 # zstd -t 检查压缩流完整性；sha256 供事后校验
 if ! zstd -t "$OUT" >/dev/null 2>&1; then
   rm -f "$OUT"
+  alert "HIGH" "数据库备份失败：压缩文件校验不通过" \
+        "全量备份 ${DB_NAME} 的压缩产物校验失败，已删除该文件，今日无备份。详见 ${LOG_FILE}。"
   die "压缩文件校验失败，已删除"
 fi
 sha256sum "$OUT" > "${OUT}.sha256"

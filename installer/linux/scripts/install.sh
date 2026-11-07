@@ -422,12 +422,15 @@ if [[ -f "${SOURCE_DIR}/scripts/cleanup-defect-images.sh" ]]; then
 
   if [[ ! -f /etc/cron.d/cleanup-defect-images ]]; then
     cat > /etc/cron.d/cleanup-defect-images <<EOF
-# 每天 03:30 清理过期缺陷图片与库记录（错开应用自身的 02:00 清理任务）
+# 每天 03:30 清理过期缺陷图片磁盘文件（错开应用 02:00 清理与 02:30 归档任务）
+# ★ 保留期必须与图片归档月表口径一致（application.yml app.archive.images.retain-days，默认 730 天）：
+#   两边不同步会出现「库里有记录、磁盘没文件」的裂图。改这里之前先改 application.yml。
+# ★ 口令不写进 cron（cron 全局可读）：脚本自己从 /etc/default/camera-detection 读取。
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-30 3 * * * root MYSQL_PASSWORD="${MYSQL_PASSWORD:-}" DIR="${IMAGE_DIR}" KEEP_DAYS=7 KEEP_BATCH_DAYS=30 DB_NAME="wms-new" /usr/local/bin/cleanup-defect-images.sh >> /var/log/camera-detection-cleanup.log 2>&1
+30 3 * * * root DIR="${IMAGE_DIR}" KEEP_DAYS=730 KEEP_CAMERA_IMAGES_DAYS=30 DB_NAME="wms-new" /usr/local/bin/cleanup-defect-images.sh >> /var/log/camera-detection-cleanup.log 2>&1
 EOF
-    ok "已加入 cron（03:30 每日，保留 7 天）"
+    ok "已加入 cron（03:30 每日，磁盘文件保留 730 天，与归档月表口径一致）"
   else
     log "cron 规则已存在，保留不动"
   fi
