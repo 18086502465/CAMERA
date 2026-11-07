@@ -34,7 +34,14 @@
         <el-table-column prop="factoryName" label="工厂" width="140" />
         <el-table-column prop="lineName" label="产线" width="140" />
         <el-table-column prop="stationName" label="工位" width="120" />
-        <el-table-column prop="message" label="告警内容" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="message" label="告警内容" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <!-- 运维类告警（备份/清理脚本写入）单独标记：后端已把它们排在列表最前，
+                 不与相机告警抢窗口，这里再加视觉区分，避免被当成相机问题处理 -->
+            <el-tag v-if="row.ops" type="danger" size="small" effect="plain" style="margin-right: 6px">运维</el-tag>
+            {{ row.message }}
+          </template>
+        </el-table-column>
         <el-table-column prop="detectTime" label="检测时间" width="160" sortable />
         <el-table-column label="状态" width="90" align="center">
           <template #default="{ row }">
@@ -136,6 +143,8 @@ const loadData = async () => {
     let mapped = rows.map(a => ({
       alertId: a.id,
       severity: levelMap[String(a.level || '').toUpperCase()] || 'LOW',
+      // 运维类告警（BACKUP_FAILED / CLEANUP_FAILED 等）：后端置 ops=true 并排在最前
+      ops: a.ops === true,
       // 后端未随告警返回工厂/产线/工位名称，只给 id，这里留空由后端补齐
       factoryName: a.factoryName || '',
       lineName: a.lineName || '',
