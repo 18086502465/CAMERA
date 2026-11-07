@@ -81,7 +81,7 @@ public class SecurityConfig {
                 //   只放行冻结契约里的 3 个设备端点 + 图片静态读取，
                 //   其余 /api/v1/** 一律要求登录，并按角色区分。
                 //
-                //   设备端 3 个冻结端点（契约见 docs/api/接口冻结契约-v1.0-20260616.md）：
+                //   设备端 3 个冻结端点（契约见 docs/接口文档.md + docs/archive/design-202605/批量上报接口开发方案.md）：
                 //     POST /api/v1/camera/status/heartbeat
                 //     POST /api/v1/camera/inspection/batch-upload
                 //     POST /api/v1/defect-images/upload

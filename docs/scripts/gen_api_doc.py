@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """P6 接口文档生成器 v2：逐行扫描 Controller，提取全部端点（宽容版）。"""
-import io, os, re, sys
+import io, os, re, sys, datetime
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
-BASE = r'D:\031_45344camera\fact-product\src\main\java\com\wms'
+# 仓库根由脚本位置推导（docs/scripts/ 上两级），避免硬编码绝对路径导致换机器即失效
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BASE = os.path.join(REPO, 'fact-product', 'src', 'main', 'java', 'com', 'wms')
 DOMAINS = ['iam', 'masterdata', 'device', 'defect', 'inspection', 'analytics', 'system', 'shared']
 DOMAIN_TITLE = {
     'iam': 'iam —— 认证与用户', 'masterdata': 'masterdata —— 主数据',
@@ -87,7 +89,7 @@ for dom in DOMAINS:
 lines = [
     '# 产线缺陷在线 AI 检测系统 —— 接口文档',
     '',
-    '> 版本：1.0（2026-11-05，DDD 重构定稿）｜由 `docs/scripts/gen_api_doc.py` 从 Controller 源码自动提取（再生成命令：`python docs/scripts/gen_api_doc.py`）',
+    '> 版本：1.0（DDD 重构定稿）｜**生成日期 %s** ｜由 `docs/scripts/gen_api_doc.py` 从 Controller 源码自动提取（再生成命令：`python docs/scripts/gen_api_doc.py`）' % datetime.date.today().isoformat(),
     '>',
     '> 通用约定：',
     '> - baseURL `/api`（前端 `request.js`）；文档内路径已含 `/api` 前缀',
@@ -113,6 +115,6 @@ for dom in DOMAINS:
             lines.append('| %s | `%s` | %s | %s |' % (verb, full, mname, role))
         lines.append('')
 
-out_path = r'D:\031_45344camera\docs\接口文档.md'
+out_path = os.path.join(REPO, 'docs', '接口文档.md')
 open(out_path, 'w', encoding='utf-8', newline='\n').write('\n'.join(lines))
 print('生成完成: %s（%d 端点）' % (out_path, total))

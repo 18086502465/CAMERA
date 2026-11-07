@@ -37,7 +37,7 @@ const assert = (cond, name, extra = '') => {
   await new Promise(r => setTimeout(r, 1500));
   // ★ 统一用辅助函数登录：Element Plus 的 password 输入框会静默吞掉
   //   page.type() 的输入（实测值为空），必须用 focus+Ctrl+A+Backspace+keyboard.type。
-  const { login: doLogin } = require('./scripts/browser-helper.cjs');
+  const { login: doLogin } = require('./browser-helper.cjs');
   const loginRes = await doLogin(page, 'admin', ADMIN_PWD);
   if (!loginRes.ok) log(`  [提示] 登录未成功（${loginRes.url}）：${loginRes.error}`);
   log(`\n登录后 URL: ${page.url()}`);

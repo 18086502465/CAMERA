@@ -234,9 +234,9 @@ if [[ -n "$CRLF_FILES" ]]; then
 fi
 ok "脚本行尾检查通过（全部 LF）"
 
-# 文档
-for d in "${ROOT_DIR}/docs/部署方案-Ubuntu22.04.md" "${ROOT_DIR}/docs/部署方案-精简版.md"; do
-  [[ -f "$d" ]] && cp "$d" "${STAGE_DIR}/docs/" || true
+# 文档：现场运维需要的手册随包发出（docs/archive 是历史评审稿，不进发布包）
+for d in "部署与运维手册.md" "使用说明.md" "踩坑速查.md" "配置项清单.md"; do
+  [[ -f "${ROOT_DIR}/docs/$d" ]] && cp "${ROOT_DIR}/docs/$d" "${STAGE_DIR}/docs/" || true
 done
 cp "${ROOT_DIR}/README.md" "${STAGE_DIR}/docs/" 2>/dev/null || true
 

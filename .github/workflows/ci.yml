@@ -187,6 +187,13 @@ jobs:
           # catch(DataAccessException) 吞掉（表现为「告警永远不恢复」）。
           python3 docs/scripts/check_entity_vs_ddl.py
 
+      - name: 文档结构与链接一致性
+        run: |
+          # docs/ 曾把 11 份历史评审稿与 7 份现行规范平铺在一层，读者分不清哪份是真源；
+          # fact-product/src/workMode/ 也曾长期放文档。这个脚本守三件事：
+          #   失效的相对链接 / 失效的锚点 / docs 根混入历史稿 / 源目录出现 .md。
+          python3 docs/scripts/check_doc_links.py
+
   verify:
     name: 产物一致性校验
     runs-on: ubuntu-latest

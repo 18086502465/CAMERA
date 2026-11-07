@@ -34,7 +34,7 @@ public class OperationLogAspect {
     /**
      * 环绕通知：拦截所有 Controller 方法
      */
-    @Around("execution(* com.wms.*.api..*(..))  // DDD 拆分：6 个业务域的 api 层")
+    @Around("execution(* com.wms.*.api..*(..))  // DDD 拆分：7 个业务域的 api 层")
     public Object logOperation(ProceedingJoinPoint joinPoint) throws Throwable {
         long startTime = System.currentTimeMillis();
         Object result = null;

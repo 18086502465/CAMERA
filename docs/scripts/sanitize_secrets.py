@@ -14,27 +14,29 @@ DB_PWD = 'CCshenda' + '889'
 SSH_PWD = 'Pass@' + '1234'
 
 RULES = [
+    # 模式一律用 DB_PWD / SSH_PWD 拼装，**不要把口令字面量写回本文件**。
+    # 2026-11-07 v3：原实现只把变量声明做了拼接，RULES 里仍是完整明文字面量 ——
+    # 于是本文件成了仓库内唯一的口令泄漏点（git grep 直接命中），
+    # 而 CI 的口令检查只匹配「数据库口令/SSH口令」字样，扫不到裸口令值。
     # 1) shell 命令里的赋值 / 传参 → 环境变量引用
-    ("MYSQL_PWD=CCshenda889 mysql", "MYSQL_PWD=${MYSQL_PASSWORD} mysql"),
-    ("MYSQL_PASSWORD=DB_PWD", "MYSQL_PASSWORD='${MYSQL_PASSWORD}'"),
-    ("DB_PASS=CCshenda889", "DB_PASS=${MYSQL_PASSWORD}"),
-    ('echo SSH_PWD | sudo -S', 'echo "${SUDO_PASSWORD}" | sudo -S'),
-    ("echo SSH_PWD | sudo -S", 'echo "${SUDO_PASSWORD}" | sudo -S'),
-    ('-Password DB_PWD', '-Password "$env:MYSQL_PASSWORD"'),
+    ("MYSQL_PWD=%s mysql" % DB_PWD, "MYSQL_PWD=${MYSQL_PASSWORD} mysql"),
+    ("DB_PASS=%s" % DB_PWD, "DB_PASS=${MYSQL_PASSWORD}"),
+    ("echo %s | sudo -S" % SSH_PWD, 'echo "${SUDO_PASSWORD}" | sudo -S'),
+    ("-Password %s" % DB_PWD, '-Password "$env:MYSQL_PASSWORD"'),
     # 2) 配置文件里的 password 值 → 占位符
-    ("password: CCshenda889", "password: ${MYSQL_PASSWORD}"),
-    ("Password: CCshenda889", "Password: ${MYSQL_PASSWORD}"),
-    ("BY DB_PWD;", "BY '<现场设定的数据库口令>';"),
+    ("password: %s" % DB_PWD, "password: ${MYSQL_PASSWORD}"),
+    ("Password: %s" % DB_PWD, "Password: ${MYSQL_PASSWORD}"),
+    ("BY %s;" % DB_PWD, "BY '<现场设定的数据库口令>';"),
     # 3) PowerShell 参数默认值 → 读环境变量
-    ("[string]$Password = DB_PWD,",
+    ("[string]$Password = %s," % DB_PWD,
      "[string]$Password = $(if ($env:MYSQL_PASSWORD) { $env:MYSQL_PASSWORD } else { '' }),"),
     # 4) 文档说明文字 → 占位符
-    ("DB password `CCshenda889`", "DB password `<数据库口令>`"),
-    ("`root` / `CCshenda889`", "`root` / `<数据库口令>`"),
-    ("`root`/`CCshenda889`", "`root`/`<数据库口令>`"),
-    ("`lims` / `Pass@1234`", "`lims` / `<SSH 口令>`"),
-    ("`CCshenda889`", "`<数据库口令>`"),
-    ("`Pass@1234`", "`<SSH 口令>`"),
+    ("DB password `%s`" % DB_PWD, "DB password `<数据库口令>`"),
+    ("`root` / `%s`" % DB_PWD, "`root` / `<数据库口令>`"),
+    ("`root`/`%s`" % DB_PWD, "`root`/`<数据库口令>`"),
+    ("`lims` / `%s`" % SSH_PWD, "`lims` / `<SSH 口令>`"),
+    ("`%s`" % DB_PWD, "`<数据库口令>`"),
+    ("`%s`" % SSH_PWD, "`<SSH 口令>`"),
     # 5) 兜底：裸口令
     (DB_PWD, "<数据库口令>"),
     (SSH_PWD, "<SSH 口令>"),

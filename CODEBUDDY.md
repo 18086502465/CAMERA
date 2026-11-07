@@ -10,7 +10,7 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 
 | 目录 | 内容 |
 |---|---|
-| `fact-product/` | Spring Boot 2.7.15 / Java 8 单体后端，artifact `time-bucket-demo`，端口 8091 |
+| `fact-product/` | Spring Boot 2.7.18 / Java 8 单体后端，artifact `time-bucket-demo`，端口 8091 |
 | `frontend/` | Vue 3.5 + Vite 5 SPA，dev 端口 3000，代理 `/api` → 8091 |
 | `installer/linux/` | 唯一在维护的部署通道（bash + systemd + `verify.sh`） |
 | `dist-release/` | 构建产物输出，不入库 |
@@ -69,7 +69,8 @@ sudo env VERIFY_PASSWORD='xxx' MYSQL_PASSWORD='xxx' bash installer/linux/scripts
 01_init_schema_nodb → 02_final_schema_p0 → 03_system_settings → 04_align_entity_columns
 ```
 
-已有库升级相机类型字段另跑 `05_camera_type_migration.sql`（迁移脚本，不进全新库流程）。
+已有库按需追加增量补丁（幂等，不进全新库流程）：`05_camera_type_migration.sql`（相机类型字段）、
+`06_index_tuning.sql`（`camera_images.capture_time` 索引 —— 两处清理任务的判据字段）。
 
 `02_final_schema_p0.sql` 会 **DROP 重建 21 张表**。生产升级绝不能跑全量流程。
 
@@ -99,7 +100,7 @@ com.wms
 
 每域分层：`api/`（Controller + DTO/VO）→ `app/`（应用服务、事件、跨域端口）→ `domain/model/`（被动实体）→ `infra/`（`mapper/` MyBatis-Plus + `repository/` JdbcTemplate + `task/`）。层不齐是既有状态：`defect` 没有 `domain/`，`system` 没有 `app/` —— 别为了"整齐"新建空层。
 
-规模参考（2026-11）：28 个 Controller、136 个 `@*Mapping` 端点、19 个测试类 / 128 个 `@Test`。
+规模参考（2026-11-07 实测）：162 个 Java 文件 / 20,728 行、28 个 Controller / 135 个端点、15 个 Repository / 17 个 Mapper、22 个测试类 / 145 个 `@Test`（展开后 148 个用例）。文档里若见 151 文件 / 134 端点 / 79 用例，都是 DDD 定稿时的旧值。
 
 ### ArchUnit 三条铁律（`com.wms.arch.ArchitectureTest`）
 
@@ -120,7 +121,7 @@ com.wms
 
 | | `POST /api/v1/defect-images/upload` | `POST /api/v1/camera/inspection/batch-upload` |
 |---|---|---|
-| 地位 | **现场真正在用**，7.9 万+ 张 | 冻结契约，基本不用 |
+| 地位 | **现场真正在用**，约 1.7 万条（含 TEST 相机压测，每小时清理） | 冻结契约，基本不用 |
 | 表 | `defect_image_file/_box/_batch` + `camera_images` | `fact_inspection_*` + `agg_*` |
 | 统计后果 | 统计接口应以它为准 | 只读 `agg_*` 的接口现场永远为 0 |
 
@@ -140,6 +141,11 @@ com.wms
 
 主表 31 天 → 按月 `INSERT…SELECT` 移到 `defect_image_*_hist_YYYYMM`（`DefectImageArchiveTask`，5000 行/批、独立事务）→ 月表 730 天整表 DROP；磁盘文件按 `{yyyyMMdd}` 目录由 cron 删 730 天。查询路由在 `DefectImageRepository.listHistoryPage`：范围全在 31 天内只查主表，否则主表 + 相关月表 `UNION ALL`。
 
+**磁盘文件的生命周期只有一个 owner**：`cleanup-defect-images.sh`（730 天日期目录）。
+`DataCleanupTask` 清 `camera_images` 时**只删库记录、不删磁盘文件** —— 该表与 `defect_image_file` 的
+`image_path` 100% 重叠（同一批 jpg），Java 侧一旦顺手 `file.delete()`，记录留 730 天而文件 30 天就没了，
+必然批量裂图。2026-11-07 已移除该删除循环并加回归测试（`DataCleanupTaskImageTest`），别加回来。
+
 `sys_data_retention_policy` 表代码从不读，改它不生效；真实保留期硬编码在 `DataCleanupTask`（02:00）和 `cleanup-defect-images.sh`（03:30）。
 
 ### 认证与权限
@@ -155,7 +161,11 @@ com.wms
 
 `axios` 实例在 `utils/request.js`，`baseURL = '/api'`，所以 `api/*.js` 里写的是 `/cameras` 这种相对路径。拦截器只做认证分流，权限判定集中在 `utils/auth-redirect.js`（401 → 清 token 跳登录；403 → 仅未登录才跳，权限不足只透传提示），登录上下文存 sessionStorage `camera_login_redirect`，用后即焚。
 
-路由里有一批**重定向兼容桩**（`/factories`、`/lines`、`/workstations`、`/companies`、`/brands`、`/users`、`/defect-types`、`/holidays` 全部 redirect 到 `/system/config`）。这是既有状态，不代表对应页面可用。真正**无路由引用的孤立页面只有 3 个**：`views/stats/DefectTrend.vue`、`views/stats/ProductShiftYield.vue`、`views/system/SystemSettings.vue`（31 个 `.vue` − 16 个路由引用 = 15，这个算法把子组件也算进去了，别照抄；`ConfigImportDialog.vue` 就是 `ConfigView` 的子组件）。
+路由里有一批**重定向兼容桩**（`/factories`、`/lines`、`/workstations`、`/companies`、`/brands`、`/users`、`/defect-types`、`/holidays` 全部 redirect 到 `/system/config`）。这是既有状态，不代表对应页面可用 —— 这 8 个 `.vue`（`FactoryList`/`LineList`/`WorkstationList`/`CompanyList`/`BrandList`/`UserList`/`DefectTypeList`/`HolidayConfig`）**没有任何路由指向它们**。
+
+2026-11-07 实测口径：`views/` 下 31 个 `.vue` − 16 个路由指向的页面 − 8 个重定向桩 − 1 个子组件（`system/config/ConfigImportDialog.vue` 挂在 `ConfigView` 内）= **6 个真孤立页面**：
+`stats/DefectTrend.vue`、`stats/LineDashboard.vue`、`stats/ProductShiftYield.vue`、`stats/StatsOverview.vue`、
+`system/OperationLog.vue`、`system/SystemSettings.vue`。它们改代码不会影响任何在线路由，别花时间调。
 
 `vite.config.js` 里 element-plus 的 alias **必须精确匹配到 `node_modules/element-plus/lib/index.js`**（CJS 完整入口），配合 `optimizeDeps.include`；配错则 `ElMessage` / `ElMessageBox` 解析成 `undefined`，构建不报错、运行全站弹窗静默失效（表现为"点删除没反应"）。`elementPlusGuard()` 插件就是把这个坑提前到构建期。
 
@@ -184,7 +194,8 @@ com.wms
 - **shell / sql / py 一律 LF**（`.gitattributes` 强制）。CRLF 传到 Linux 会报 `set: pipefail: invalid option name`，整条部署链直接失败。
 - **配置与密钥分离**：唯一密钥源 `/etc/default/camera-detection`（640 root），systemd `EnvironmentFile` 注入。占位符写成 `${MYSQL_PASSWORD}`，**绝不能带空默认值** —— 带空默认值是"服务 active 但业务全错"，无默认值才会启动即报 `Could not resolve placeholder`。生产还须显式覆盖 `mybatis-plus.configuration.log-impl=Slf4jImpl` 与 `logging.level.com.wms.mapper=INFO`。
 - **测试数据只用 `ZZTEST*` 前缀**，验证后清理；现场（杭州临平二期）数据一律不得动。
-- **清理脚本的顺序是先删库记录、再删磁盘文件**；测试相机清理脚本有三道防误删防线（双表 OR 保护集 / 保护集为空即中止 / 单轮超阈值即中止），改脚本时必须保留。
+- **磁盘图片文件只有一个删除者**：`cleanup-defect-images.sh`（730 天日期目录）。`DataCleanupTask` 清 `camera_images` **只删行、不删文件** —— 两表 `image_path` 完全重叠，Java 侧删文件会让「记录留 730 天、文件 30 天消失」直接裂图。测试相机清理脚本另有三道防误删防线（双表 OR 保护集 / 保护集为空即中止 / 单轮超阈值即中止），改脚本时必须保留。
+- **脚本的「先删库后删盘」只适用于 shell 侧同类清理**：`cleanup-defect-images.sh` 删库记录 → 删磁盘文件；反过来会留「库有行、盘无文件」的裂图。Java 侧不再有这个顺序问题（不碰文件）。
 - **4 个脚本有两份副本**：`docs/scripts/` 与 `installer/linux/scripts/` 下的 `deploy_jar.sh`、`jar_manifest.py`、`prune_legacy_chunks.py`、`recover_legacy_chunks.py` 内容完全相同（前者供本地/手工调用，后者进发布包上服务器）。改一份必须同步另一份，否则线上跑的是旧版。
 
 ## 验证顺序（每轮改动照此走）
@@ -204,12 +215,15 @@ com.wms
 
 ## 文档地图
 
+完整索引与「什么问题查哪份」见 `docs/README.md`。这里只列改代码时**必看**的三份：
+
 | 文档 | 什么时候看 |
 |---|---|
-| `docs/踩坑速查.md` | **改任何东西之前**；按主题记录了真实事故与根因 |
-| `docs/架构说明.md` | 分层规则、依赖铁律、关键机制 |
-| `docs/模块设计.md` | 每域职责边界、类清单、设计决策记录 |
-| `docs/接口文档.md` | 端点清单（文档 134 条，代码里 136 个 `@*Mapping`），可 `python docs/scripts/gen_api_doc.py` 再生成 |
+| `docs/踩坑速查.md` | **改任何东西之前**；13 节真实事故与根因 |
+| `docs/架构说明.md` | 分层规则、依赖铁律、关键机制（本文件 §后端架构 的精简版来源） |
 | `docs/部署与运维手册.md` | 安装、增量/全量升级、备份恢复、故障排查 |
-| `docs/配置项清单.md` | 生产配置项与密钥注入口径 |
-| `docs/scripts/README.md` | 运维 / 验证脚本索引（每个脚本解决什么坑） |
+
+其余：`docs/模块设计.md`（每域类清单）、`docs/接口文档.md`（端点清单，`gen_api_doc.py` 生成勿手改）、
+`docs/配置项清单.md`、`docs/使用说明.md`、`docs/scripts/README.md`（脚本索引）。
+
+**`docs/archive/` 下的任何文档都不要拿来做依据** —— 那是历史评审过程记录，结论多已被推翻，其中的数字不可信。

@@ -45,7 +45,7 @@ import java.util.List;
  *   <li><b>公开路径</b>：完全跳过 Token 解析（登录、静态资源、错误页）；</li>
  *   <li><b>设备路径</b>（{@code /api/v1/**}）：设备端用自己的 token 体系
  *       （{@code cfg_camera_token}），由 service 层校验，<b>不在此过滤器认证</b>
- *       —— 保持冻结契约 {@code docs/api/接口冻结契约-v1.0-20260616.md} 不变；</li>
+ *       —— 保持冻结契约 {@code docs/接口文档.md}（端点清单）与 {@code docs/archive/design-202605/批量上报接口开发方案.md}（冻结理由） 不变；</li>
  *   <li><b>其余路径</b>：必须有有效 JWT，并写入 SecurityContext。
  *       无 token 或 token 无效时<b>不直接拒绝</b>，而是交给 Spring Security
  *       按 {@code anyRequest().authenticated()} 决定 —— 这样

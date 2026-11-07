@@ -12,7 +12,7 @@
  * 这样两条路径都经过**真实的前端 axios 拦截器**，而非绕过。
  */
 const puppeteer = require('puppeteer-core');
-const { login } = require('./scripts/browser-helper.cjs');
+const { login } = require('./browser-helper.cjs');
 const BASE = process.env.BASE_URL || 'http://10.2.77.72:8091';
 const ADMIN_PWD = process.env.CAMERA_ADMIN_PASSWORD || '';
 

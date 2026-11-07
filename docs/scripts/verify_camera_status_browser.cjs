@@ -238,8 +238,21 @@ async function clearLine(page) {
     // ---- 核心断言 ----
     const allImg = Number(String(allKpi['近批次图片'] || '0').replace(/,/g, ''))
     const allHigh = Number(String(allKpi['高危缺陷'] || '0').replace(/,/g, ''))
-    check('★ 各产线「近批次图片」之和 === 不筛选总数', sumImg === allImg, `各产线合计 ${sumImg} vs 不筛选 ${allImg}`)
-    check('★ 各产线「高危缺陷」之和 === 不筛选总数', sumHigh === allHigh, `各产线合计 ${sumHigh} vs 不筛选 ${allHigh}`)
+    // ★ 2026-11-07：原断言用严格相等，在现场实时写入下**必然假红**。
+    //   allKpi 在遍历各产线之前取，而遍历每条产线都要重新加载页面（4s+ 等待），
+    //   期间相机继续上传 → 各产线之和恒大于「不筛选总数」，差值约等于耗时×写入速率
+    //   （实测 5~96 条，与本次遍历耗时成正比）。
+    //   真正的 bug（重名相机共享统计）会让某条产线多出**接近一整条产线**的量
+    //   （现场实测 3133），与几十条的时序噪声不在一个量级。
+    //   所以：少算仍然严格报错（说明筛选丢了数据），多算只允许容差内。
+    const tolImg = Math.max(200, Math.round(allImg * 0.02))
+    const okImg = sumImg >= allImg && (sumImg - allImg) <= tolImg
+    check('★ 各产线「近批次图片」之和 === 不筛选总数', okImg,
+      `各产线合计 ${sumImg} vs 不筛选 ${allImg}（时序容差 ${tolImg}）`)
+    const tolHigh = Math.max(50, Math.round(allHigh * 0.02))
+    const okHigh = sumHigh >= allHigh && (sumHigh - allHigh) <= tolHigh
+    check('★ 各产线「高危缺陷」之和 === 不筛选总数', okHigh,
+      `各产线合计 ${sumHigh} vs 不筛选 ${allHigh}（时序容差 ${tolHigh}）`)
 
     // ---- 逐行归属检查：重名相机不得共享统计 ----
     await clearLine(page)
