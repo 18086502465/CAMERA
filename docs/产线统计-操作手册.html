@@ -1,0 +1,1663 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>产线统计 · 功能说明与配置手册</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --line:#e5e7eb; --line-strong:#d1d5db;
+    --text:#1f2937; --text-2:#4b5563; --text-3:#6b7280; --text-4:#9ca3af;
+    --blue:#2563eb; --blue-bg:#eff6ff; --blue-line:#bfdbfe;
+    --red:#dc2626; --red-bg:#fef2f2; --red-line:#fecaca;
+    --green:#16a34a; --green-bg:#f0fdf4; --green-line:#bbf7d0;
+    --amber:#d97706; --amber-bg:#fffbeb; --amber-line:#fde68a;
+    --purple:#7c3aed; --purple-bg:#f5f3ff;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+    font-size:15px; line-height:1.75; -webkit-font-smoothing:antialiased;
+  }
+  code{font-family:var(--mono); font-size:.88em; background:#f3f4f6; border:1px solid var(--line);
+       border-radius:4px; padding:1px 5px; color:#334155; white-space:nowrap}
+  pre{background:#0f172a; color:#e2e8f0; padding:14px 16px; border-radius:8px; overflow-x:auto;
+      font-family:var(--mono); font-size:13px; line-height:1.6; margin:12px 0}
+  pre code{background:none; border:none; color:inherit; padding:0; white-space:pre}
+
+  /* ---------- 布局 ---------- */
+  .layout{display:grid; grid-template-columns:264px minmax(0,1fr); gap:0; max-width:1440px; margin:0 auto}
+  .sidebar{
+    position:sticky; top:0; height:100vh; overflow-y:auto; padding:26px 14px 40px 26px;
+    border-right:1px solid var(--line); background:#fbfcfd;
+  }
+  .sidebar h2{font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--text-4);
+    margin:0 0 12px; font-weight:600}
+  .sidebar .brand{font-size:15px; font-weight:700; color:var(--text); margin-bottom:4px; letter-spacing:.01em}
+  .sidebar .brand-sub{font-size:12px; color:var(--text-4); margin-bottom:22px}
+  .toc{list-style:none; margin:0; padding:0; font-size:13.5px}
+  .toc li{margin:1px 0}
+  .toc a{display:block; padding:5px 10px; color:var(--text-2); text-decoration:none; border-radius:5px;
+         border-left:2px solid transparent; transition:.12s}
+  .toc a:hover{background:#eef2f7; color:var(--blue)}
+  .toc a.active{background:var(--blue-bg); color:var(--blue); border-left-color:var(--blue); font-weight:600}
+  .toc .sub{padding-left:22px; font-size:12.8px; color:var(--text-3)}
+  .main{padding:40px 48px 90px; min-width:0}
+
+  /* ---------- 头部 ---------- */
+  .hero{background:linear-gradient(135deg,#1e293b 0%,#312e81 100%); color:#fff; border-radius:12px;
+        padding:34px 36px; margin-bottom:34px; position:relative; overflow:hidden}
+  .hero::after{content:""; position:absolute; right:-60px; top:-60px; width:240px; height:240px;
+        border-radius:50%; background:rgba(255,255,255,.05)}
+  .hero .eyebrow{font-size:11.5px; letter-spacing:.2em; text-transform:uppercase; color:#a5b4fc; margin-bottom:10px}
+  .hero h1{margin:0 0 10px; font-size:30px; letter-spacing:.01em; font-weight:700}
+  .hero p{margin:0; color:#cbd5e1; font-size:14.5px; max-width:760px}
+  .hero .meta{margin-top:20px; display:flex; flex-wrap:wrap; gap:8px}
+  .hero .meta span{font-size:12px; background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.18);
+        padding:3px 10px; border-radius:20px; color:#e2e8f0}
+
+  /* ---------- 通用块 ---------- */
+  section{margin-bottom:46px; scroll-margin-top:20px}
+  h2.sec{font-size:22px; font-weight:700; margin:0 0 6px; letter-spacing:.01em;
+         display:flex; align-items:center; gap:10px}
+  h2.sec .num{font-family:var(--mono); font-size:13px; color:#fff; background:var(--blue);
+         border-radius:5px; padding:2px 8px; font-weight:600}
+  .sec-desc{color:var(--text-3); font-size:14px; margin:0 0 20px}
+  h3{font-size:16.5px; font-weight:650; margin:30px 0 10px; padding-left:11px; border-left:3px solid var(--blue)}
+  h4{font-size:14.5px; font-weight:650; margin:20px 0 8px; color:var(--text-2)}
+  p{margin:9px 0}
+  ul,ol{margin:9px 0; padding-left:22px}
+  li{margin:4px 0}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px 22px; margin:14px 0}
+
+  /* ---------- 表格 ---------- */
+  .tbl-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:9px; background:var(--card); margin:14px 0}
+  table{border-collapse:collapse; width:100%; font-size:13.4px; line-height:1.6}
+  th{background:#f8fafc; color:var(--text-2); font-weight:650; text-align:left; padding:10px 12px;
+     border-bottom:2px solid var(--line-strong); white-space:nowrap; position:sticky; top:0; z-index:2}
+  td{padding:9px 12px; border-bottom:1px solid #f1f3f5; vertical-align:top}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:#fbfdff}
+  td:first-child{font-weight:600; color:var(--text); white-space:nowrap}
+  .tbl-wrap.compact table{font-size:12.8px}
+  .tbl-wrap.compact td,.tbl-wrap.compact th{padding:7px 10px}
+
+  /* ---------- 徽章 ---------- */
+  .badge{display:inline-block; font-size:11.5px; font-weight:600; padding:1px 8px; border-radius:20px;
+         border:1px solid; white-space:nowrap; line-height:1.7}
+  .b-yes{background:var(--green-bg); color:#15803d; border-color:var(--green-line)}
+  .b-no{background:var(--red-bg); color:#b91c1c; border-color:var(--red-line)}
+  .b-cond{background:var(--amber-bg); color:#b45309; border-color:var(--amber-line)}
+  .b-info{background:var(--blue-bg); color:#1d4ed8; border-color:var(--blue-line)}
+  .b-mute{background:#f3f4f6; color:var(--text-3); border-color:var(--line)}
+
+  /* ---------- 提示块 ---------- */
+  .note{border-left:3px solid; border-radius:0 7px 7px 0; padding:12px 16px; margin:14px 0; font-size:13.8px}
+  .note strong{display:block; margin-bottom:3px; font-size:13px; letter-spacing:.02em}
+  .note.info{background:var(--blue-bg); border-color:var(--blue)}
+  .note.warn{background:var(--amber-bg); border-color:#f59e0b}
+  .note.danger{background:var(--red-bg); border-color:#ef4444}
+  .note.ok{background:var(--green-bg); border-color:#22c55e}
+
+  /* ---------- 步骤 ---------- */
+  ol.steps{list-style:none; counter-reset:s; padding-left:0; margin:14px 0}
+  ol.steps>li{counter-increment:s; position:relative; padding:2px 0 2px 38px; margin:12px 0}
+  ol.steps>li::before{content:counter(s); position:absolute; left:0; top:1px; width:24px; height:24px;
+    background:var(--blue-bg); color:var(--blue); border:1px solid var(--blue-line); border-radius:50%;
+    font-size:12px; font-weight:700; display:flex; align-items:center; justify-content:center}
+
+  /* ---------- 功能条目 ---------- */
+  .fn{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 20px; margin:12px 0}
+  .fn-head{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:6px}
+  .fn-head .t{font-size:15px; font-weight:650}
+  .fn-head .where{font-size:12px; color:var(--text-4); font-family:var(--mono)}
+  .fn-grid{display:grid; grid-template-columns:64px 1fr; gap:4px 12px; font-size:13.6px; margin-top:8px}
+  .fn-grid dt{color:var(--text-4); font-size:12.5px; padding-top:2px}
+  .fn-grid dd{margin:0; color:var(--text-2)}
+  @media(max-width:720px){.fn-grid{grid-template-columns:1fr}.fn-grid dt{margin-top:6px}}
+
+  /* ---------- 图 ---------- */
+  figure{margin:16px 0; background:var(--card); border:1px solid var(--line); border-radius:10px;
+         padding:14px 14px 6px; overflow:hidden}
+  figure svg{display:block; width:100%; height:auto; border-radius:6px}
+  figcaption{font-size:12.3px; color:var(--text-4); padding:8px 2px 4px; text-align:center}
+  .fig-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; margin:14px 0}
+  .fig-grid figure{margin:0}
+
+  /* ---------- 缩略图 ---------- */
+  .thumb{float:right; width:190px; margin:2px 0 10px 16px; border:1px solid var(--line); border-radius:7px;
+         background:#fcfdff; padding:4px}
+  .thumb svg{display:block; width:100%; height:auto}
+  @media(max-width:760px){.thumb{float:none; width:100%; margin:10px 0}}
+
+  /* ---------- 目录块 ---------- */
+  .path-cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; margin:18px 0}
+  .path-card{background:var(--card); border:1px solid var(--line); border-radius:9px; padding:14px 16px}
+  .path-card .r{font-size:12px; color:var(--blue); font-weight:650; letter-spacing:.05em; margin-bottom:4px}
+  .path-card .d{font-size:13px; color:var(--text-2)}
+  .path-card a{color:var(--blue); text-decoration:none; font-size:12.5px}
+
+  /* ---------- 回到顶部 ---------- */
+  #top{position:fixed; right:26px; bottom:26px; width:42px; height:42px; border-radius:50%;
+       background:var(--blue); color:#fff; border:none; cursor:pointer; font-size:17px;
+       box-shadow:0 4px 14px rgba(37,99,235,.35); display:none; z-index:50}
+  #top.show{display:block}
+
+  @media(max-width:980px){
+    .layout{grid-template-columns:1fr}
+    .sidebar{position:static; height:auto; border-right:none; border-bottom:1px solid var(--line);
+             padding:18px 20px}
+    .toc{columns:2; column-gap:16px}
+    .main{padding:26px 20px 70px}
+    .hero{padding:24px}
+    .hero h1{font-size:23px}
+  }
+  @media print{
+    @page{size:A4; margin:13mm 12mm 15mm}
+    html{-webkit-print-color-adjust:exact; print-color-adjust:exact}
+    .sidebar,#top{display:none}
+    .layout{display:block}
+    .main{padding:0}
+    /* 卡片可跨页续排，但其中的图/表行自身不截断，避免整卡推页留下大片空白 */
+    svg,figure,.fig-grid>div,table{page-break-inside:avoid}
+    .card{page-break-inside:auto}
+    tr,td,th{page-break-inside:avoid}
+    thead{display:table-header-group}
+    a{color:inherit; text-decoration:none}
+    .hero{background:#1e293b !important; -webkit-print-color-adjust:exact}
+    h2{page-break-after:avoid}
+    h3,h4{page-break-after:avoid}
+  }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <!-- ================= 侧栏目录 ================= -->
+  <aside class="sidebar">
+    <div class="brand">产线统计 · 操作手册</div>
+    <div class="brand-sub">v3 代码口径 · 2026-11-07</div>
+    <h2>目录</h2>
+    <ul class="toc" id="toc">
+      <li><a href="#s0">阅读指引</a></li>
+      <li><a href="#s1">1. 页面定位</a></li>
+      <li><a href="#s2">2. 功能清单</a></li>
+      <li><a href="#s2-1" class="sub">2.1 筛选区</a></li>
+      <li><a href="#s2-2" class="sub">2.2 指标卡</a></li>
+      <li><a href="#s2-3" class="sub">2.3 看板模板</a></li>
+      <li><a href="#s2-4" class="sub">2.4 图表组件</a></li>
+      <li><a href="#s2-5" class="sub">2.5 大屏与导出</a></li>
+      <li><a href="#s2-6" class="sub">2.6 日聚合运维</a></li>
+      <li><a href="#s3">3. 能力边界</a></li>
+      <li><a href="#s4">4. 统计数据项配置</a></li>
+      <li><a href="#s4-1" class="sub">4.1 配置总表</a></li>
+      <li><a href="#s4-2" class="sub">4.2 逐项说明</a></li>
+      <li><a href="#s5">5. 效果图</a></li>
+      <li><a href="#s6">6. 管理层报表项</a></li>
+      <li><a href="#s7">7. 快速上手</a></li>
+      <li><a href="#s8">8. 附录</a></li>
+    </ul>
+  </aside>
+
+  <!-- ================= 正文 ================= -->
+  <main class="main">
+
+    <div class="hero">
+      <div class="eyebrow">Line Analytics · User Guide</div>
+      <h1>产线统计：功能说明与配置手册</h1>
+      <p>本手册逐项说明「产线统计」页面每个功能的作用、操作步骤与触发条件，明确能力边界，
+      并完整列举可通过配置产出的统计数据项（配置方式 · 参数含义 · 适用前提 · 限制条件），
+      附页面效果示意与管理层报表口径。</p>
+      <div class="meta">
+        <span>适用版本：v3（2026-11-06 改造后）</span>
+        <span>数据通道：缺陷图片事实表（现场）/ 质量聚合表（兜底）</span>
+        <span>页面路径：统计 → 产线统计</span>
+      </div>
+    </div>
+
+    <!-- ================= 阅读指引 ================= -->
+    <section id="s0">
+      <h2 class="sec"><span class="num">00</span>阅读指引</h2>
+      <p class="sec-desc">按角色选最短路径，不必从头读。</p>
+      <div class="path-cards">
+        <div class="path-card">
+          <div class="r">管理层 / 厂长</div>
+          <div class="d">关心「车间今天怎么样、问题在哪」。先读 1、3，再看 6 的报表口径表。</div>
+          <a href="#s1">→ 页面定位</a> · <a href="#s6">→ 管理层报表项</a>
+        </div>
+        <div class="path-card">
+          <div class="r">工艺 / 质量工程师</div>
+          <div class="d">要定位「哪类缺陷、哪个工位、哪台相机」。读 2.4 与 4 的统计项配置。</div>
+          <a href="#s2-4">→ 图表组件</a> · <a href="#s4">→ 统计项配置</a>
+        </div>
+        <div class="path-card">
+          <div class="r">实施 / 运维</div>
+          <div class="d">页面数字为 0 或与预期不符时，先查 3 的能力边界与 7 的排查清单。</div>
+          <a href="#s3">→ 能力边界</a> · <a href="#s7">→ 快速上手</a>
+        </div>
+      </div>
+
+      <div class="note info">
+        <strong>一句话结论</strong>
+        这是一个「<b>缺陷检出侧</b>」的统计页 —— 它统计的是「发现多少缺陷、集中在哪」，
+        而不是「生产了多少件、良率多少」。现场设备只上报缺陷图、不上报良品图，
+        因此<b>良率在本页恒为「不可计算」</b>，这是设计行为，不是故障。
+      </div>
+    </section>
+
+    <!-- ================= 1. 页面定位 ================= -->
+    <section id="s1">
+      <h2 class="sec"><span class="num">01</span>页面定位与数据流</h2>
+      <p class="sec-desc">理解数据从哪来，是判断「数字对不对」的前提。</p>
+
+      <p>页面把两条上报通道的数据统一成一个响应结构，<b>按「当前时间窗内有没有缺陷图片」自动二选一</b>，
+      而不是把两边相加。这一点决定了所有指标的口径：</p>
+
+      <figure>
+        <svg viewBox="0 0 880 330" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,'PingFang SC',sans-serif">
+          <rect width="880" height="330" fill="#fcfdff"/>
+          <!-- 左：两条通道 -->
+          <rect x="22" y="26" width="196" height="86" rx="8" fill="#fff" stroke="#bfdbfe" stroke-width="1.4"/>
+          <text x="40" y="50" font-size="12.5" font-weight="700" fill="#1d4ed8">现场设备 · 主通道</text>
+          <text x="40" y="70" font-size="11" fill="#475569">POST /defect-images/upload</text>
+          <text x="40" y="87" font-size="11" fill="#64748b">只报缺陷图，无良品样本</text>
+          <text x="40" y="102" font-size="11" fill="#94a3b8">写 defect_image_batch/file/box</text>
+
+          <rect x="22" y="132" width="196" height="86" rx="8" fill="#fff" stroke="#e2e8f0" stroke-width="1.2" stroke-dasharray="4 3"/>
+          <text x="40" y="156" font-size="12.5" font-weight="700" fill="#64748b">旧接口 · 冻结契约</text>
+          <text x="40" y="176" font-size="11" fill="#64748b">POST /batch-upload</text>
+          <text x="40" y="193" font-size="11" fill="#94a3b8">含 OK/NG 件数，可算良率</text>
+          <text x="40" y="208" font-size="11" fill="#94a3b8">写 agg_quality_30m / agg_defect_type_30m</text>
+
+          <!-- 箭头 -->
+          <path d="M218 69 H292" stroke="#93c5fd" stroke-width="1.6" marker-end="url(#ar1)"/>
+          <path d="M218 175 H292" stroke="#cbd5e1" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ar2)"/>
+          <defs>
+            <marker id="ar1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 z" fill="#93c5fd"/></marker>
+            <marker id="ar2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 z" fill="#cbd5e1"/></marker>
+            <marker id="ar3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 z" fill="#a5b4fc"/></marker>
+          </defs>
+
+          <!-- 中：判定 -->
+          <rect x="294" y="26" width="238" height="192" rx="9" fill="#fff" stroke="#c7d2fe" stroke-width="1.5"/>
+          <text x="314" y="50" font-size="12.5" font-weight="700" fill="#4338ca">数据源判定（后端自动）</text>
+          <rect x="312" y="62" width="202" height="46" rx="6" fill="#eef2ff"/>
+          <text x="326" y="81" font-size="11.5" fill="#3730a3">当前时间窗内，缺陷图片张数 &gt; 0 ？</text>
+          <text x="326" y="98" font-size="10.5" fill="#6366f1">只看图，不问聚合表有没有数据</text>
+          <path d="M360 110 V132" stroke="#a5b4fc" stroke-width="1.4"/>
+          <text x="330" y="128" font-size="10.5" fill="#16a34a" font-weight="700">是</text>
+          <path d="M448 110 V132" stroke="#cbd5e1" stroke-width="1.4" stroke-dasharray="3 3"/>
+          <text x="456" y="128" font-size="10.5" fill="#94a3b8" font-weight="700">否</text>
+          <rect x="312" y="134" width="94" height="34" rx="5" fill="#f0fdf4" stroke="#bbf7d0"/>
+          <text x="322" y="156" font-size="11" fill="#15803d">DEFECT_IMAGE</text>
+          <rect x="418" y="134" width="94" height="34" rx="5" fill="#f8fafc" stroke="#e2e8f0"/>
+          <text x="428" y="156" font-size="11" fill="#64748b">AGGREGATION</text>
+          <text x="314" y="188" font-size="10.5" fill="#64748b">切换的是<b>整份响应</b>，不是逐指标混合</text>
+          <text x="314" y="204" font-size="10.5" fill="#94a3b8">响应体带 dataSource 字段供前端区分</text>
+
+          <!-- 右：页面 -->
+          <path d="M532 120 H596" stroke="#a5b4fc" stroke-width="1.6" marker-end="url(#ar3)"/>
+          <rect x="598" y="26" width="258" height="192" rx="9" fill="#fff" stroke="#e2e8f0"/>
+          <text x="616" y="50" font-size="12.5" font-weight="700" fill="#1f2937">产线统计页面</text>
+          <rect x="616" y="60" width="222" height="26" rx="4" fill="#f1f5f9"/>
+          <text x="624" y="78" font-size="10.5" fill="#64748b">时间档位 · 产品 · 班次 · 相机 · 缺陷 · 严重度</text>
+          <g>
+            <rect x="616" y="94" width="68" height="38" rx="4" fill="#eff6ff" stroke="#bfdbfe"/>
+            <text x="626" y="112" font-size="10" fill="#1d4ed8">检测总数</text>
+            <text x="626" y="126" font-size="9" fill="#94a3b8">张数</text>
+            <rect x="692" y="94" width="68" height="38" rx="4" fill="#fef2f2" stroke="#fecaca"/>
+            <text x="702" y="112" font-size="10" fill="#b91c1c">NG数</text>
+            <text x="702" y="126" font-size="9" fill="#94a3b8">= 张数</text>
+            <rect x="768" y="94" width="70" height="38" rx="4" fill="#f8fafc" stroke="#e2e8f0" stroke-dasharray="3 3"/>
+            <text x="778" y="112" font-size="10" fill="#94a3b8">良品样本</text>
+            <text x="778" y="126" font-size="9" fill="#cbd5e1">未接入</text>
+          </g>
+          <g>
+            <rect x="616" y="142" width="110" height="60" rx="4" fill="#f8fafc" stroke="#e5e7eb"/>
+            <text x="624" y="158" font-size="10" fill="#64748b">缺陷趋势</text>
+            <polyline points="624,190 636,178 648,184 660,168 672,174 684,160 696,166 708,156"
+              fill="none" stroke="#2563eb" stroke-width="1.4"/>
+            <rect x="734" y="142" width="104" height="60" rx="4" fill="#f8fafc" stroke="#e5e7eb"/>
+            <text x="742" y="158" font-size="10" fill="#64748b">缺陷排行</text>
+            <rect x="742" y="170" width="72" height="7" rx="2" fill="#93c5fd"/>
+            <rect x="742" y="181" width="46" height="7" rx="2" fill="#bfdbfe"/>
+            <rect x="742" y="192" width="26" height="7" rx="2" fill="#dbeafe"/>
+          </g>
+
+          <!-- 底：说明 -->
+          <rect x="22" y="240" width="834" height="66" rx="8" fill="#fffbeb" stroke="#fde68a"/>
+          <text x="40" y="262" font-size="11.5" font-weight="700" fill="#b45309">为什么「图片优先」而不是「聚合表优先」</text>
+          <text x="40" y="281" font-size="11" fill="#78350f">现场只跑图片通道，聚合表里只剩 5 条孤儿行（产线已删）。若按「聚合表有数据就用」判定，</text>
+          <text x="40" y="297" font-size="11" fill="#78350f">会出现「不筛产线 4 条、筛了产线 3041 条」——子集比全集还大。改为图片优先后口径才自洽。</text>
+        </svg>
+        <figcaption>图 1 · 数据流与数据源判定：两条通道 → 自动二选一 → 页面</figcaption>
+      </figure>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>判定结果</th><th>数据来自</th><th>良率</th><th>时间粒度</th><th>典型场景</th></tr></thead>
+          <tbody>
+            <tr><td><span class="badge b-yes">DEFECT_IMAGE</span></td>
+                <td><code>defect_image_file</code> / <code>_box</code></td>
+                <td>不可计算（null）</td>
+                <td>趋势固定 1 小时桶</td>
+                <td>现场正常生产，近 31 天内</td></tr>
+            <tr><td><span class="badge b-mute">AGGREGATION</span></td>
+                <td><code>agg_quality_*</code> / <code>agg_defect_type_*</code></td>
+                <td>可算（OK/总数）</td>
+                <td>30 分钟 或 天</td>
+                <td>查询 31 天以前，或从未接入图片通道</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note warn">
+        <strong>易错点：两个通道的「检测总数」不是同一个东西</strong>
+        图片通道下它是<b>缺陷图片张数</b>（每张图 = 一次检测事件）；聚合通道下它是<b>上报的检测件数</b>。
+        两个数放在一起比较没有意义，切换数据源时请不要横向对比。
+      </div>
+    </section>
+
+    <!-- ================= 2. 功能清单 ================= -->
+    <section id="s2">
+      <h2 class="sec"><span class="num">02</span>功能清单</h2>
+      <p class="sec-desc">每项包含「作用 · 操作步骤 · 触发条件」三要素。</p>
+
+      <figure>
+        <svg viewBox="0 0 880 420" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,'PingFang SC',sans-serif">
+          <rect width="880" height="420" fill="#f6f7f9"/>
+          <!-- 外框 -->
+          <rect x="10" y="10" width="860" height="400" rx="10" fill="#fff" stroke="#e5e7eb"/>
+          <!-- 头部 -->
+          <rect x="10" y="10" width="860" height="62" rx="10" fill="#1e293b"/>
+          <rect x="10" y="58" width="860" height="14" fill="#1e293b"/>
+          <text x="34" y="38" font-size="15" font-weight="700" fill="#fff">产线统计</text>
+          <text x="34" y="56" font-size="9.5" fill="#94a3b8" letter-spacing="1.4">LINE ANALYTICS</text>
+          <g font-size="9.5" fill="#cbd5e1">
+            <rect x="596" y="24" width="74" height="22" rx="4" fill="#334155"/><text x="610" y="39">看板模板 ▾</text>
+            <rect x="676" y="24" width="50" height="22" rx="4" fill="#334155"/><text x="688" y="39">新建模板</text>
+            <rect x="732" y="24" width="50" height="22" rx="4" fill="#334155"/><text x="744" y="39">看板大屏</text>
+            <rect x="788" y="24" width="58" height="22" rx="4" fill="#2563eb"/><text x="800" y="39">刷新报表</text>
+          </g>
+
+          <!-- 筛选条 -->
+          <rect x="26" y="82" width="828" height="44" rx="6" fill="#f8fafc" stroke="#e5e7eb"/>
+          <g font-size="9" fill="#475569">
+            <rect x="36" y="92" width="132" height="24" rx="4" fill="#fff" stroke="#cbd5e1"/>
+            <text x="44" y="108">今天 · 昨天 · 近7天 · 近30天 · 本月</text>
+            <rect x="176" y="92" width="150" height="24" rx="4" fill="#fff" stroke="#cbd5e1"/>
+            <text x="184" y="108">2026-11-07 00:00 → 现在</text>
+            <rect x="334" y="92" width="76" height="24" rx="4" fill="#fff" stroke="#cbd5e1"/><text x="342" y="108">全部产品 ▾</text>
+            <rect x="416" y="92" width="62" height="24" rx="4" fill="#fff" stroke="#cbd5e1"/><text x="424" y="108">全部班次 ▾</text>
+            <rect x="484" y="92" width="62" height="24" rx="4" fill="#fff" stroke="#cbd5e1"/><text x="492" y="108">全部相机 ▾</text>
+            <rect x="552" y="92" width="76" height="24" rx="4" fill="#fff" stroke="#cbd5e1"/><text x="560" y="108">全部缺陷 ▾</text>
+            <rect x="634" y="92" width="68" height="24" rx="4" fill="#fff" stroke="#cbd5e1"/><text x="642" y="108">全部严重度 ▾</text>
+            <rect x="708" y="92" width="42" height="24" rx="4" fill="#eff6ff" stroke="#bfdbfe"/><text x="716" y="108" fill="#1d4ed8">重置</text>
+            <text x="762" y="108" fill="#2563eb">30分钟聚合</text>
+          </g>
+
+          <!-- KPI -->
+          <g>
+            <rect x="26" y="136" width="156" height="52" rx="6" fill="#fff" stroke="#e5e7eb"/>
+            <text x="40" y="156" font-size="9" fill="#6b7280">检测总数</text>
+            <text x="40" y="177" font-size="19" font-weight="700" fill="#1f2937">1,284</text>
+            <rect x="190" y="136" width="156" height="52" rx="6" fill="#fff" stroke="#e5e7eb"/>
+            <text x="204" y="156" font-size="9" fill="#6b7280">NG 数</text>
+            <text x="204" y="177" font-size="19" font-weight="700" fill="#dc2626">1,284</text>
+            <rect x="354" y="136" width="156" height="52" rx="6" fill="#fff" stroke="#e5e7eb"/>
+            <text x="368" y="156" font-size="9" fill="#6b7280">缺陷数（缺陷框）</text>
+            <text x="368" y="177" font-size="19" font-weight="700" fill="#1f2937">2,935</text>
+            <rect x="518" y="136" width="156" height="52" rx="6" fill="#fff" stroke="#e5e7eb"/>
+            <text x="532" y="156" font-size="9" fill="#6b7280">高危缺陷</text>
+            <text x="532" y="177" font-size="19" font-weight="700" fill="#dc2626">412</text>
+            <rect x="682" y="136" width="172" height="52" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="4 3"/>
+            <text x="696" y="156" font-size="9" fill="#9ca3af">良品样本</text>
+            <text x="696" y="177" font-size="15" font-weight="700" fill="#9ca3af">未接入</text>
+          </g>
+
+          <!-- 三栏 -->
+          <rect x="26" y="200" width="132" height="196" rx="6" fill="#fbfcfd" stroke="#e5e7eb"/>
+          <text x="38" y="218" font-size="10" font-weight="600" fill="#374151">图表组件库</text>
+          <g font-size="9" fill="#475569">
+            <rect x="38" y="228" width="108" height="20" rx="3" fill="#fff" stroke="#e5e7eb"/><text x="48" y="242">指标卡</text>
+            <rect x="38" y="252" width="108" height="20" rx="3" fill="#fff" stroke="#e5e7eb"/><text x="48" y="266">趋势折线</text>
+            <rect x="38" y="276" width="108" height="20" rx="3" fill="#fff" stroke="#e5e7eb"/><text x="48" y="290">柱状图</text>
+            <rect x="38" y="300" width="108" height="20" rx="3" fill="#fff" stroke="#e5e7eb"/><text x="48" y="314">堆叠柱状图</text>
+            <rect x="38" y="324" width="108" height="20" rx="3" fill="#fff" stroke="#e5e7eb"/><text x="48" y="338">排行</text>
+            <rect x="38" y="348" width="108" height="20" rx="3" fill="#fff" stroke="#e5e7eb"/><text x="48" y="362">透视表</text>
+            <rect x="38" y="372" width="108" height="16" rx="3" fill="#f1f5f9"/><text x="48" y="383" fill="#94a3b8">工厂总览 / 帕累托…</text>
+          </g>
+
+          <!-- 画布 -->
+          <rect x="166" y="200" width="504" height="196" rx="6" fill="#fcfdff" stroke="#e5e7eb"/>
+          <text x="178" y="218" font-size="10" fill="#374151" font-weight="600">厂长默认看板 · 6 个组件</text>
+          <rect x="178" y="226" width="480" height="34" rx="5" fill="#fff" stroke="#e5e7eb"/>
+          <text x="188" y="240" font-size="9" fill="#6b7280">质量总览（厂长视角）</text>
+          <g font-size="8.5" fill="#94a3b8">
+            <text x="188" y="253">检测 1,284 · 缺陷 2,935 · 高危 412 (14.0%) · 首要划伤 38.2% · 工位 6 · 相机 9</text>
+          </g>
+          <rect x="178" y="266" width="312" height="58" rx="5" fill="#fff" stroke="#e5e7eb"/>
+          <text x="188" y="280" font-size="9" fill="#6b7280">缺陷类型帕累托</text>
+          <g fill="#93c5fd">
+            <rect x="190" y="300" width="16" height="18"/><rect x="212" y="306" width="16" height="12"/>
+            <rect x="234" y="310" width="16" height="8"/><rect x="256" y="312" width="16" height="6"/>
+            <rect x="278" y="314" width="16" height="4"/><rect x="300" y="315" width="16" height="3"/>
+            <rect x="322" y="316" width="16" height="2"/>
+          </g>
+          <polyline points="198,298 220,303 242,306 264,308 286,309 308,310 330,310"
+            fill="none" stroke="#f59e0b" stroke-width="1.3"/>
+          <rect x="498" y="266" width="160" height="58" rx="5" fill="#fff" stroke="#e5e7eb"/>
+          <text x="508" y="280" font-size="9" fill="#6b7280">缺陷严重度构成</text>
+          <circle cx="538" cy="302" r="17" fill="none" stroke="#f1f5f9" stroke-width="9"/>
+          <circle cx="538" cy="302" r="17" fill="none" stroke="#dc2626" stroke-width="9"
+            stroke-dasharray="20 87" transform="rotate(-90 538 302)"/>
+          <circle cx="538" cy="302" r="17" fill="none" stroke="#f59e0b" stroke-width="9"
+            stroke-dasharray="26 81" stroke-dashoffset="-20" transform="rotate(-90 538 302)"/>
+          <g font-size="8" fill="#6b7280">
+            <text x="568" y="296">HIGH 23%</text><text x="568" y="308">MEDIUM 30%</text><text x="568" y="320">LOW 47%</text>
+          </g>
+          <rect x="178" y="330" width="232" height="56" rx="5" fill="#fff" stroke="#e5e7eb"/>
+          <text x="188" y="344" font-size="9" fill="#6b7280">责任工位定位</text>
+          <g fill="#bfdbfe">
+            <rect x="190" y="354" width="90" height="6" rx="2"/><rect x="190" y="364" width="62" height="6" rx="2"/>
+            <rect x="190" y="374" width="40" height="6" rx="2"/>
+          </g>
+          <rect x="418" y="330" width="240" height="56" rx="5" fill="#fff" stroke="#e5e7eb"/>
+          <text x="428" y="344" font-size="9" fill="#6b7280">缺陷发生趋势</text>
+          <polyline points="430,376 452,364 474,370 496,356 518,362 540,350 562,358 584,348 606,354 628,344"
+            fill="none" stroke="#2563eb" stroke-width="1.4"/>
+
+          <!-- 右配置面板 -->
+          <rect x="678" y="200" width="176" height="196" rx="6" fill="#fbfcfd" stroke="#e5e7eb"/>
+          <text x="690" y="218" font-size="10" font-weight="600" fill="#374151">图表配置</text>
+          <g font-size="8.5" fill="#6b7280">
+            <text x="690" y="236">类型　柱状图（BAR）</text>
+            <text x="690" y="252">指标　缺陷类型帕累托</text>
+            <text x="690" y="268">尺寸　8 × 3 栅格</text>
+            <text x="690" y="284">口径　跟随顶部筛选</text>
+          </g>
+          <rect x="690" y="296" width="70" height="20" rx="3" fill="#2563eb"/>
+          <text x="706" y="310" font-size="8.5" fill="#fff">编辑配置</text>
+          <rect x="766" y="296" width="70" height="20" rx="3" fill="#fff" stroke="#cbd5e1"/>
+          <text x="782" y="310" font-size="8.5" fill="#475569">最大化</text>
+          <text x="690" y="336" font-size="8.5" fill="#9ca3af">可选维度</text>
+          <g font-size="8" fill="#64748b">
+            <rect x="690" y="344" width="52" height="18" rx="9" fill="#fff" stroke="#d1d5db"/><text x="700" y="356">时间</text>
+            <rect x="748" y="344" width="52" height="18" rx="9" fill="#fff" stroke="#d1d5db"/><text x="758" y="356">产线</text>
+            <rect x="690" y="368" width="52" height="18" rx="9" fill="#fff" stroke="#d1d5db"/><text x="700" y="380">工位</text>
+            <rect x="748" y="368" width="60" height="18" rx="9" fill="#fff" stroke="#d1d5db"/><text x="758" y="380">相机</text>
+          </g>
+        </svg>
+        <figcaption>图 2 · 页面全貌：顶部动作区 → 筛选条 → 指标卡 → 三栏构建器（组件库 / 画布 / 配置面板）</figcaption>
+      </figure>
+
+      <!-- ---------- 2.1 筛选区 ---------- -->
+      <h3 id="s2-1">2.1 筛选区</h3>
+
+      <h4>① 时间快捷档位（5 个）</h4>
+      <div class="fn">
+        <div class="fn-head"><span class="t">时间快捷档位</span><span class="where">筛选条左侧</span>
+          <span class="badge b-info">影响粒度</span></div>
+        <dl class="fn-grid">
+          <dt>作用</dt><dd>一键把查询窗切到常用区间，同时决定后端用 30 分钟桶还是日聚合。</dd>
+          <dt>操作</dt><dd>点击档位按钮 → 时间选择器自动填充 → <b>立即发起查询</b>（无需再点刷新）。</dd>
+          <dt>触发</dt><dd>点击即触发；档位记入浏览器本地（<code>camera-analytics-range-preset</code>），下次打开自动恢复。</dd>
+        </dl>
+      </div>
+      <div class="tbl-wrap compact">
+        <table>
+          <thead><tr><th>档位</th><th>实际区间</th><th>跨几天</th><th>后端粒度</th></tr></thead>
+          <tbody>
+            <tr><td>今天</td><td>今天 00:00:00 → 现在</td><td>1</td><td>30 分钟桶</td></tr>
+            <tr><td>昨天</td><td>昨天 00:00:00 → 23:59:59</td><td>1</td><td>30 分钟桶</td></tr>
+            <tr><td>近 7 天</td><td>6 天前 00:00:00 → 现在</td><td>7</td><td><b>日聚合</b></td></tr>
+            <tr><td>近 30 天</td><td>29 天前 00:00:00 → 现在</td><td>30</td><td><b>日聚合</b></td></tr>
+            <tr><td>本月</td><td>本月 1 日 00:00:00 → 现在</td><td>视日期</td><td>1–2 号是 30 分钟桶，3 号起日聚合</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note warn">
+        <strong>粒度是按「自然日跨度」算的，不是按小时</strong>
+        阈值 = 3 个自然日（含首尾）。所以 11-05 22:00 → 11-07 01:00 只有 27 小时，
+        但跨了 3 个日期 → 仍走日聚合，且按<b>整天</b>过滤，结果会比你以为的多出两天的数据。
+      </div>
+
+      <h4>② 自定义时间范围</h4>
+      <div class="fn">
+        <div class="fn-head"><span class="t">日期时间范围选择器</span><span class="where">筛选条第 2 项</span></div>
+        <dl class="fn-grid">
+          <dt>作用</dt><dd>精确指定起止时刻，精度到秒。</dd>
+          <dt>操作</dt><dd>点开日历 → 选起止日期时间 → 确认。选完自动查询，并清空档位高亮。</dd>
+          <dt>触发</dt><dd><code>change</code> 事件；手工选的时间<b>不会</b>记入本地，刷新页面会回到上次的档位。</dd>
+          <dt>限制</dt><dd>结束早于开始 → 后端返回 400「结束时间不能早于开始时间」。前端不校验跨度上限。</dd>
+        </dl>
+      </div>
+
+      <h4>③ 维度筛选（6 个下拉）</h4>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>筛选项</th><th>作用</th><th>取值来源</th><th>默认</th><th>图片通道是否生效</th></tr></thead>
+          <tbody>
+            <tr><td>产品</td><td>只看某个产品的缺陷</td><td><code>dim_product</code> 启用的产品</td><td>全部</td>
+                <td><span class="badge b-no">不生效</span> 图片表无产品列</td></tr>
+            <tr><td>班次</td><td>白班 / 夜班分开看</td><td><code>dim_shift</code></td><td>全部</td>
+                <td><span class="badge b-no">不生效</span></td></tr>
+            <tr><td>相机</td><td>定位到具体设备</td><td><code>dim_camera</code>，并按当前产线/工位二次过滤</td><td>全部</td>
+                <td><span class="badge b-yes">生效</span> 经相机编号关联</td></tr>
+            <tr><td>缺陷类型</td><td>只看某类缺陷</td><td><code>dim_defect_type</code>，受产品联动过滤</td><td>全部</td>
+                <td><span class="badge b-no">不生效</span></td></tr>
+            <tr><td>严重度</td><td>只看高 / 中 / 轻</td><td>前端固定 HIGH / MEDIUM / LOW</td><td>全部</td>
+                <td><span class="badge b-cond">生效</span> 作用于缺陷框表</td></tr>
+            <tr><td>工厂 / 产线 / 工位</td><td>范围收敛</td><td>来自顶部全局筛选（不在本页控件上）</td><td>—</td>
+                <td><span class="badge b-yes">生效</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note danger">
+        <strong>最容易被当成 Bug 的一条</strong>
+        现场跑的是图片通道，此时<b>产品、班次、缺陷类型三个筛选即使选中也不会改变任何数字</b> ——
+        这三个条件根本不会进入图片查询的 SQL。要按产品分析，只能保证旧接口 <code>batch-upload</code>
+        有数据并落到聚合表（见 §3 能力边界）。
+      </div>
+
+      <h4>④ 重置筛选</h4>
+      <div class="fn">
+        <dl class="fn-grid">
+          <dt>作用</dt><dd>时间回到「今天 00:00 → 现在」，6 个下拉全部清空，然后刷新。</dd>
+          <dt>操作</dt><dd>点「重置」按钮。</dd>
+          <dt>注意</dt><dd>重置<b>不会</b>改写本地记住的档位 —— 刷新页面后可能又回到旧档位。</dd>
+        </dl>
+      </div>
+
+      <!-- ---------- 2.2 ---------- -->
+      <h3 id="s2-2">2.2 指标卡（KPI）</h3>
+      <p>指标卡会随数据源<b>换一套形态</b>，不是同一套卡换数字：</p>
+
+      <div class="fig-grid">
+        <figure>
+          <svg viewBox="0 0 400 150" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,'PingFang SC',sans-serif">
+            <rect width="400" height="150" fill="#fcfdff"/>
+            <text x="14" y="20" font-size="11" font-weight="700" fill="#15803d">图片通道 · 5 张卡</text>
+            <g font-size="8.5">
+              <rect x="14" y="30" width="72" height="44" rx="4" fill="#fff" stroke="#e5e7eb"/>
+              <text x="22" y="46" fill="#6b7280">检测总数</text><text x="22" y="64" font-size="13" font-weight="700" fill="#1f2937">1,284</text>
+              <rect x="92" y="30" width="72" height="44" rx="4" fill="#fff" stroke="#e5e7eb"/>
+              <text x="100" y="46" fill="#6b7280">NG 数</text><text x="100" y="64" font-size="13" font-weight="700" fill="#dc2626">1,284</text>
+              <rect x="170" y="30" width="72" height="44" rx="4" fill="#fff" stroke="#e5e7eb"/>
+              <text x="178" y="46" fill="#6b7280">缺陷数</text><text x="178" y="64" font-size="13" font-weight="700" fill="#1f2937">2,935</text>
+              <rect x="248" y="30" width="72" height="44" rx="4" fill="#fff" stroke="#e5e7eb"/>
+              <text x="256" y="46" fill="#6b7280">高危缺陷</text><text x="256" y="64" font-size="13" font-weight="700" fill="#dc2626">412</text>
+              <rect x="326" y="30" width="60" height="44" rx="4" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="3 2"/>
+              <text x="334" y="46" fill="#9ca3af">良品样本</text><text x="334" y="64" font-size="10" font-weight="700" fill="#9ca3af">未接入</text>
+            </g>
+            <text x="14" y="94" font-size="9" fill="#dc2626">⚠ NG 数 = 检测总数（图片通道只报缺陷图）</text>
+            <text x="14" y="110" font-size="9" fill="#64748b">缺陷数 = 缺陷框总数，一张图可有多个框</text>
+            <text x="14" y="126" font-size="9" fill="#94a3b8">良率无对应卡，固定显示「未接入」</text>
+          </svg>
+          <figcaption>形态 A · 图片通道（现场）</figcaption>
+        </figure>
+        <figure>
+          <svg viewBox="0 0 400 150" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,'PingFang SC',sans-serif">
+            <rect width="400" height="150" fill="#fcfdff"/>
+            <text x="14" y="20" font-size="11" font-weight="700" fill="#64748b">聚合通道 · 6 张卡</text>
+            <g font-size="8.5">
+              <rect x="14" y="30" width="60" height="44" rx="4" fill="#fff" stroke="#e5e7eb"/>
+              <text x="21" y="46" fill="#6b7280">检测总数</text><text x="21" y="64" font-size="12" font-weight="700" fill="#1f2937">12,400</text>
+              <rect x="80" y="30" width="60" height="44" rx="4" fill="#fff" stroke="#e5e7eb"/>
+              <text x="87" y="46" fill="#6b7280">OK 数</text><text x="87" y="64" font-size="12" font-weight="700" fill="#16a34a">11,260</text>
+              <rect x="146" y="30" width="60" height="44" rx="4" fill="#fff" stroke="#e5e7eb"/>
+              <text x="153" y="46" fill="#6b7280">NG 数</text><text x="153" y="64" font-size="12" font-weight="700" fill="#dc2626">1,140</text>
+              <rect x="212" y="30" width="60" height="44" rx="4" fill="#fff" stroke="#e5e7eb"/>
+              <text x="219" y="46" fill="#6b7280">良率</text><text x="219" y="64" font-size="12" font-weight="700" fill="#16a34a">90.81%</text>
+              <rect x="278" y="30" width="52" height="44" rx="4" fill="#fff" stroke="#e5e7eb"/>
+              <text x="285" y="46" fill="#6b7280">缺陷数</text><text x="285" y="64" font-size="12" font-weight="700" fill="#1f2937">2,935</text>
+              <rect x="336" y="30" width="50" height="44" rx="4" fill="#fff" stroke="#e5e7eb"/>
+              <text x="343" y="46" fill="#6b7280">高危</text><text x="343" y="64" font-size="12" font-weight="700" fill="#dc2626">412</text>
+            </g>
+            <text x="14" y="94" font-size="9" fill="#16a34a">✓ 有良品样本，良率 = OK / 检测总数</text>
+            <text x="14" y="110" font-size="9" fill="#64748b">检测总数 = 上报件数，不是图片张数</text>
+            <text x="14" y="126" font-size="9" fill="#94a3b8">来源：agg_quality_30m / agg_quality_day</text>
+          </svg>
+          <figcaption>形态 B · 聚合通道（31 天前或旧接口）</figcaption>
+        </figure>
+      </div>
+
+      <div class="fn">
+        <div class="fn-head"><span class="t">指标卡区</span><span class="where">筛选条下方</span>
+          <span class="badge b-info">只读·自动刷新</span></div>
+        <dl class="fn-grid">
+          <dt>作用</dt><dd>一眼看规模与风险：多少检测、多少缺陷、高危占多少。</dd>
+          <dt>操作</dt><dd>无需操作，随筛选变化自动重算。</dd>
+          <dt>触发</dt><dd>任何筛选项变化、点刷新报表、切换看板模板后自动更新。</dd>
+          <dt>限制</dt><dd>卡片数量由数据源决定（5 或 6），不可配置、不可增删。</dd>
+        </dl>
+      </div>
+
+      <!-- ---------- 2.3 ---------- -->
+      <h3 id="s2-3">2.3 看板模板管理</h3>
+      <p>「看板模板」= 一组图表组件的集合。同一份数据可以有多个模板（如「厂长视角」「质量周会」），
+      切换模板即切换整套图表布局。</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>操作</th><th>入口</th><th>作用</th><th>前置条件 / 限制</th></tr></thead>
+          <tbody>
+            <tr><td>切换模板</td><td>顶部「看板模板」下拉</td><td>加载该模板的全部图表</td><td>下拉可按工厂过滤；切换后自动重查数据</td></tr>
+            <tr><td>新建模板</td><td>顶部「新建模板」</td><td>建一个空模板，用于自定义布局</td><td>名称必填；新模板默认无图表</td></tr>
+            <tr><td>编辑模板</td><td>顶部「编辑模板」</td><td>改名、改范围、设为默认</td><td>未加载模板时按钮禁用（灰）</td></tr>
+            <tr><td>复制 / 另存为</td><td>顶部或画布内</td><td>以当前模板为蓝本快速派生</td><td>名称默认加成「副本 / 另存」；复制出的不是默认模板</td></tr>
+            <tr><td>删除模板</td><td>画布内「删除模板」</td><td>逻辑删除模板及其全部图表</td><td><b>默认模板不可删</b>（按钮禁用）+ 二次确认</td></tr>
+            <tr><td>刷新模板</td><td>画布内「刷新模板」</td><td>重拉模板列表与详情，用于多人协作时同步</td><td>不会重查统计数据（那是「刷新报表」）</td></tr>
+            <tr><td>设为默认</td><td>编辑 / 新建弹窗的开关</td><td>下次进入页面自动加载它</td><td>同一工厂一般只应有一个默认</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <b>模板表单只有 3 个字段</b>
+        <ul>
+          <li><b>模板名称</b>（必填，去空格后不能为空）</li>
+          <li><b>模板范围</b>：工厂模板 / 个人模板 / 全局模板 —— 仅作标记，<b>当前不做权限隔离</b></li>
+          <li><b>默认模板</b>：开关</li>
+        </ul>
+        <p style="margin-bottom:0;color:#6b7280;font-size:13.4px">
+          布局参数（12 栅格、行高 120px）由前端固定写入，界面上不可调。
+        </p>
+      </div>
+
+      <!-- ---------- 2.4 ---------- -->
+      <h3 id="s2-4">2.4 图表组件</h3>
+
+      <h4>新增图表的两种入口</h4>
+      <ol class="steps">
+        <li><b>从组件库点</b>：左侧「图表组件库」点某类型 → 弹窗预填该类型与默认指标。</li>
+        <li><b>从画布点</b>：画布右上「新增图表」→ 空表单，默认折线图 + 30 分钟质量趋势 + 半屏 3 行。</li>
+      </ol>
+
+      <h4>配置弹窗（4 步引导 + 8 个预设）</h4>
+      <figure>
+        <svg viewBox="0 0 880 330" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,'PingFang SC',sans-serif">
+          <rect width="880" height="330" fill="#f6f7f9"/>
+          <rect x="120" y="14" width="640" height="302" rx="9" fill="#fff" stroke="#d1d5db"/>
+          <rect x="120" y="14" width="640" height="44" rx="9" fill="#f8fafc"/>
+          <rect x="120" y="46" width="640" height="12" fill="#f8fafc"/>
+          <text x="140" y="42" font-size="13" font-weight="700" fill="#1f2937">新增图表</text>
+          <text x="686" y="42" font-size="14" fill="#94a3b8">✕</text>
+
+          <!-- 4 步 -->
+          <g font-size="10">
+            <circle cx="158" cy="76" r="9" fill="#2563eb"/><text x="155" y="80" fill="#fff">1</text>
+            <text x="172" y="80" fill="#2563eb">选择图表</text>
+            <circle cx="266" cy="76" r="9" fill="#e5e7eb"/><text x="263" y="80" fill="#94a3b8">2</text>
+            <text x="280" y="80" fill="#94a3b8">选择指标</text>
+            <circle cx="374" cy="76" r="9" fill="#e5e7eb"/><text x="371" y="80" fill="#94a3b8">3</text>
+            <text x="388" y="80" fill="#94a3b8">选择维度</text>
+            <circle cx="482" cy="76" r="9" fill="#e5e7eb"/><text x="479" y="80" fill="#94a3b8">4</text>
+            <text x="496" y="80" fill="#94a3b8">预览保存</text>
+          </g>
+
+          <!-- 预设 -->
+          <text x="140" y="102" font-size="10" fill="#6b7280">推荐配置（点一下自动填好）</text>
+          <g font-size="9" fill="#475569">
+            <rect x="140" y="110" width="74" height="20" rx="10" fill="#eff6ff" stroke="#bfdbfe"/><text x="152" y="124" fill="#1d4ed8">工厂总览</text>
+            <rect x="220" y="110" width="74" height="20" rx="10" fill="#fff" stroke="#d1d5db"/><text x="232" y="124">缺陷帕累托</text>
+            <rect x="300" y="110" width="74" height="20" rx="10" fill="#fff" stroke="#d1d5db"/><text x="312" y="124">严重度构成</text>
+            <rect x="380" y="110" width="64" height="20" rx="10" fill="#fff" stroke="#d1d5db"/><text x="392" y="124">缺陷趋势</text>
+            <rect x="450" y="110" width="64" height="20" rx="10" fill="#fff" stroke="#d1d5db"/><text x="462" y="124">质量趋势</text>
+            <rect x="520" y="110" width="64" height="20" rx="10" fill="#fff" stroke="#d1d5db"/><text x="532" y="124">缺陷排行</text>
+            <rect x="590" y="110" width="64" height="20" rx="10" fill="#fff" stroke="#d1d5db"/><text x="602" y="124">工位异常</text>
+            <rect x="660" y="110" width="82" height="20" rx="10" fill="#fff" stroke="#d1d5db"/><text x="672" y="124">产品缺陷矩阵</text>
+          </g>
+
+          <!-- 表单左 -->
+          <g font-size="9.5" fill="#6b7280">
+            <text x="140" y="154">图表名称 *</text>
+            <rect x="140" y="160" width="288" height="24" rx="4" fill="#fff" stroke="#d1d5db"/>
+            <text x="148" y="176" fill="#1f2937">缺陷类型帕累托（累计占比）</text>
+
+            <text x="140" y="200">图表类型</text>
+            <rect x="140" y="206" width="288" height="24" rx="4" fill="#fff" stroke="#d1d5db"/>
+            <text x="148" y="222" fill="#1f2937">柱状图（BAR）</text><text x="408" y="222" fill="#9ca3af">▾</text>
+
+            <text x="140" y="246">统计指标</text>
+            <rect x="140" y="252" width="288" height="24" rx="4" fill="#fff" stroke="#d1d5db"/>
+            <text x="148" y="268" fill="#1f2937">缺陷类型帕累托</text><text x="408" y="268" fill="#9ca3af">▾</text>
+          </g>
+
+          <!-- 表单右 -->
+          <g font-size="9.5" fill="#6b7280">
+            <text x="444" y="154">分析维度（多选）</text>
+            <g font-size="8.5">
+              <rect x="444" y="160" width="52" height="20" rx="4" fill="#2563eb"/><text x="452" y="174" fill="#fff">时间</text>
+              <rect x="500" y="160" width="52" height="20" rx="4" fill="#2563eb"/><text x="508" y="174" fill="#fff">产线</text>
+              <rect x="556" y="160" width="52" height="20" rx="4" fill="#fff" stroke="#d1d5db"/><text x="564" y="174">工位</text>
+              <rect x="612" y="160" width="52" height="20" rx="4" fill="#fff" stroke="#d1d5db"/><text x="620" y="174">相机</text>
+              <rect x="668" y="160" width="52" height="20" rx="4" fill="#fff" stroke="#d1d5db"/><text x="676" y="174">产品</text>
+              <rect x="724" y="160" width="52" height="20" rx="4" fill="#fff" stroke="#d1d5db"/><text x="732" y="174">班次</text>
+            </g>
+            <text x="444" y="200">宽度 / 高度</text>
+            <rect x="444" y="206" width="132" height="24" rx="4" fill="#fff" stroke="#d1d5db"/>
+            <text x="452" y="222" fill="#1f2937">半屏（6 栅格）</text><text x="556" y="222" fill="#9ca3af">▾</text>
+            <rect x="584" y="206" width="132" height="24" rx="4" fill="#fff" stroke="#d1d5db"/>
+            <text x="592" y="222" fill="#1f2937">中（3 行）</text><text x="696" y="222" fill="#9ca3af">▾</text>
+
+            <text x="444" y="246">跟随顶部筛选</text>
+            <rect x="444" y="252" width="34" height="18" rx="9" fill="#2563eb"/><circle cx="470" cy="261" r="7" fill="#fff"/>
+            <text x="486" y="265" font-size="9" fill="#6b7280">关掉后可单独设定产品 / 相机 / 缺陷 / 严重度</text>
+          </g>
+
+          <!-- 预览 -->
+          <rect x="140" y="286" width="288" height="18" rx="3" fill="#fffbeb" stroke="#fde68a"/>
+          <text x="148" y="299" font-size="8.5" fill="#92400e">⚠ 打开时预览始终用顶部筛选，不受「独立筛选」影响</text>
+          <g font-size="9">
+            <rect x="620" y="282" width="58" height="22" rx="4" fill="#fff" stroke="#d1d5db"/><text x="634" y="297" fill="#475569">取消</text>
+            <rect x="686" y="282" width="58" height="22" rx="4" fill="#2563eb"/><text x="698" y="297" fill="#fff">保存</text>
+          </g>
+        </svg>
+        <figcaption>图 3 · 图表配置弹窗：4 步引导 + 8 个预设 + 表单 + 提示</figcaption>
+      </figure>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>操作</th><th>怎么触发</th><th>结果 / 约束</th></tr></thead>
+          <tbody>
+            <tr><td>编辑配置</td><td>卡片「编辑」或右侧「编辑配置」</td><td>回填全部字段；保存后刷新图表数据并选中该卡</td></tr>
+            <tr><td>删除</td><td>卡片「删除」或右侧「删除」</td><td>二次确认；只删组件，历史检测数据不受影响</td></tr>
+            <tr><td>拖拽排序</td><td>按住卡片拖动到目标位置松手</td><td>松手即保存，<code>sortOrder</code> 按 10/20/30 重排；失败会提示并保持原序</td></tr>
+            <tr><td>拖拽缩放</td><td>拖右下角手柄</td><td>宽按 ±6 栅格跳变（需拖过 140px），高按每 110px 增 1 行；<b>宽 6–12、高 2–5</b></td></tr>
+            <tr><td>放大宽度</td><td>卡片「更多」→ 放大宽度</td><td>+6 栅格，上限 12</td></tr>
+            <tr><td>降低高度</td><td>卡片「更多」→ 降低高度</td><td>-1 行，下限 2</td></tr>
+            <tr><td>最大化展示</td><td>卡片「更多」→ 最大化</td><td>进入大屏单图模式</td></tr>
+            <tr><td>导出 Excel / 图片</td><td>卡片「更多」</td><td>见 2.5</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note info">
+        <strong>「分析维度」是多选题，但它只影响说明文字，不影响查询</strong>
+        后端没有任何 <code>groupBy</code> 参数，分组是 5 条 SQL 写死的（时间 / 缺陷类型 / 工位 / 相机 / 产品×缺陷）。
+        维度勾选的作用是让看板使用者知道这张图「按什么拆的」，以及决定默认标题与预设。不要把维度当成筛选器来用。
+      </div>
+
+      <!-- ---------- 2.5 ---------- -->
+      <h3 id="s2-5">2.5 大屏展示与导出</h3>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>能力</th><th>入口</th><th>范围</th><th>格式</th><th>限制</th></tr></thead>
+          <tbody>
+            <tr><td>看板大屏</td><td>顶部「看板大屏」/ 画布「大屏展示」/ 卡片「最大化」</td>
+                <td>当前模板全部图表，或单个图表</td><td>全屏 2 列网格</td>
+                <td>只读；无自动滚动、无定时切换、无电视墙轮播</td></tr>
+            <tr><td>导出 Excel</td><td>卡片「更多」→ 导出 Excel</td>
+                <td>该图表对应的<b>当前筛选</b>数据</td><td><code>.xlsx</code> 单 sheet</td>
+                <td>最多约 20 行（排行类）；趋势类为桶数量</td></tr>
+            <tr><td>导出图片</td><td>卡片「更多」→ 导出图片</td>
+                <td>当前渲染画面</td><td><code>.png</code>，2 倍像素</td>
+                <td>仅 8 种图形类指标支持；表格类只给提示</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>文件名规则：<code>图表名称-yyyyMMdd-HHmmss.xlsx|png</code>。<br>
+      <span class="badge b-no">不支持</span> 整看板导出、PDF、CSV、定时邮件推送、异步导出任务。</p>
+
+      <!-- ---------- 2.6 ---------- -->
+      <h3 id="s2-6">2.6 日聚合运维（仅聚合通道需要）</h3>
+      <p>当查询范围 ≥ 3 天且落到聚合表时，数据的「新鲜度」由后台任务保证。这一区域是给运维用的，
+      业务用户平时不用碰。</p>
+      <ul>
+        <li><b>自动刷新</b>：每 5 分钟重算近 3 天窗口（不写任务表，只在应用日志留痕）。</li>
+        <li><b>夜间定时</b>：默认 02:00、回溯 7 天，可改时刻与回溯天数（1–365）。</li>
+        <li><b>手动执行</b>：指定起止日期立即补算，默认近 7 天。</li>
+        <li><b>任务列表</b>：分页查看历史任务，失败项可「重试」（按原区间重提）。</li>
+        <li><b>状态标签</b>：显示最近一次任务的成功/失败与耗时。</li>
+      </ul>
+      <div class="note warn">
+        <strong>现场图片通道下这块基本不产生新数据</strong>
+        日聚合表的数据源是 30 分钟聚合表，而 30 分钟表只由旧接口 <code>batch-upload</code> 写入。
+        现场只跑图片通道 → 聚合表没有新数据 → 近 3 天窗口的刷新是空转。这不影响页面显示（页面走图片源）。
+      </div>
+    </section>
+
+    <!-- ================= 3. 能力边界 ================= -->
+    <section id="s3">
+      <h2 class="sec"><span class="num">03</span>能力边界</h2>
+      <p class="sec-desc">明确「做不到什么」比列举「能做什么」更重要 —— 这里每条都带原因与替代做法。</p>
+
+      <h3>3.1 支持的统计场景</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>场景</th><th>支持方式</th><th>前提</th></tr></thead>
+          <tbody>
+            <tr><td>缺陷总量与分布</td><td>指标卡 + 缺陷排行 + 帕累托</td><td>图片通道即可</td></tr>
+            <tr><td>缺陷随时间的变化</td><td>缺陷发生趋势（图片源 1 小时桶）</td><td>图片通道即可</td></tr>
+            <tr><td>缺陷类型集中度（20/80）</td><td>帕累托图 + 80% 参考线</td><td>图片通道即可</td></tr>
+            <tr><td>严重度结构</td><td>饼图 + 堆叠柱</td><td>缺陷框上有 severity</td></tr>
+            <tr><td>责任工位 / 责任相机定位</td><td>横向排行（NG 数）</td><td>相机已在 <code>dim_camera</code> 建档</td></tr>
+            <tr><td>按产线 / 工位 / 相机 / 工厂收敛</td><td>筛选 + 全局筛选</td><td>同上</td></tr>
+            <tr><td>良率与 OK/NG 件数</td><td>指标卡 6 卡形态</td><td><b>仅聚合通道</b></td></tr>
+            <tr><td>按产品 / 班次 / 缺陷类型分析</td><td>筛选 + 透视表</td><td><b>仅聚合通道</b></td></tr>
+            <tr><td>自定义看板与布局</td><td>模板 + 组件（9 类图形）</td><td>无角色限制，登录即可编辑</td></tr>
+            <tr><td>数据外带</td><td>单图导出 Excel / PNG</td><td>—</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>3.2 不支持的场景（含原因与替代）</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>不支持</th><th>页面表现</th><th>原因</th><th>替代做法</th></tr></thead>
+          <tbody>
+            <tr><td>良率 / 良品数</td>
+                <td>指标卡显示「未接入」；工厂总览显示「—」+「无良品样本」</td>
+                <td>图片通道只上报缺陷图，<code>okCount</code> 恒为 0，<code>ok/total</code> 无业务含义</td>
+                <td>接入旧接口 <code>batch-upload</code> 上报 OK/NG 件数，或改由 MES 计算良率</td></tr>
+            <tr><td>按产品分析（图片通道）</td>
+                <td>选产品后数字不变</td>
+                <td><code>defect_image_file</code> 表没有产品列，<code>productId</code> 不进 SQL</td>
+                <td>用聚合通道；或在旧接口上报时带上产品</td></tr>
+            <tr><td>按班次分析（图片通道）</td>
+                <td>选班次后数字不变</td>
+                <td>图片表无班次列，班次只在聚合表里</td>
+                <td>同上；或导出后按时间段自行切分</td></tr>
+            <tr><td>按缺陷类型筛选（图片通道）</td>
+                <td>选缺陷类型后数字不变</td>
+                <td><code>defectTypeId</code> 未参与图片查询（缺陷名是上报的中文文本）</td>
+                <td>看排行/帕累托图定位类型，而不是筛选</td></tr>
+            <tr><td>缺陷位置分析</td>
+                <td>页面上没有该维度入口</td>
+                <td>缺陷框表无位置列；后端 metadata 里有 <code>position</code> 维度但查询未实现</td>
+                <td>暂无</td></tr>
+            <tr><td>多产线并排对比</td>
+                <td>顶部产线多选时只取第一条</td>
+                <td>接口只接受单个 <code>lineId</code></td>
+                <td>切换产线分别看，或导出后拼表</td></tr>
+            <tr><td>自由分组 / 交叉分析</td>
+                <td>维度勾选不改变结果</td>
+                <td>无 <code>groupBy</code> 参数，分组写死在 5 条 SQL</td>
+                <td>产品×缺陷的交叉只能用透视表这一种固定形态</td></tr>
+            <tr><td>自定义 TopN</td>
+                <td>图表固定展示前 12 条</td>
+                <td>SQL 取 20 行、前端截 12，均无配置项</td>
+                <td>导出 Excel 拿全 20 行</td></tr>
+            <tr><td>自定义指标 / 计算字段</td>
+                <td>只能从 12 个预置指标里选</td>
+                <td>指标是后端 Java 侧固定构建的 12 个键</td>
+                <td>导出后在 Excel 里算</td></tr>
+            <tr><td>同比 / 环比 / 目标达成率</td>
+                <td>页面无此类指标</td>
+                <td>未实现对比期计算与目标值维护</td>
+                <td>导出两期数据后自行对比</td></tr>
+            <tr><td>秒级 / 分钟级实时</td>
+                <td>数据有 1 小时桶（图片源）与 60 秒缓存</td>
+                <td>趋势按小时分组；响应缓存 TTL 60s，无前端轮询</td>
+                <td>需要更快就刷新页面，最快 1 分钟内一致</td></tr>
+            <tr><td>31 天以前的图片明细</td>
+                <td>超过 31 天，图片源查不到 → 自动切聚合表</td>
+                <td>图片热表只保留 31 天，更早的数据按月归档到历史表，统计 SQL 不查历史表</td>
+                <td>能看的是聚合口径的汇总，看不了明细图</td></tr>
+            <tr><td>整看板导出 / PDF / 定时推送</td>
+                <td>只有单图 Excel 与 PNG</td>
+                <td>未实现批量导出与调度</td>
+                <td>逐个图导出后合并</td></tr>
+            <tr><td>数据权限隔离</td>
+                <td>任意登录用户可看全部工厂/产线</td>
+                <td>接口不校验 factoryId 是否属于当前用户</td>
+                <td>靠账号管理控制页面入口</td></tr>
+            <tr><td>TEST 相机自动排除</td>
+                <td>测试相机的数据会算进统计</td>
+                <td>统计域没有 <code>camera_type</code> 过滤</td>
+                <td>靠每小时清理任务删除测试数据（延迟最多 1 小时）</td></tr>
+            <tr><td>30 分钟粒度的精确边界</td>
+                <td>开始时间填 10:07 会漏掉 10:00 这个桶</td>
+                <td>桶只有 :00 / :30 两种，按时间戳范围过滤</td>
+                <td>把开始时间对齐到整点或半点</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>3.3 口径切换矩阵</h3>
+      <p>同一份筛选条件，落在不同数据源上口径完全不同。这张表建议贴在工位上：</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>维度</th><th>图片通道（现场）</th><th>聚合通道</th></tr></thead>
+          <tbody>
+            <tr><td>过滤时间字段</td><td><code>capture_time</code>（拍摄时间，非上传时间）</td><td><code>time_bucket</code> / <code>date_bucket</code></td></tr>
+            <tr><td>时间粒度</td><td>趋势固定 1 小时；KPI 为整区间合计</td><td>≥3 天用天，否则 30 分钟</td></tr>
+            <tr><td>检测总数</td><td>缺陷图片张数</td><td>上报检测件数</td></tr>
+            <tr><td>OK / NG</td><td>OK 恒 0，NG = 张数</td><td>真实 OK / NG 件数</td></tr>
+            <tr><td>缺陷数</td><td>缺陷框总数</td><td>缺陷计数（已映射）</td></tr>
+            <tr><td>良率</td><td>null</td><td>OK / 总数，两位小数</td></tr>
+            <tr><td>产品 / 班次 / 缺陷类型筛选</td><td>不生效</td><td>生效</td></tr>
+            <tr><td>相机关联</td><td><code>camera_id</code> 存的是<b>相机编号</b>，需关联维度表</td><td>直接用数值 <code>camera_id</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ================= 4. 统计数据项 ================= -->
+    <section id="s4">
+      <h2 class="sec"><span class="num">04</span>统计数据项配置手册</h2>
+      <p class="sec-desc">12 个可配置数据项 × 9 种图形类型 —— 这是「能产出哪些统计」的全集。</p>
+
+      <h3 id="s4-1">4.1 配置总表</h3>
+      <p>新增图表时，<b>真正决定内容的是「统计指标」</b>；「图表类型」主要影响外壳与默认指标；
+      「维度」只影响说明与预设。下表按指标排列。</p>
+
+      <div class="tbl-wrap compact">
+        <table>
+          <thead>
+            <tr><th>#</th><th>统计指标</th><th>推荐图形</th><th>产出内容</th><th>图片通道</th><th>聚合通道</th><th>行数上限</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td>工厂总览</td><td>指标卡 KPI</td><td>7 项规模与风险一屏</td><td><span class="badge b-yes">可用</span></td><td><span class="badge b-yes">可用</span></td><td>固定 7 格</td></tr>
+            <tr><td>2</td><td>核心质量指标</td><td>指标卡 KPI</td><td>检测数 / OK / NG / 良率</td><td><span class="badge b-cond">良率空缺</span></td><td><span class="badge b-yes">可用</span></td><td>4 格</td></tr>
+            <tr><td>3</td><td>30 分钟质量趋势</td><td>趋势折线 LINE</td><td>时间 × 检测数 / NG / 良率</td><td><span class="badge b-cond">按小时</span></td><td><span class="badge b-yes">可用</span></td><td>桶数</td></tr>
+            <tr><td>4</td><td>缺陷发生趋势</td><td>趋势折线 LINE</td><td>时间 × 缺陷数 / 异常数</td><td><span class="badge b-yes">可用</span></td><td><span class="badge b-yes">可用</span></td><td>桶数</td></tr>
+            <tr><td>5</td><td>缺陷类型帕累托</td><td>柱状 BAR</td><td>类型 × 缺陷数 + 累计占比</td><td><span class="badge b-yes">可用</span></td><td><span class="badge b-yes">可用</span></td><td>取 20 显示 12</td></tr>
+            <tr><td>6</td><td>缺陷类型排行</td><td>排行 RANK</td><td>Top 类型 × 缺陷数</td><td><span class="badge b-yes">可用</span></td><td><span class="badge b-yes">可用</span></td><td>取 20 显示 12</td></tr>
+            <tr><td>7</td><td>缺陷严重度构成</td><td>饼图 SEVERITY</td><td>高/中/轻 占比</td><td><span class="badge b-yes">可用</span></td><td><span class="badge b-yes">可用</span></td><td>4 类</td></tr>
+            <tr><td>8</td><td>缺陷严重度堆叠</td><td>堆叠柱 STACK_BAR</td><td>类型 × 严重度 堆叠</td><td><span class="badge b-yes">可用</span></td><td><span class="badge b-yes">可用</span></td><td>类型 12 个</td></tr>
+            <tr><td>9</td><td>责任工位定位</td><td>柱状 BAR</td><td>工位 × NG 数</td><td><span class="badge b-yes">可用</span></td><td><span class="badge b-yes">可用</span></td><td>取 20 显示 12</td></tr>
+            <tr><td>10</td><td>责任相机定位</td><td>柱状 BAR</td><td>相机 × NG 数</td><td><span class="badge b-yes">可用</span></td><td><span class="badge b-yes">可用</span></td><td>取 20 显示 12</td></tr>
+            <tr><td>11</td><td>产品缺陷透视表</td><td>透视表 PIVOT</td><td>产品 × 缺陷类型 矩阵</td><td><span class="badge b-no">退化为按类型</span></td><td><span class="badge b-yes">可用</span></td><td>图片源 30</td></tr>
+            <tr><td>12</td><td>映射异常明细</td><td>表格</td><td>未识别的上报编码清单</td><td><span class="badge b-yes">可用</span></td><td><span class="badge b-yes">可用</span></td><td>10 行</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note info">
+        <strong>9 种图形类型与指标的对应关系</strong>
+        类型只是外壳：<code>KPI</code>→指标卡、<code>LINE</code>→折线、<code>BAR</code>→柱状、<code>STACK_BAR</code>→堆叠、
+        <code>RANK</code>→排行、<code>PIVOT</code>→透视、<code>PLANT_OVERVIEW</code>→工厂总览、<code>PARETO</code>→帕累托、
+        <code>SEVERITY</code>→严重度。选错类型不会报错，但可能画出不合适的图（例如把饼图数据塞进折线）。
+      </div>
+
+      <h3 id="s4-2">4.2 逐项说明</h3>
+
+      <!-- 1 -->
+      <h4>① 工厂总览（<code>plantOverview</code>）</h4>
+      <div class="card">
+        <svg class="thumb" viewBox="0 0 190 110" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,'PingFang SC',sans-serif">
+          <rect width="190" height="110" fill="#fcfdff"/>
+          <g font-size="7" fill="#6b7280">
+            <rect x="6" y="6" width="56" height="30" rx="3" fill="#fff" stroke="#e5e7eb"/>
+            <text x="11" y="17">检测总数</text><text x="11" y="29" font-size="10" font-weight="700" fill="#1f2937">1,284</text>
+            <rect x="66" y="6" width="56" height="30" rx="3" fill="#fff" stroke="#e5e7eb"/>
+            <text x="71" y="17">缺陷总数</text><text x="71" y="29" font-size="10" font-weight="700" fill="#1f2937">2,935</text>
+            <rect x="126" y="6" width="58" height="30" rx="3" fill="#fff" stroke="#fecaca"/>
+            <text x="131" y="17">高危 / 占比</text><text x="131" y="29" font-size="10" font-weight="700" fill="#dc2626">412 / 14.0%</text>
+            <rect x="6" y="40" width="56" height="30" rx="3" fill="#fff" stroke="#e5e7eb"/>
+            <text x="11" y="51">单图缺陷数</text><text x="11" y="63" font-size="10" font-weight="700" fill="#1f2937">2.29</text>
+            <rect x="66" y="40" width="118" height="30" rx="3" fill="#fff" stroke="#e5e7eb"/>
+            <text x="71" y="51">首要缺陷</text><text x="71" y="63" font-size="9" font-weight="700" fill="#1f2937">划伤 · 38.2%</text>
+            <rect x="6" y="74" width="56" height="30" rx="3" fill="#fff" stroke="#e5e7eb"/>
+            <text x="11" y="85">受影响工位</text><text x="11" y="97" font-size="10" font-weight="700" fill="#1f2937">6</text>
+            <rect x="66" y="74" width="56" height="30" rx="3" fill="#fff" stroke="#e5e7eb"/>
+            <text x="71" y="85">受影响相机</text><text x="71" y="97" font-size="10" font-weight="700" fill="#1f2937">9</text>
+            <rect x="126" y="74" width="58" height="30" rx="3" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="3 2"/>
+            <text x="131" y="85">良率</text><text x="131" y="97" font-size="10" font-weight="700" fill="#9ca3af">—</text>
+          </g>
+        </svg>
+        <p><b>作用</b>：把「规模、风险、主要矛盾、影响面」压进一屏，是厂长进页面第一眼看的东西。</p>
+        <p><b>配置</b>：类型 <code>KPI</code> 或 <code>PLANT_OVERVIEW</code> → 指标选「工厂总览」→ 维度建议只勾「时间」→ 尺寸 12×1 或 12×2（必须整行，否则 7 格挤不下）。</p>
+        <p><b>参数含义</b>：</p>
+        <div class="tbl-wrap compact">
+          <table>
+            <thead><tr><th>格位</th><th>字段</th><th>口径</th></tr></thead>
+            <tbody>
+              <tr><td>检测总数</td><td><code>detectionTotal</code></td><td>图片张数 / 上报件数</td></tr>
+              <tr><td>缺陷总数</td><td><code>defectTotal</code></td><td>缺陷框总数</td></tr>
+              <tr><td>高危 / 占比</td><td><code>highDefect</code> / <code>highRate</code></td><td>高危框数 ÷ 缺陷框总数</td></tr>
+              <tr><td>单图缺陷数</td><td><code>defectPerImage</code></td><td>缺陷框总数 ÷ 检测总数，两位小数</td></tr>
+              <tr><td>首要缺陷</td><td><code>topDefectName</code> / <code>topDefectRate</code></td><td>缺陷排行第一名及其占比</td></tr>
+              <tr><td>受影响工位 / 相机</td><td><code>affectedWorkstation</code> / <code>affectedCamera</code></td><td>去重计数，<b>仅统计能关联到相机的图</b></td></tr>
+              <tr><td>良率</td><td><code>yieldRate</code> + <code>yieldRateAvailable</code></td><td>不可算时显示「—」，小字「无良品样本」</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><b>前提</b>：无特殊前提；图片通道即可用。</p>
+        <p><b>限制</b>：7 格固定，不能增删；「受影响工位/相机」分母只含有相机关联的图，未建档设备的图不计入。</p>
+      </div>
+
+      <!-- 2 -->
+      <h4>② 核心质量指标（<code>quality</code>）</h4>
+      <div class="card">
+        <p><b>作用</b>：传统的四宫格质量卡（检测总数 / OK / NG / 良率）。</p>
+        <p><b>配置</b>：类型 <code>KPI</code> → 指标「核心质量指标」→ 尺寸 12×1。</p>
+        <p><b>适用前提</b>：<b>只有聚合通道才有意义</b>。图片通道下 OK 恒为 0、良率是 null，
+        卡片会显示 <code>0.00%</code>（这一形态不判断「是否可算」）。</p>
+        <p><b>限制</b>：现场使用请改用「工厂总览」，它会把良率显示成「—」而不是 0%。</p>
+      </div>
+
+      <!-- 3 -->
+      <h4>③ 30 分钟质量趋势（<code>trend</code>）</h4>
+      <div class="card">
+        <svg class="thumb" viewBox="0 0 190 110" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+          <rect width="190" height="110" fill="#fcfdff"/>
+          <line x1="24" y1="88" x2="180" y2="88" stroke="#e5e7eb"/>
+          <line x1="24" y1="12" x2="24" y2="88" stroke="#e5e7eb"/>
+          <g font-size="6" fill="#9ca3af">
+            <text x="4" y="20">30</text><text x="4" y="50">15</text><text x="8" y="90">0</text>
+            <text x="30" y="100">08:00</text><text x="86" y="100">12:00</text><text x="146" y="100">16:00</text>
+          </g>
+          <polyline points="30,60 55,48 80,54 105,38 130,44 155,30 176,36"
+            fill="none" stroke="#2563eb" stroke-width="1.6"/>
+          <polyline points="30,74 55,68 80,72 105,60 130,66 155,58 176,62"
+            fill="none" stroke="#ef4444" stroke-width="1.6" stroke-dasharray="3 2"/>
+          <rect x="30" y="14" width="6" height="3" fill="#2563eb"/>
+          <text x="40" y="18" font-size="6" fill="#6b7280">检测总数</text>
+          <rect x="86" y="14" width="6" height="3" fill="#ef4444"/>
+          <text x="96" y="18" font-size="6" fill="#6b7280">NG 数</text>
+        </svg>
+        <p><b>作用</b>：看产量与异常的时段分布，找「什么时候开始变差」。</p>
+        <p><b>配置</b>：类型 <code>LINE</code> → 指标「30 分钟质量趋势」→ 维度「时间」→ 12×3。</p>
+        <p><b>参数含义</b>：X 轴为时间桶；Y 轴左为数量，右为良率（仅有良率数据时出现）。</p>
+        <p><b>前提与限制</b>：</p>
+        <ul>
+          <li>聚合通道：粒度随跨度变（30 分钟 / 天）。</li>
+          <li><b>图片通道：永远按 1 小时分组</b>，即使页面标签写着「30 分钟」。</li>
+          <li>图片通道下<b>不画良率线</b>，也只用单 Y 轴 —— 这是刻意的，避免画出 0% 假曲线。</li>
+        </ul>
+      </div>
+
+      <!-- 4 -->
+      <h4>④ 缺陷发生趋势（<code>defectTrend</code>）</h4>
+      <div class="card">
+        <p><b>作用</b>：只关注缺陷侧的时间分布（柱 = 缺陷数，线 = 异常数），是图片通道下最有用的趋势图。</p>
+        <p><b>配置</b>：类型 <code>LINE</code> → 指标「缺陷发生趋势」→ 维度「时间」→ 12×3。</p>
+        <p><b>前提</b>：无；两通道均可用。<b>限制</b>：颗粒度同上（图片源 1 小时）。</p>
+      </div>
+
+      <!-- 5 -->
+      <h4>⑤ 缺陷类型帕累托（<code>defectPareto</code>）</h4>
+      <div class="card">
+        <svg class="thumb" viewBox="0 0 190 110" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+          <rect width="190" height="110" fill="#fcfdff"/>
+          <line x1="20" y1="88" x2="182" y2="88" stroke="#e5e7eb"/>
+          <line x1="20" y1="12" x2="20" y2="88" stroke="#e5e7eb"/>
+          <g fill="#93c5fd">
+            <rect x="26" y="30" width="14" height="58"/><rect x="46" y="46" width="14" height="42"/>
+            <rect x="66" y="58" width="14" height="30"/><rect x="86" y="66" width="14" height="22"/>
+            <rect x="106" y="72" width="14" height="16"/><rect x="126" y="77" width="14" height="11"/>
+            <rect x="146" y="81" width="14" height="7"/><rect x="166" y="83" width="14" height="5"/>
+          </g>
+          <polyline points="33,30 53,42 73,52 93,59 113,64 133,68 153,71 173,73"
+            fill="none" stroke="#f59e0b" stroke-width="1.4"/>
+          <line x1="20" y1="38" x2="182" y2="38" stroke="#ef4444" stroke-width="1" stroke-dasharray="3 2"/>
+          <text x="150" y="36" font-size="6" fill="#ef4444">80%</text>
+          <text x="22" y="100" font-size="6" fill="#9ca3af">划伤 压伤 脏污 缺料 变形 …</text>
+        </svg>
+        <p><b>作用</b>：按缺陷数降序 + 累计占比曲线，一眼看出「前几类缺陷贡献了 80% 的问题」。</p>
+        <p><b>配置</b>：类型 <code>BAR</code> 或 <code>PARETO</code> → 指标「缺陷类型帕累托」→ 维度「缺陷类型」→ 8×3 或 12×3。</p>
+        <p><b>参数含义</b>：左轴缺陷数、右轴累计占比（上限 100%）、红色虚线为 80% 基准线；累计占比的分母是<b>前 20 行缺陷数之和</b>，不是全量。</p>
+        <p><b>前提</b>：缺陷类型名来自上报文本（图片通道）或缺陷字典（聚合通道）。</p>
+        <p><b>限制</b>：只显示前 12 类；分类超过 6 个时 X 轴标签自动倾斜 24°。</p>
+      </div>
+
+      <!-- 6 -->
+      <h4>⑥ 缺陷类型排行（<code>defectRanking</code>）</h4>
+      <div class="card">
+        <p><b>作用</b>：横向条形 Top 榜，适合贴在周会材料里。</p>
+        <p><b>配置</b>：类型 <code>RANK</code> → 指标「缺陷类型排行」→ 维度「缺陷类型」→ 6×3。</p>
+        <p><b>限制</b>：取数 Top 20，<b>图表只画前 12</b>，无 TopN 配置项；导出 Excel 可得 20 行。</p>
+      </div>
+
+      <!-- 7 -->
+      <h4>⑦ 缺陷严重度构成（<code>severityDistribution</code>）</h4>
+      <div class="card">
+        <svg class="thumb" viewBox="0 0 190 110" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+          <rect width="190" height="110" fill="#fcfdff"/>
+          <circle cx="70" cy="55" r="30" fill="none" stroke="#f1f5f9" stroke-width="16"/>
+          <circle cx="70" cy="55" r="30" fill="none" stroke="#dc2626" stroke-width="16"
+            stroke-dasharray="43 146" transform="rotate(-90 70 55)"/>
+          <circle cx="70" cy="55" r="30" fill="none" stroke="#f59e0b" stroke-width="16"
+            stroke-dasharray="57 132" stroke-dashoffset="-43" transform="rotate(-90 70 55)"/>
+          <circle cx="70" cy="55" r="30" fill="none" stroke="#3b82f6" stroke-width="16"
+            stroke-dasharray="88 101" stroke-dashoffset="-100" transform="rotate(-90 70 55)"/>
+          <g font-size="7" fill="#475569">
+            <rect x="116" y="30" width="7" height="7" fill="#dc2626"/><text x="128" y="37">HIGH 23%</text>
+            <rect x="116" y="48" width="7" height="7" fill="#f59e0b"/><text x="128" y="55">MEDIUM 30%</text>
+            <rect x="116" y="66" width="7" height="7" fill="#3b82f6"/><text x="128" y="73">LOW 47%</text>
+            <rect x="116" y="84" width="7" height="7" fill="#94a3b8"/><text x="128" y="91">UNKNOWN</text>
+          </g>
+        </svg>
+        <p><b>作用</b>：判断质量风险等级 —— 高危占比升高比总量升高更值得报警。</p>
+        <p><b>配置</b>：类型 <code>SEVERITY</code> → 指标「缺陷严重度构成」→ 维度「严重度」→ 4×3。</p>
+        <p><b>参数含义</b>：环形图，四段为 HIGH / MEDIUM / LOW / UNKNOWN。</p>
+        <p><b>限制</b>：图例显示英文原值（HIGH/MEDIUM/LOW），与筛选器里的中文（高危/中等/轻微）不一致，属已知表现。</p>
+      </div>
+
+      <!-- 8 -->
+      <h4>⑧ 缺陷严重度堆叠（<code>stackDefectBySeverity</code>）</h4>
+      <div class="card">
+        <p><b>作用</b>：把「哪类缺陷」和「多严重」放在一张图上 —— X 轴缺陷类型，每根柱按严重度分段堆叠。</p>
+        <p><b>配置</b>：类型 <code>STACK_BAR</code> → 指标「缺陷严重度堆叠」→ 维度「缺陷类型 + 严重度」→ 12×3。</p>
+        <p><b>前提</b>：缺陷框上必须有 severity 值，否则全部落到 UNKNOWN。</p>
+        <p><b>限制</b>：取前 12 个缺陷类型；堆叠由前端按「类型 + 严重度」二次聚合。</p>
+      </div>
+
+      <!-- 9 / 10 -->
+      <h4>⑨ 责任工位定位（<code>stationRanking</code>）· ⑩ 责任相机定位（<code>cameraRanking</code>）</h4>
+      <div class="card">
+        <p><b>作用</b>：把缺陷归因到具体工位/设备，是「找责任点」最直接的两张图。</p>
+        <p><b>配置</b>：类型 <code>BAR</code> → 指标「责任工位定位」/「责任相机定位」→ 维度「工位」/「相机」→ 6×3，常并排放。</p>
+        <p><b>参数含义</b>：按 NG 数降序；副排序为检测总数。</p>
+        <p><b>前提</b>：相机必须在 <code>dim_camera</code> 建档。图片表存的是<b>相机编号</b>，
+        关联不上维度表的图片仍计入总量，但<b>不会出现在这两张图里</b>。</p>
+        <p><b>限制</b>：取数 Top 20，展示前 12。</p>
+      </div>
+
+      <!-- 11 -->
+      <h4>⑪ 产品缺陷透视表（<code>defectPivot</code>）</h4>
+      <div class="card">
+        <svg class="thumb" viewBox="0 0 190 110" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,sans-serif">
+          <rect width="190" height="110" fill="#fcfdff"/>
+          <g font-size="6">
+            <rect x="6" y="10" width="178" height="16" fill="#f1f5f9"/>
+            <text x="12" y="21" fill="#475569" font-weight="700">产品</text>
+            <text x="58" y="21" fill="#475569">划伤</text><text x="94" y="21" fill="#475569">压伤</text>
+            <text x="130" y="21" fill="#475569">脏污</text><text x="164" y="21" fill="#475569">合计</text>
+            <g fill="#374151">
+              <text x="12" y="40">A001</text><text x="58" y="40">412</text><text x="94" y="40">186</text><text x="130" y="40">97</text><text x="164" y="40">695</text>
+              <text x="12" y="58">A002</text><text x="58" y="58">238</text><text x="94" y="58">301</text><text x="130" y="58">44</text><text x="164" y="58">583</text>
+              <text x="12" y="76">B011</text><text x="58" y="76">95</text><text x="94" y="76">62</text><text x="130" y="76">188</text><text x="164" y="76">345</text>
+            </g>
+            <g stroke="#f1f3f5">
+              <line x1="6" y1="26" x2="184" y2="26"/><line x1="6" y1="44" x2="184" y2="44"/>
+              <line x1="6" y1="62" x2="184" y2="62"/><line x1="6" y1="80" x2="184" y2="80"/>
+            </g>
+            <text x="12" y="98" fill="#dc2626">图片通道下：所有类型塌成一列，表基本不可用</text>
+          </g>
+        </svg>
+        <p><b>作用</b>：产品 × 缺陷类型的交叉矩阵，看「哪个产品的问题集中在哪类缺陷」。</p>
+        <p><b>配置</b>：类型 <code>PIVOT</code> → 指标「产品缺陷透视表」→ 维度「产品 + 缺陷类型」→ 12×4。</p>
+        <p><b>前提</b>：<b>必须走聚合通道</b>（图片表没有产品列）。</p>
+        <p><b>限制</b>：</p>
+        <ul>
+          <li>聚合通道：列数无后端上限，前端最多渲染 30 列。</li>
+          <li>图片通道：退化成「按缺陷类型分组」，所有行的缺陷 ID 都是 0，
+              前端按 ID 去重时<b>会塌缩成一列</b> —— 透视表在图片通道下实际不可用。</li>
+        </ul>
+      </div>
+
+      <!-- 12 -->
+      <h4>⑫ 映射异常明细（<code>mappingExceptions</code>）</h4>
+      <div class="card">
+        <p><b>作用</b>：列出上报的缺陷编码在字典里找不到的样本，是「数据对不上」时的第一排查入口。</p>
+        <p><b>配置</b>：类型不限（表格渲染）→ 指标「映射异常明细」→ 12×3。</p>
+        <p><b>限制</b>：只显示最近 10 条未处理（<code>status=OPEN</code>）的记录；处理入口不在本页。</p>
+      </div>
+    </section>
+
+    <!-- ================= 5. 效果图 ================= -->
+    <section id="s5">
+      <h2 class="sec"><span class="num">05</span>效果图展示区</h2>
+      <p class="sec-desc">按使用顺序排列：进入页面 → 切时间 → 看指标 → 加图 → 配置 → 大屏 → 导出。</p>
+
+      <figure>
+        <svg viewBox="0 0 880 260" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,'PingFang SC',sans-serif">
+          <rect width="880" height="260" fill="#f6f7f9"/>
+          <rect x="16" y="16" width="848" height="228" rx="8" fill="#fff" stroke="#e5e7eb"/>
+          <!-- 时间档位条 -->
+          <rect x="30" y="30" width="360" height="30" rx="15" fill="#f1f5f9"/>
+          <g font-size="10">
+            <rect x="34" y="34" width="56" height="22" rx="11" fill="#2563eb"/><text x="47" y="49" fill="#fff">今天</text>
+            <text x="102" y="49" fill="#64748b">昨天</text><text x="146" y="49" fill="#64748b">近7天</text>
+            <text x="194" y="49" fill="#64748b">近30天</text><text x="248" y="49" fill="#64748b">本月</text>
+          </g>
+          <rect x="402" y="30" width="236" height="30" rx="5" fill="#fff" stroke="#cbd5e1"/>
+          <text x="414" y="49" font-size="10" fill="#475569">2026-11-07 00:00:00 → 2026-11-07 20:30:00</text>
+          <rect x="648" y="30" width="90" height="30" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+          <text x="662" y="49" font-size="10" fill="#1d4ed8">30 分钟聚合</text>
+          <text x="750" y="49" font-size="9.5" fill="#94a3b8">粒度标签由后端返回</text>
+
+          <!-- 说明 -->
+          <text x="30" y="86" font-size="11" font-weight="700" fill="#1f2937">点击档位后的连锁反应</text>
+          <g font-size="10" fill="#475569">
+            <rect x="30" y="96" width="180" height="48" rx="6" fill="#f8fafc" stroke="#e5e7eb"/>
+            <text x="42" y="114" font-weight="600" fill="#1d4ed8">1 · 填充时间</text>
+            <text x="42" y="130" font-size="9">00:00:00 → 当前时刻</text>
+
+            <path d="M212 120 H238" stroke="#cbd5e1" stroke-width="1.4" marker-end="url(#a5)"/>
+            <rect x="240" y="96" width="180" height="48" rx="6" fill="#f8fafc" stroke="#e5e7eb"/>
+            <text x="252" y="114" font-weight="600" fill="#1d4ed8">2 · 高亮档位</text>
+            <text x="252" y="130" font-size="9">其他档位取消高亮</text>
+
+            <path d="M422 120 H448" stroke="#cbd5e1" stroke-width="1.4" marker-end="url(#a5)"/>
+            <rect x="450" y="96" width="180" height="48" rx="6" fill="#f8fafc" stroke="#e5e7eb"/>
+            <text x="462" y="114" font-weight="600" fill="#1d4ed8">3 · 记入本地</text>
+            <text x="462" y="130" font-size="9">下次打开自动恢复该档位</text>
+
+            <path d="M632 120 H658" stroke="#cbd5e1" stroke-width="1.4" marker-end="url(#a5)"/>
+            <rect x="660" y="96" width="180" height="48" rx="6" fill="#f0fdf4" stroke="#bbf7d0"/>
+            <text x="672" y="114" font-weight="600" fill="#15803d">4 · 立即查询</text>
+            <text x="672" y="130" font-size="9">无需再点刷新</text>
+          </g>
+          <defs><marker id="a5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 z" fill="#cbd5e1"/></marker></defs>
+
+          <rect x="30" y="160" width="810" height="70" rx="6" fill="#fffbeb" stroke="#fde68a"/>
+          <text x="44" y="180" font-size="10.5" font-weight="700" fill="#b45309">粒度切换的实际影响</text>
+          <text x="44" y="198" font-size="10" fill="#78350f">今天 / 昨天（跨度 1 天）→ 30 分钟桶，一天最多 48 个点；近 7 天 / 近 30 天 → 日聚合，一天 1 个点。</text>
+          <text x="44" y="216" font-size="10" fill="#78350f">图片通道例外：无论标签写什么，趋势图按 1 小时分组，一天 24 个点。</text>
+        </svg>
+        <figcaption>图 4 · 时间档位与粒度标签：点一下档位，四件事同时发生</figcaption>
+      </figure>
+
+      <figure>
+        <svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,'PingFang SC',sans-serif">
+          <rect width="880" height="300" fill="#f6f7f9"/>
+          <text x="20" y="24" font-size="11.5" font-weight="700" fill="#1f2937">同一份数据，两张图的读法完全不同</text>
+
+          <!-- 左：双轴 -->
+          <rect x="16" y="36" width="418" height="246" rx="8" fill="#fff" stroke="#e5e7eb"/>
+          <text x="32" y="58" font-size="10.5" font-weight="600" fill="#15803d">聚合通道 · 趋势折线（双 Y 轴）</text>
+          <line x1="46" y1="200" x2="416" y2="200" stroke="#e5e7eb"/>
+          <line x1="46" y1="70" x2="46" y2="200" stroke="#e5e7eb"/>
+          <line x1="416" y1="70" x2="416" y2="200" stroke="#e5e7eb"/>
+          <g font-size="8" fill="#9ca3af">
+            <text x="26" y="74">400</text><text x="26" y="136">200</text><text x="32" y="204">0</text>
+            <text x="404" y="74">100%</text><text x="408" y="204">0</text>
+          </g>
+          <polyline points="56,150 106,132 156,140 206,118 256,126 306,104 356,112 406,96"
+            fill="none" stroke="#2563eb" stroke-width="1.8"/>
+          <polyline points="56,176 106,166 156,170 206,154 256,160 306,146 356,152 406,142"
+            fill="none" stroke="#ef4444" stroke-width="1.8"/>
+          <polyline points="56,120 106,110 156,114 206,100 256,104 306,92 356,96 406,86"
+            fill="none" stroke="#16a34a" stroke-width="1.8" stroke-dasharray="5 3"/>
+          <g font-size="8">
+            <rect x="56" y="216" width="8" height="3" fill="#2563eb"/><text x="70" y="220" fill="#6b7280">检测总数</text>
+            <rect x="140" y="216" width="8" height="3" fill="#ef4444"/><text x="154" y="220" fill="#6b7280">NG 数</text>
+            <rect x="204" y="216" width="8" height="3" fill="#16a34a"/><text x="218" y="220" fill="#6b7280">良率（右轴）</text>
+          </g>
+          <rect x="32" y="234" width="386" height="36" rx="5" fill="#f0fdf4" stroke="#bbf7d0"/>
+          <text x="44" y="250" font-size="9" fill="#166534">有良率数据 → 画第三条线，启用右轴（%）</text>
+          <text x="44" y="264" font-size="9" fill="#166534">X 轴粒度：30 分钟 或 天</text>
+
+          <!-- 右：单轴 -->
+          <rect x="446" y="36" width="418" height="246" rx="8" fill="#fff" stroke="#e5e7eb"/>
+          <text x="462" y="58" font-size="10.5" font-weight="600" fill="#b45309">图片通道 · 同一张图（单 Y 轴）</text>
+          <line x1="476" y1="200" x2="846" y2="200" stroke="#e5e7eb"/>
+          <line x1="476" y1="70" x2="476" y2="200" stroke="#e5e7eb"/>
+          <g font-size="8" fill="#9ca3af">
+            <text x="456" y="74">400</text><text x="456" y="136">200</text><text x="462" y="204">0</text>
+          </g>
+          <polyline points="486,150 536,132 586,140 636,118 686,126 736,104 786,112 836,96"
+            fill="none" stroke="#2563eb" stroke-width="1.8"/>
+          <polyline points="486,176 536,166 586,170 636,154 686,160 736,146 786,152 836,142"
+            fill="none" stroke="#ef4444" stroke-width="1.8"/>
+          <g font-size="8">
+            <rect x="486" y="216" width="8" height="3" fill="#2563eb"/><text x="500" y="220" fill="#6b7280">检测总数</text>
+            <rect x="570" y="216" width="8" height="3" fill="#ef4444"/><text x="584" y="220" fill="#6b7280">NG 数</text>
+            <text x="640" y="220" fill="#cbd5e1">良率线已移除</text>
+          </g>
+          <rect x="462" y="234" width="386" height="36" rx="5" fill="#fffbeb" stroke="#fde68a"/>
+          <text x="474" y="250" font-size="9" fill="#92400e">不画良率线、不用右轴 —— 避免出现 0% 的假曲线</text>
+          <text x="474" y="264" font-size="9" fill="#92400e">X 轴粒度恒为 1 小时，与页面粒度标签无关</text>
+        </svg>
+        <figcaption>图 5 · 趋势图的两种形态：良率线不是「没数据」，而是「不该画」</figcaption>
+      </figure>
+
+      <figure>
+        <svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,'PingFang SC',sans-serif">
+          <rect width="880" height="300" fill="#f6f7f9"/>
+          <rect x="16" y="14" width="848" height="272" rx="8" fill="#fff" stroke="#e5e7eb"/>
+          <text x="32" y="38" font-size="11.5" font-weight="700" fill="#1f2937">看板大屏（全屏展示）</text>
+          <text x="700" y="38" font-size="9" fill="#94a3b8">刷新数据 · 返回整屏 · 退出</text>
+          <rect x="32" y="50" width="816" height="34" rx="5" fill="#f8fafc" stroke="#e5e7eb"/>
+          <g font-size="9" fill="#475569">
+            <text x="46" y="72">检测总数 1,284</text><text x="180" y="72">OK 数 —</text>
+            <text x="280" y="72">NG 数 1,284</text><text x="400" y="72">缺陷数 2,935</text>
+            <text x="520" y="72">高危 412（14.0%）</text><text x="680" y="72" fill="#94a3b8">良率 不可计算</text>
+          </g>
+          <rect x="32" y="94" width="404" height="86" rx="5" fill="#fcfdff" stroke="#e5e7eb"/>
+          <text x="44" y="112" font-size="9.5" fill="#374151">缺陷类型帕累托</text>
+          <g fill="#93c5fd">
+            <rect x="48" y="138" width="20" height="34"/><rect x="74" y="148" width="20" height="24"/>
+            <rect x="100" y="156" width="20" height="16"/><rect x="126" y="160" width="20" height="12"/>
+            <rect x="152" y="164" width="20" height="8"/><rect x="178" y="166" width="20" height="6"/>
+          </g>
+          <polyline points="58,138 84,146 110,152 136,155 162,157 188,158"
+            fill="none" stroke="#f59e0b" stroke-width="1.3"/>
+          <rect x="444" y="94" width="404" height="86" rx="5" fill="#fcfdff" stroke="#e5e7eb"/>
+          <text x="456" y="112" font-size="9.5" fill="#374151">缺陷严重度构成</text>
+          <circle cx="510" cy="140" r="24" fill="none" stroke="#f1f5f9" stroke-width="13"/>
+          <circle cx="510" cy="140" r="24" fill="none" stroke="#dc2626" stroke-width="13"
+            stroke-dasharray="35 116" transform="rotate(-90 510 140)"/>
+          <circle cx="510" cy="140" r="24" fill="none" stroke="#f59e0b" stroke-width="13"
+            stroke-dasharray="45 106" stroke-dashoffset="-35" transform="rotate(-90 510 140)"/>
+          <g font-size="8" fill="#6b7280">
+            <text x="552" y="130">HIGH 23%</text><text x="552" y="144">MEDIUM 30%</text><text x="552" y="158">LOW 47%</text>
+          </g>
+          <rect x="32" y="190" width="404" height="84" rx="5" fill="#fcfdff" stroke="#e5e7eb"/>
+          <text x="44" y="208" font-size="9.5" fill="#374151">责任工位定位</text>
+          <g fill="#bfdbfe">
+            <rect x="48" y="220" width="150" height="8" rx="2"/><rect x="48" y="234" width="110" height="8" rx="2"/>
+            <rect x="48" y="248" width="78" height="8" rx="2"/><rect x="48" y="262" width="52" height="8" rx="2"/>
+          </g>
+          <rect x="444" y="190" width="404" height="84" rx="5" fill="#fcfdff" stroke="#e5e7eb"/>
+          <text x="456" y="208" font-size="9.5" fill="#374151">缺陷发生趋势</text>
+          <polyline points="458,262 490,246 522,252 554,236 586,242 618,226 650,232 682,218 714,224 746,212 778,218 810,206"
+            fill="none" stroke="#2563eb" stroke-width="1.6"/>
+        </svg>
+        <figcaption>图 6 · 大屏展示：2 列网格，单图模式时变单列；只读，无轮播</figcaption>
+      </figure>
+
+      <figure>
+        <svg viewBox="0 0 880 200" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,'PingFang SC',sans-serif">
+          <rect width="880" height="200" fill="#f6f7f9"/>
+          <text x="20" y="24" font-size="11.5" font-weight="700" fill="#1f2937">图表卡片「更多」菜单 —— 导出与布局微调都在这里</text>
+          <!-- 卡片 -->
+          <rect x="20" y="40" width="420" height="140" rx="8" fill="#fff" stroke="#e5e7eb"/>
+          <text x="36" y="62" font-size="10.5" font-weight="600" fill="#1f2937">缺陷类型帕累托（累计占比）</text>
+          <text x="36" y="78" font-size="8.5" fill="#9ca3af">按缺陷类型统计 · 跟随顶部筛选</text>
+          <g font-size="9" fill="#94a3b8">
+            <text x="360" y="62">✎ 编辑</text><text x="404" y="62">🗑 删除</text><text x="436" y="62">⋮</text>
+          </g>
+          <g fill="#93c5fd">
+            <rect x="36" y="120" width="18" height="46"/><rect x="60" y="132" width="18" height="34"/>
+            <rect x="84" y="142" width="18" height="24"/><rect x="108" y="148" width="18" height="18"/>
+            <rect x="132" y="154" width="18" height="12"/>
+          </g>
+          <rect x="392" y="160" width="34" height="12" rx="2" fill="#e5e7eb"/>
+
+          <!-- 菜单 -->
+          <rect x="330" y="66" width="150" height="150" rx="6" fill="#fff" stroke="#d1d5db" filter="url(#sh)"/>
+          <g font-size="9.5" fill="#374151">
+            <text x="344" y="86">最大化展示</text>
+            <line x1="340" y1="94" x2="470" y2="94" stroke="#f1f3f5"/>
+            <text x="344" y="110">导出图片（PNG）</text>
+            <text x="344" y="130">导出 Excel</text>
+            <line x1="340" y1="140" x2="470" y2="140" stroke="#f1f3f5"/>
+            <text x="344" y="156">缩小宽度　−6</text>
+            <text x="344" y="174">放大宽度　+6</text>
+            <text x="344" y="192">增加高度　+1</text>
+            <text x="344" y="210" fill="#9ca3af">降低高度　−1</text>
+          </g>
+          <defs><filter id="sh" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity=".12"/></filter></defs>
+
+          <!-- 说明 -->
+          <g font-size="9.5" fill="#475569">
+            <text x="500" y="90">● 导出 Excel：范围 = 当前筛选，最多 20 行（排行类）</text>
+            <text x="500" y="112">● 导出 PNG：仅 8 种图形支持，表格类会提示改用 Excel</text>
+            <text x="500" y="134">● 宽 6→12 栅格，高 2→5 行；拖动改尺寸也可</text>
+            <text x="500" y="156">● 文件名：图表名称-yyyyMMdd-HHmmss</text>
+            <text x="500" y="178" fill="#b45309">● 不支持：整看板导出 / PDF / 定时推送</text>
+          </g>
+        </svg>
+        <figcaption>图 7 · 「更多」菜单：7 个操作，导出与布局调整</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================= 6. 管理层报表 ================= -->
+    <section id="s6">
+      <h2 class="sec"><span class="num">06</span>管理层报表数据项</h2>
+      <p class="sec-desc">这些是「汇报时会被问到」的指标。每条都给出统计口径，避免同一个数在两张表里不一致。</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr><th>报表项</th><th>业务含义</th><th>统计口径</th><th>展示形式</th><th>可用性</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>检测总量</td>
+              <td>本期产生了多少次检测事件</td>
+              <td>图片通道 = 缺陷图片张数；聚合通道 = 上报检测件数</td>
+              <td>指标卡大数字</td>
+              <td><span class="badge b-yes">可用</span></td>
+            </tr>
+            <tr>
+              <td>缺陷总量</td>
+              <td>本期共发现多少个缺陷</td>
+              <td>缺陷框总数（一张图可含多个框）</td>
+              <td>指标卡大数字</td>
+              <td><span class="badge b-yes">可用</span></td>
+            </tr>
+            <tr>
+              <td>高危缺陷数与占比</td>
+              <td>质量问题有多严重</td>
+              <td>高危框数 ÷ 缺陷框总数，两位小数</td>
+              <td>指标卡 + 红色强调；大屏顶部</td>
+              <td><span class="badge b-yes">可用</span></td>
+            </tr>
+            <tr>
+              <td>单图缺陷数</td>
+              <td>平均每张图几个缺陷（工艺稳定性）</td>
+              <td>缺陷框总数 ÷ 检测总数</td>
+              <td>工厂总览第 4 格</td>
+              <td><span class="badge b-yes">可用</span></td>
+            </tr>
+            <tr>
+              <td>首要缺陷及占比</td>
+              <td>当前最主要的问题是什么</td>
+              <td>缺陷排行第一名 ÷ 缺陷框总数</td>
+              <td>工厂总览「首要缺陷」格</td>
+              <td><span class="badge b-yes">可用</span></td>
+            </tr>
+            <tr>
+              <td>受影响工位数 / 相机数</td>
+              <td>问题波及面有多大</td>
+              <td>去重计数，仅含能关联到 <code>dim_camera</code> 的图片</td>
+              <td>工厂总览第 6、7 格</td>
+              <td><span class="badge b-cond">部分</span></td>
+            </tr>
+            <tr>
+              <td>缺陷集中度（帕累托）</td>
+              <td>前几类缺陷贡献了多少问题</td>
+              <td>累计占比的分母是前 20 类缺陷数之和</td>
+              <td>帕累托柱 + 累计曲线 + 80% 基准线</td>
+              <td><span class="badge b-yes">可用</span></td>
+            </tr>
+            <tr>
+              <td>缺陷时段分布</td>
+              <td>问题是否集中在某个班次</td>
+              <td>图片通道按 1 小时分组；聚合通道按粒度</td>
+              <td>趋势图</td>
+              <td><span class="badge b-cond">近似</span></td>
+            </tr>
+            <tr>
+              <td>责任工位 / 相机排名</td>
+              <td>该找谁</td>
+              <td>按 NG 数降序，取 Top 20 展示前 12</td>
+              <td>横向条形</td>
+              <td><span class="badge b-yes">可用</span></td>
+            </tr>
+            <tr>
+              <td>良率</td>
+              <td>一次合格率</td>
+              <td>OK ÷ 检测总数</td>
+              <td>指标卡 / 工厂总览</td>
+              <td><span class="badge b-no">现场不可用</span></td>
+            </tr>
+            <tr>
+              <td>同比 / 环比</td>
+              <td>与上期比好了还是差了</td>
+              <td>页面不提供对比期计算</td>
+              <td>需导出后自行计算</td>
+              <td><span class="badge b-no">不支持</span></td>
+            </tr>
+            <tr>
+              <td>目标达成率</td>
+              <td>是否完成质量目标</td>
+              <td>无目标值维护功能</td>
+              <td>—</td>
+              <td><span class="badge b-no">不支持</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>6.1 给汇报材料的三点建议</h3>
+      <div class="card">
+        <ol>
+          <li><b>不要把「检测总数」写成「产量」。</b>现场是缺陷图张数，不是生产件数。
+              如果汇报需要产量，只能从 MES 取，不要用这个数替代。</li>
+          <li><b>良率不要留空，要写「未接入」并说明原因。</b>留空会被理解为 0% 或忘记填；
+              写「设备仅上报缺陷图，无良品样本」是准确且可解释的。</li>
+          <li><b>趋势图的横轴单位要标注清楚。</b>图片通道是 1 小时、聚合通道是 30 分钟或天，
+              同一张图在不同时间范围下横轴间隔不同，汇报时注明可避免「为什么昨天是 24 个点、上周是 7 个点」的疑问。</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ================= 7. 快速上手 ================= -->
+    <section id="s7">
+      <h2 class="sec"><span class="num">07</span>快速上手</h2>
+      <p class="sec-desc">三个高频场景，按步骤做即可。</p>
+
+      <h3>7.1 厂长：5 分钟搭一个汇报看板</h3>
+      <ol class="steps">
+        <li>顶部「新建模板」→ 名称填「厂长日报」→ 范围选「工厂模板」→ 保存。</li>
+        <li>点「新增图表」→ 在弹窗里点预设「工厂总览」→ 保存（自动 12×2）。</li>
+        <li>再新增 → 预设「缺陷帕累托」→ 保存。</li>
+        <li>再新增 → 预设「严重度构成」→ 保存。</li>
+        <li>再新增 → 预设「工位异常」→ 保存，拖动到帕累托右侧。</li>
+        <li>回到顶部，用时间档位「近 7 天」核对数字；确认无误后点「看板大屏」演示。</li>
+      </ol>
+
+      <h3>7.2 工艺工程师：定位「哪个工位哪类缺陷」</h3>
+      <ol class="steps">
+        <li>时间先选「今天」，缩小范围。</li>
+        <li>看「责任工位定位」找最高的那根柱 → 记住工位名。</li>
+        <li>用顶部相机下拉（或产线全局筛选）收敛到该工位。</li>
+        <li>看「缺陷类型帕累托」，读前 2–3 类缺陷及累计占比。</li>
+        <li>看「缺陷严重度堆叠」，确认这些缺陷是高危还是轻微。</li>
+        <li>需要明细时，把该图导出 Excel，拿 Top 20 全量清单。</li>
+      </ol>
+
+      <h3>7.3 运维：页面数字是 0 / 对不上，按这个顺序查</h3>
+      <ol class="steps">
+        <li><b>先看数据源标签</b>：筛选条右侧写「30 分钟聚合」还是「日聚合」，指标卡是 5 张还是 6 张 ——
+            5 张 = 图片通道，说明图确实进来了。</li>
+        <li><b>确认时间窗内真的有图</b>：换「今天」档位，若仍为 0，去数据库查
+            <code>defect_image_file</code> 当天行数与 <code>capture_time</code> 范围。</li>
+        <li><b>确认相机已建档</b>：图片表的相机字段存的是<b>相机编号</b>，若 <code>dim_camera</code>
+            里没有该编号，图片会计入总量但不出现在工位/相机排行里。</li>
+        <li><b>确认筛选没被误用</b>：图片通道下，选中「产品 / 班次 / 缺陷类型」不会生效，
+            但如果同时选了产线而产线无数据，结果就会是 0。</li>
+        <li><b>确认是否超过 31 天</b>：超出热表范围，页面会自动切聚合表；聚合表没数据就是全 0。</li>
+        <li><b>确认测试相机</b>：测试设备的数据会算进统计，最多 1 小时后被清理任务删除。</li>
+      </ol>
+
+      <div class="note ok">
+        <strong>正常状态的自检基线（现场 2 台真实相机）</strong>
+        指标卡 5 张、良品样本显示「未接入」、趋势图无良率线、帕累托前 3 类占比合计约 70–80%、
+        工位排行 2 行左右、相机排行 2 行。若与这个形态差异很大，先按上面 6 步排查。
+      </div>
+    </section>
+
+    <!-- ================= 8. 附录 ================= -->
+    <section id="s8">
+      <h2 class="sec"><span class="num">08</span>附录</h2>
+
+      <h3>8.1 接口一览</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>用途</th><th>方法与路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>元数据</td><td><code>GET /api/v1/analytics/metadata</code></td><td>产品/缺陷/工位/相机/班次/图表类型/维度</td></tr>
+            <tr><td>汇总查询</td><td><code>GET /api/v1/analytics/line-summary</code></td><td>页面所有数字都从这一个响应取；60 秒缓存</td></tr>
+            <tr><td>同义接口</td><td><code>POST /api/v1/analytics/query</code></td><td>与上一行完全等价，仅换 POST</td></tr>
+            <tr><td>默认模板</td><td><code>GET /api/v1/analytics/dashboards/default</code></td><td>无则自动创建；注意这是带写操作的 GET</td></tr>
+            <tr><td>模板增删改</td><td><code>POST/PUT/DELETE /dashboards[/{id}]</code></td><td>删除为逻辑删除，级联删图表</td></tr>
+            <tr><td>图表增删改</td><td><code>POST/PUT/DELETE /widgets[/{id}]</code></td><td>—</td></tr>
+            <tr><td>拖拽排序</td><td><code>POST /widgets/reorder</code></td><td>重排 sortOrder</td></tr>
+            <tr><td>导出</td><td><code>GET /widgets/{id}/export</code></td><td>返回 xlsx 二进制，不读缓存</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>8.2 代码位置（便于核对）</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>内容</th><th>文件</th></tr></thead>
+          <tbody>
+            <tr><td>页面</td><td><code>frontend/src/views/stats/LineAnalyticsView.vue</code></td></tr>
+            <tr><td>接口与口径</td><td><code>fact-product/src/main/java/com/wms/analytics/api/LineAnalyticsController.java</code></td></tr>
+            <tr><td>统计 SQL</td><td><code>.../analytics/infra/repository/LineAnalyticsQueryRepository.java</code></td></tr>
+            <tr><td>看板/图表存储</td><td><code>.../analytics/infra/repository/AnalyticsDashboardRepository.java</code></td></tr>
+            <tr><td>聚合表与刷新</td><td><code>.../analytics/infra/repository/AnalyticsAggregationRepository.java</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>8.3 术语对照</h3>
+      <div class="tbl-wrap compact">
+        <table>
+          <thead><tr><th>术语</th><th>含义</th></tr></thead>
+          <tbody>
+            <tr><td>图片通道</td><td>现场设备走 <code>POST /defect-images/upload</code>，只写缺陷图片三表</td></tr>
+            <tr><td>聚合通道</td><td>旧接口 <code>batch-upload</code> 写 30 分钟聚合表，再由任务汇总成日表</td></tr>
+            <tr><td>缺陷框</td><td>一张图上框出的一个缺陷；一张图可有多个框，所以「缺陷数」≥「图片数」</td></tr>
+            <tr><td>栅格</td><td>布局单位，整行 12 栅格；组件宽度只能是 6 或 12</td></tr>
+            <tr><td>日聚合</td><td>跨度 ≥3 个自然日时，按天汇总的物化表</td></tr>
+            <tr><td>孤儿行</td><td>聚合表里指向已删除产线/工位的历史行，会被定期清理</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note info" style="margin-top:26px">
+        <strong>文档维护</strong>
+        本手册依据 v3 代码（2026-11-06 改造后）逐行核对生成，口径以
+        <code>LineAnalyticsController</code> 与 <code>LineAnalyticsQueryRepository</code> 为准。
+        若后续调整了数据源优先级、粒度阈值或指标算法，请同步更新本文，避免「文档说 A、系统做 B」。
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<button id="top" title="回到顶部">↑</button>
+
+<script>
+(function () {
+  // 目录高亮
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+  var targets = links.map(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    return document.getElementById(id);
+  }).filter(Boolean);
+
+  function setActive(id) {
+    links.forEach(function (a) {
+      a.classList.toggle('active', a.getAttribute('href') === '#' + id);
+    });
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    var visible = entries.filter(function (e) { return e.isIntersecting; });
+    if (visible.length) {
+      // 取最靠上的可见区块
+      visible.sort(function (a, b) { return a.boundingClientRect.top - b.boundingClientRect.top; });
+      setActive(visible[0].target.id);
+    }
+  }, { rootMargin: '-10% 0px -70% 0px', threshold: 0 });
+
+  targets.forEach(function (t) { obs.observe(t); });
+
+  // 回到顶部
+  var btn = document.getElementById('top');
+  window.addEventListener('scroll', function () {
+    btn.classList.toggle('show', window.scrollY > 600);
+  }, { passive: true });
+  btn.addEventListener('click', function () {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  // 表格首列过长时允许换行（导出场景）
+  document.querySelectorAll('table td').forEach(function (td) {
+    if (td.scrollWidth > td.clientWidth + 4) td.style.whiteSpace = 'normal';
+  });
+})();
+</script>
+</body>
+</html>

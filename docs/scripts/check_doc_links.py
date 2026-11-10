@@ -20,6 +20,7 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # docs/ 根目录允许出现的 Markdown（现行规范，与代码同步维护）
+# 新增规范文档时同步加一行，并更新 docs/README.md 的目录树与表格
 DOCS_ROOT_ALLOWED = {
     "README.md",
     "架构说明.md",
@@ -27,6 +28,7 @@ DOCS_ROOT_ALLOWED = {
     "接口文档.md",
     "部署与运维手册.md",
     "配置项清单.md",
+    "服务器文件布局.md",
     "使用说明.md",
     "踩坑速查.md",
 }
@@ -128,7 +130,8 @@ def check_structure(problems):
         full = os.path.join(docs_dir, name)
         if os.path.isfile(full) and name.endswith(".md") and name not in DOCS_ROOT_ALLOWED:
             problems.append(
-                "docs/%s  放错位置：docs/ 根只放现行规范 7 份，历史稿移到 docs/archive/" % name
+                "docs/%s  放错位置：docs/ 根只放现行规范 %d 份，历史稿移到 docs/archive/"
+                % (name, len(DOCS_ROOT_ALLOWED) - 1)
             )
 
     for src in SOURCE_DIRS:
