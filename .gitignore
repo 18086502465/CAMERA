@@ -34,6 +34,10 @@ __pycache__/
 # ---- 构建产物目录（由 installer/linux/build-release.sh 生成，不入库）----
 dist-release/linux/stage/
 dist-release/linux/*.tar.gz
+# Web SFTP 传不上整包时切的 10MB 分片（本地临时产物）
+dist-release/linux/parts/
+# 构建前手工腾空 dist 时挪走的旧产物
+frontend/dist.old.*
 
 # ---- 轻量更新包产物（时间戳命名，每次构建生成，不入库）----
 dist-release/linux/update/

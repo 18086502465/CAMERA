@@ -317,7 +317,7 @@ else
     # 缺数据库只是「服务暂时起不来」，不是「安装没做完」。
     echo "数据库 '${DB_NAME:-wms-new}' 尚未创建，应用暂时无法启动。" >&2
     echo "这是部署顺序问题，不是故障。安装继续，装完后请按顺序执行：" >&2
-    echo "    ${INSTALL_DIR}/scripts/init-database.sh   # 建库（4 段脚本）" >&2
+    echo "    ${INSTALL_DIR}/scripts/init-database.sh   # 建库（5 段脚本，脚本会自动按序导入）" >&2
     echo "    systemctl restart ${SERVICE_NAME}          # 再启动" >&2
     DB_PENDING=1
   else
@@ -357,6 +357,18 @@ ${WORK_DIR}/logs/*.log {
     notifempty
     copytruncate
     su ${SERVICE_USER} ${SERVICE_GROUP}
+}
+
+# 部署日志（deploy.sh 写入，root 所有）—— 每次部署追加，长期不轮转会缓慢变大
+/var/log/camera-detection-deploy.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root root
 }
 
 # 备份日志（cdsys 所有）

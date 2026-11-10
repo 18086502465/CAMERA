@@ -10,7 +10,9 @@
 #   1. 库名带连字符，必须用反引号包起来：CREATE DATABASE `wms-new`
 #      —— 在 bash 里反引号是「命令替换」，必须用单引号包住整条 SQL，
 #         或写 \` 转义，否则会被当成命令执行（报 command not found）。
-#   2. 必须按 01 → 02 → 03 → 04 顺序执行，不可跳步。
+#   2. 必须按 01 → 02 → 03 → 04 → 05 顺序执行，不可跳步。
+#      05 给两张相机表加 camera_type 列（幂等），漏跑则清理脚本查不到
+#      "哪些相机不能删"，保护集恒为空 → 每小时清理直接中止并告警。
 #   3. 用 `mysql < file` 直接重定向导入，中文不会乱码
 #      （bash 重定向是字节流，不做编码转换；Windows PowerShell 的管道会按 GBK 重编码）。
 #   4. 02 会 DROP 并重建 21 张表 —— 只适用于空库。
@@ -60,6 +62,7 @@ SCRIPTS=(
   "02_final_schema_p0:P0 维度表与事实表"
   "03_system_settings:系统设置"
   "04_align_entity_columns:实体类列对齐"
+  "05_camera_type_migration:相机类型隔离（REAL/TEST）"
 )
 
 for entry in "${SCRIPTS[@]}"; do
@@ -93,8 +96,19 @@ else
   die "缺 dim_camera 表，设备上报接口会 500，请确认 02_final_schema_p0.sql 已执行"
 fi
 
-HAS_MAPPING="$(mysql "${MYSQL_ARGS[@]}" -N -B -e "SELECT COUNT(*) FROM ${DATABASE}.cfg_camera_defect_mapping;" 2>/dev/null | tr -d '[:space:]')"
-ok "缺陷映射条数：${HAS_MAPPING}"
+# 库名含连字符（wms-new）必须加反引号，否则被解析成 "wms 减 new" 语法错误；
+# 且该查询失败不应静默杀脚本（pipefail + set -e），显式兜底
+HAS_MAPPING="$(mysql "${MYSQL_ARGS[@]}" -N -B -e "SELECT COUNT(*) FROM \`${DATABASE}\`.cfg_camera_defect_mapping;" 2>/dev/null | tr -d '[:space:]' || true)"
+ok "缺陷映射条数：${HAS_MAPPING:-查询失败（表可能未建，不影响本次部署）}"
+
+# camera_type 是清理链路的安全阀：cleanup-zk54-incremental.sh 靠它算保护集。
+# 缺这一列不会报错，只会让"哪些相机不能删"恒为空 —— 静默失效，必须显式校验。
+CAMERA_TYPE_COLS="$(mysql "${MYSQL_ARGS[@]}" -N -B -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='${DATABASE}' AND column_name='camera_type' AND table_name IN ('dim_camera','camera_status');" 2>/dev/null | tr -d '[:space:]')"
+if [[ "$CAMERA_TYPE_COLS" == "2" ]]; then
+  ok "camera_type 已就位（dim_camera + camera_status）"
+else
+  die "camera_type 列缺失（应为 2 张表，实际 ${CAMERA_TYPE_COLS}），请确认 05_camera_type_migration.sql 已执行"
+fi
 
 echo
 ok "数据库初始化完成"
