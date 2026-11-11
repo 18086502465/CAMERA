@@ -74,4 +74,5 @@ python docs/scripts/gen_api_doc.py     # 从 Controller 源码重新提取
   铁律 2026-11-07 之后**只适用于 shell 侧**，Java 侧已改为只删行 —— 照旧文档改代码会直接造出批量裂图。
 - **生成物不手改**：`接口文档.md` 由 `gen_api_doc.py` 产出。
 - **历史稿只标状态不删除**：被推翻的结论加「⚠️ 已被 X 推翻」，保留推翻过程本身有价值。
-- **提交前自检**：`docs/scripts/check_doc_links.py` 校验全部相对链接与目录一致性。
+- **提交前自检**：`docs/scripts/check_doc_links.py` 校验全部相对链接与目录一致性；
+  `docs/scripts/check_legacy_paths.py` 拦截旧布局路径（`/opt/...`、`/data/...`）回流。
