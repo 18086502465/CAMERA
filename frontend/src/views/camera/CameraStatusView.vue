@@ -16,9 +16,13 @@
       <el-card shadow="never" class="kpi success"><span>运行中</span><strong>{{ stats.running }}</strong></el-card>
       <el-card shadow="never" class="kpi warning"><span>上传延迟/离线</span><strong>{{ stats.uploadDelay + stats.uploadOffline }}</strong></el-card>
       <el-card shadow="never" class="kpi danger"><span>故障/离线</span><strong>{{ stats.fault + stats.offline }}</strong></el-card>
-      <el-card shadow="never" class="kpi"><span>近批次图片</span><strong>{{ stats.imageCount }}</strong></el-card>
-      <el-card shadow="never" class="kpi danger"><span>高危缺陷</span><strong>{{ stats.highCount }}</strong></el-card>
+      <!-- 两个「累计」指标取自 camera-summaries，该接口不带时间参数 → 统计全部历史。
+           文案必须写「累计」：曾叫「近批次」，与产线统计的时间窗口径对不上（4337 vs 2411）。 -->
+      <el-card shadow="never" class="kpi" title="该相机自首次上报以来的全部图片数（不受时间窗限制）"><span>累计图片</span><strong>{{ stats.imageCount }}</strong></el-card>
+      <el-card shadow="never" class="kpi danger" title="该相机自首次上报以来的全部高危缺陷数（不受时间窗限制）"><span>累计高危缺陷</span><strong>{{ stats.highCount }}</strong></el-card>
     </div>
+
+    <p class="kpi-note">「累计」两项统计该相机自首次上报以来的全部历史（含测试相机），不受「产线统计」时间范围限制，两处数字不能直接对比。</p>
 
     <el-card shadow="never" class="table-card">
       <template #header>
@@ -232,7 +236,7 @@ const normalizeImage = (img) => ({
 // ★ 2026-11-05：相机身份匹配改为 **code-first**（详见 utils/camera-identity.js）。
 //   现场 camera_name 跨产线重名（ZK54 的 CV1_Cam1/CV2_Cam1 与 ZK23 同名），
 //   此前把 cameraName 也当匹配键 → ZK54 的相机拿到了 ZK23 的图片统计 →
-//   「近批次图片/高危缺陷」在"不筛选产线"时多算一整条产线（3133 变 6266）。
+//   「累计图片/累计高危缺陷」在"不筛选产线"时多算一整条产线（3133 变 6266）。
 const imageSummaryIndex = computed(() => {
   const rows = []
   recentImages.value.forEach(summaryRow => {
@@ -455,6 +459,7 @@ onBeforeUnmount(() => { if (timer) window.clearInterval(timer) })
 .head-actions { display: flex; align-items: center; gap: 10px; }
 .image-link { text-decoration: none; color: #2563eb; font-size: 13px; font-weight: 700; padding: 8px 12px; border-radius: 8px; background: #eff6ff; }
 .kpi-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.kpi-note { margin: -4px 0 12px; color: #64748b; font-size: 12px; line-height: 1.6; }
 .kpi { border: 1px solid #e5e7eb; border-radius: 14px; }
 .kpi span { display: block; color: #64748b; font-size: 13px; margin-bottom: 8px; }
 .kpi strong { display: block; color: #0f172a; font-size: 28px; line-height: 1; }
