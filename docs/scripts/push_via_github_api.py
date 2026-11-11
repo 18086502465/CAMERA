@@ -217,7 +217,12 @@ def main():
                       % (path, size / 1024.0 / 1024.0, sha[:8]))
 
         local_paths = {p for _, _, _, p in local_files}
-        removed = [p for p in remote_tree if p not in local_paths]
+        # ★ 只统计 blob。remote_tree 来自 recursive=1，同时含 144 个 tree（目录）
+        #   条目，而 local_paths 来自 `git ls-tree -r`（只列 blob）—— 不过滤就会
+        #   把每个目录都报成「本次删除的文件」，一条真实删除混在 144 行噪音里
+        #   （曾出现「删除 145 个」吓人一跳，实际只有 docs/scripts/deploy_jar.sh 一个）。
+        removed = [p for p, (_, _, typ) in remote_tree.items()
+                   if typ == 'blob' and p not in local_paths]
         if removed:
             print('  本次删除的文件 %d 个：' % len(removed))
             for p in removed[:5]:
