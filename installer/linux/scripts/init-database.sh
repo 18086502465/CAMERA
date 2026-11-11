@@ -24,7 +24,7 @@ MYSQL_PORT="${MYSQL_PORT:-3306}"
 MYSQL_USER="${MYSQL_USER:-root}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 DATABASE="${DATABASE:-wms-new}"
-INSTALL_DIR="${INSTALL_DIR:-/opt/camera-detection-system}"
+INSTALL_DIR="${INSTALL_DIR:-/main/app/dist}"
 SQL_DIR="${SQL_DIR:-${INSTALL_DIR}/sql}"
 
 while [[ $# -gt 0 ]]; do

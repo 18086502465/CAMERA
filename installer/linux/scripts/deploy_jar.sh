@@ -32,7 +32,7 @@
 set -u
 
 SRC="${1:-/tmp/time-bucket-demo.jar}"
-APP_DIR=/opt/camera-detection-system/app
+APP_DIR=/main/app/dist/app
 TARGET="$APP_DIR/time-bucket-demo.jar"
 SERVICE=camera-detection
 STAMP="$(date '+%Y%m%d_%H%M%S')"
@@ -150,6 +150,29 @@ echo "  备份      ：$BACKUP"
 echo "  回滚命令  ：sudo cp -p $BACKUP $TARGET && sudo systemctl restart $SERVICE"
 echo "  服务状态  ：$(systemctl is-active "$SERVICE" 2>/dev/null)"
 echo "  重启次数  ：$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null)"
+
+# --- 历史备份保留策略 -------------------------------------------------------
+# 每次部署都 cp 一份 60~70MB 的 .bak-<时间戳>，此前无回收策略：
+# 现场实测 4 天堆 35 份、共 2.1G（占 /opt 总量 2.3G 的 91%）。
+# 只在**部署成功后**清理，失败回滚路径必须保住 $BACKUP。
+JAR_BACKUP_KEEP="${JAR_BACKUP_KEEP:-3}"
+prune_jar_backups() {
+  local keep="$JAR_BACKUP_KEEP" stale=() f freed=0
+  [[ "$keep" =~ ^[0-9]+$ ]] || keep=3
+  (( keep < 1 )) && keep=1
+  mapfile -t stale < <(ls -1t "$TARGET".bak-* 2>/dev/null | tail -n "+$((keep + 1))")
+  if (( ${#stale[@]} == 0 )); then
+    log "历史备份清理：${keep} 份以内，无需清理"
+    return 0
+  fi
+  for f in "${stale[@]}"; do
+    freed=$((freed + $(stat -c %s "$f" 2>/dev/null || echo 0)))
+    sudo_do rm -f "$f"
+  done
+  log "历史备份清理：删除 ${#stale[@]} 份，释放 $((freed / 1024 / 1024)) MB（保留最近 ${keep} 份，可用 JAR_BACKUP_KEEP 调整）"
+}
+prune_jar_backups
+
 echo ""
 echo " 最近日志："
 journalctl -u "$SERVICE" --since "2 minutes ago" --no-pager 2>/dev/null | tail -15

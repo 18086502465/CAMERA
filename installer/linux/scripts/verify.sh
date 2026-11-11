@@ -10,8 +10,8 @@
 set -uo pipefail
 
 SERVICE_NAME="camera-detection"
-INSTALL_DIR="${INSTALL_DIR:-/opt/camera-detection-system}"
-WORK_DIR="${WORK_DIR:-/var/lib/camera-detection-system}"
+INSTALL_DIR="${INSTALL_DIR:-/main/app/dist}"
+WORK_DIR="${WORK_DIR:-/main/app}"
 
 if [[ -r /etc/default/camera-detection ]]; then
   # shellcheck disable=SC1091
@@ -136,7 +136,7 @@ done
 # 真正要检查的是配置里指的那个 —— 目录不存在会导致「上传返回成功但图片不落盘」。
 DEFECT_IMAGE_DIR="$(sed -n 's/^[[:space:]]*dir:[[:space:]]*\(.*\)$/\1/p' \
   "${INSTALL_DIR}/config/application.yml" 2>/dev/null | grep -E '^/' | head -1)"
-DEFECT_IMAGE_DIR="${DEFECT_IMAGE_DIR:-/data/camera-detection/images/defect-images/}"
+DEFECT_IMAGE_DIR="${DEFECT_IMAGE_DIR:-/main/app/data/images/defect-images/}"
 DEFECT_IMAGE_DIR="${DEFECT_IMAGE_DIR%/}"
 if [[ -d "$DEFECT_IMAGE_DIR" ]]; then
   if [[ -w "$DEFECT_IMAGE_DIR" ]]; then
@@ -146,6 +146,75 @@ if [[ -d "$DEFECT_IMAGE_DIR" ]]; then
   fi
 else
   check "缺陷图片目录" false "${DEFECT_IMAGE_DIR} 不存在 —— 图片上传会「成功但不落盘」"
+fi
+
+# --- 3a. 统一布局与数据盘（2026-11 新增）------------------------------------
+# 背景：全部产品文件收敛到 /main/app，/main 是**数据盘挂载点**。
+# 最危险的故障模式是「数据盘没挂上」—— 此时 /main 只是系统盘上的普通目录，
+# 程序与数据静默写进系统盘，重启或修好挂载后看起来"数据全丢"，且没有任何报错。
+# 因此这里把「挂载、unit 依赖、fstab、结构、图片白名单、跨盘副本」全部变成可验证项。
+# 只在 /etc/default 声明了 BASE 的机器上检查（老布局机器跳过，保持原有 32 项口径）。
+LAYOUT_ENABLED=0
+grep -q '^BASE=' /etc/default/camera-detection 2>/dev/null && LAYOUT_ENABLED=1
+
+if [[ "$LAYOUT_ENABLED" -eq 1 ]]; then
+  BASE="${BASE:-/main/app}"
+  BASE_MOUNT="$(dirname "$BASE")"
+  echo
+  echo "${C_HEAD}[3a] 统一布局与数据盘${C_OFF}"
+
+  MAIN_SRC="$(findmnt -n -o SOURCE --target "$BASE_MOUNT" 2>/dev/null || true)"
+  ROOT_SRC="$(findmnt -n -o SOURCE --target / 2>/dev/null || true)"
+  if [[ -n "$MAIN_SRC" && "$MAIN_SRC" != "$ROOT_SRC" ]]; then
+    check "数据盘挂载" true "${BASE_MOUNT} ← ${MAIN_SRC}（系统盘 ${ROOT_SRC}）"
+  else
+    check "数据盘挂载" false "${BASE_MOUNT} 与系统盘同设备（${ROOT_SRC:-未知}）—— 数据会静默写进系统盘"
+  fi
+
+  if grep -qx "RequiresMountsFor=${BASE_MOUNT}" /etc/systemd/system/camera-detection.service 2>/dev/null; then
+    check "unit 挂载依赖" true "RequiresMountsFor=${BASE_MOUNT}"
+  else
+    check "unit 挂载依赖" false "camera-detection.service 缺 RequiresMountsFor=${BASE_MOUNT} —— 盘未挂载时会启动并写错盘"
+  fi
+
+  FSTAB_LINE="$(awk -v m="$BASE_MOUNT" '$2==m' /etc/fstab 2>/dev/null | head -1)"
+  if [[ -z "$FSTAB_LINE" ]]; then
+    check "fstab 挂载项" false "/etc/fstab 无 ${BASE_MOUNT} 条目 —— 重启后不会自动挂载"
+  elif [[ "$FSTAB_LINE" == *nofail* ]]; then
+    check "fstab 挂载项" false "${BASE_MOUNT} 带 nofail —— 盘故障时会静默退化为系统盘目录"
+  else
+    check "fstab 挂载项" true "${BASE_MOUNT} 无 nofail"
+  fi
+
+  LAYOUT_MISSING=""
+  for _p in "${BASE}/dist/app/time-bucket-demo.jar" "${BASE}/dist/config/application.yml" \
+            "${BASE}/data/images/defect-images" "${BASE}/logs" \
+            "${BASE}/data/backup/db/full" "${BASE}/run"; do
+    [[ -e "$_p" ]] || LAYOUT_MISSING="${LAYOUT_MISSING} ${_p#"${BASE}"/}"
+  done
+  if [[ -z "$LAYOUT_MISSING" ]]; then
+    check "布局完整性" true "dist / data / logs / run 齐备"
+  else
+    check "布局完整性" false "缺少：${LAYOUT_MISSING# }"
+  fi
+
+  case "$DEFECT_IMAGE_DIR" in
+    */defect-images*) check "图片路径白名单" true "$DEFECT_IMAGE_DIR" ;;
+    *) check "图片路径白名单" false "${DEFECT_IMAGE_DIR:-未配置} 不含 /defect-images/ —— Java 读图会全部 403" ;;
+  esac
+
+  # 注意：BACKUP_FULL_DIR 在 3c 才定义，这里必须自带默认值（set -u 下未定义即崩）
+  OFF_DB="${OFFSITE_DIR:-/var/backups/camera-detection/db}"
+  BAK_DIR_3A="${BACKUP_FULL_DIR:-/main/app/data/backup/db/full}"
+  OFF_SRC="$(df --output=source "$OFF_DB" 2>/dev/null | tail -1 || true)"
+  BAK_SRC="$(df --output=source "$BAK_DIR_3A" 2>/dev/null | tail -1 || true)"
+  if [[ -d "$OFF_DB" && -n "$OFF_SRC" && "$OFF_SRC" != "$BAK_SRC" ]]; then
+    check "跨盘副本" true "${OFF_SRC} ≠ ${BAK_SRC}（系统盘上的副本）"
+  elif [[ -d "$OFF_DB" ]]; then
+    check "跨盘副本" false "${OFF_DB} 与主备份同盘（${BAK_SRC:-?}）—— 不抗单盘故障"
+  else
+    check "跨盘副本" false "${OFF_DB} 不存在 —— 数据盘故障将同时丢失库与备份"
+  fi
 fi
 
 # 从 /etc/default 读数据库口令（640 root）。**定义必须放在第一个使用点之前** ——
@@ -226,7 +295,7 @@ fi
 # **不产生任何错误日志**，因为没有失败，只是没有发生。备份唯一的失败模式正是
 # 「静默停摆」，而这个模式此前没有任何检查项能发现。
 # 阈值 26h：每日 01:00 跑 + 最多 5 分钟随机延迟，留 1 小时余量。
-BACKUP_FULL_DIR="${BACKUP_FULL_DIR:-/data/camera-detection/backup/db/full}"
+BACKUP_FULL_DIR="${BACKUP_FULL_DIR:-/main/app/data/backup/db/full}"
 BACKUP_MAX_AGE_H="${BACKUP_MAX_AGE_H:-26}"
 if [[ -d "$BACKUP_FULL_DIR" ]]; then
   LATEST_BACKUP="$(ls -1t "$BACKUP_FULL_DIR"/*.sql.zst 2>/dev/null | head -1)"

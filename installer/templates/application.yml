@@ -113,9 +113,10 @@ defect-image:
     #
     # 容量提示（实测，20 相机 × 5 张/分钟 = 144000 张/天）：
     #   单张 350 KB → 日增 48 GB；放在 50G 的 /var 上约 1 天就写满。
-    #   因此生产环境应指向大容量独立分区（实测机 /data 为 500G XFS）。
+    #   因此生产环境指向**数据盘上的统一根** /main/app/data/images/defect-images/。
     #   留空则回落到 ${app.home}/data/uploads/defect-images/。
-    dir: /data/camera-detection/images/defect-images/
+    #   ★ 目录名里的 defect-images 不可改：Java 读图白名单按 "/defect-images/" 过滤。
+    dir: /main/app/data/images/defect-images/
 
 logging:
   level:

@@ -18,7 +18,7 @@
 #
 # 日志与状态：
 #   全过程输出同时写入 /var/log/camera-detection-deploy.log（排障只看这一个文件）；
-#   最后成功阶段记在 /var/lib/camera-detection-system/.deploy-state，
+#   最后成功阶段记在 /var/lib/camera-detection/.deploy-state（系统盘，不依赖数据盘挂载），
 #   失败时脚本会直接打印「用哪条命令续跑」，不用自己推算。
 #
 # 注意：
@@ -38,14 +38,21 @@ WITH_NGINX=0
 ASSUME_YES=0
 CHECK_ONLY=0
 
-APP_DIR="/opt/camera-detection-system"
+APP_DIR="/main/app/dist"
 DEFAULT_CFG="/etc/default/camera-detection"
 MYSQL_TUNE_CNF="/etc/mysql/mysql.conf.d/zz-camera-detection.cnf"
-DATA_BASE="/data/camera-detection"
+BASE="/main/app"
+BASE_MOUNT="/main"
+DATA_BASE="/main/app/data"
+IMAGES_SRC="${DATA_BASE}/images/defect-images"
+MYSQL_DATA_DIR="${DATA_BASE}/mysql"
+LOG_BASE="/main/app/logs"
 DB_NAME="wms-new"
 PORT=8091
+# 引导期产物（部署日志、阶段状态）必须落在**系统盘**：p2 之前数据盘还没挂载，
+# 写 /main 会直接失败，而这两样东西正是排障时最需要的。
 DEPLOY_LOG="/var/log/camera-detection-deploy.log"
-STATE_FILE="/var/lib/camera-detection-system/.deploy-state"
+STATE_FILE="/var/lib/camera-detection/.deploy-state"
 CURRENT_STAGE="p0"
 SELF_PATH="$(readlink -f "$0")"
 
@@ -76,7 +83,7 @@ usage() {
   p5 应用安装    p6 建库      p7 JVM 调优并重启    p8 验收
 
 日志：/var/log/camera-detection-deploy.log
-状态：/var/lib/camera-detection-system/.deploy-state（记录最后成功阶段）
+状态：/var/lib/camera-detection/.deploy-state（记录最后成功阶段）
 USAGE
   exit 0
 }
@@ -212,10 +219,10 @@ stage_p0() {
     ok "根分区可用 ${root_avail:-?}G"
   fi
 
-  if findmnt -no TARGET /data >/dev/null 2>&1; then
-    ok "/data 已挂载：$(df -h /data | awk 'NR==2{print $2" 总 / "$4" 可用"}')（p2 将跳过挂盘）"
+  if [[ -d "$BASE_MOUNT" ]] && findmnt -no TARGET "$BASE_MOUNT" >/dev/null 2>&1; then
+    ok "${BASE_MOUNT} 已挂载：$(df -h "$BASE_MOUNT" | awk 'NR==2{print $2" 总 / "$4" 可用"}')（p2 将跳过挂盘）"
   else
-    warn "/data 未挂载 —— p2 需要 --disk 指定数据盘，否则图片落在系统盘"
+    warn "${BASE_MOUNT} 未挂载 —— p2 需 --disk 指定数据盘；未挂载时 install.sh 会拒绝安装（绝不降级到系统盘）"
   fi
 
   [[ -f "${APP_DIR}/app/time-bucket-demo.jar" ]] \
@@ -311,59 +318,87 @@ list_candidate_disks() {
 }
 
 stage_p2() {
-  log "p2 数据盘"
+  log "p2 数据盘 → ${BASE_MOUNT}"
   if [[ -n "$DISK" ]]; then
     [[ -b "$DISK" ]] || die "${DISK} 不是块设备"
 
-    local sysdisk
+    local sysdisk cur_target
     sysdisk="$(lsblk -no PKNAME "$(findmnt -no SOURCE /)" 2>/dev/null | head -1)"
-    [[ -n "$sysdisk" && "/dev/${sysdisk}" == "$DISK" ]] && die "${DISK} 是系统盘，拒绝格式化"
+    [[ -n "$sysdisk" && "/dev/${sysdisk}" == "$DISK" ]] && die "${DISK} 是系统盘，拒绝操作"
 
-    if findmnt -no TARGET "$DISK" >/dev/null 2>&1; then
-      ok "${DISK} 已挂载于 $(findmnt -no TARGET "$DISK")，跳过格式化"
+    cur_target="$(findmnt -no TARGET "$DISK" 2>/dev/null | head -1 || true)"
+
+    if [[ "$cur_target" == "$BASE_MOUNT" ]]; then
+      ok "${DISK} 已挂载于 ${BASE_MOUNT}，跳过挂盘"
     else
+      if [[ -n "$cur_target" ]]; then
+        # 已挂在别处（典型：老机器的 /data）。有数据就绝不自动搬 —— 交给迁移脚本。
+        local has_data=""
+        has_data="$(ls -A "$cur_target" 2>/dev/null | grep -v '^lost+found$' | head -1 || true)"
+        if [[ -n "$has_data" ]]; then
+          die "${DISK} 当前挂载于 ${cur_target} 且非空。本脚本不搬数据：
+       ① 老机器原地迁移：sudo bash ${SELF_PATH%/*}/migrate-to-main-app.sh --apply
+       ② 确认 ${cur_target} 下无需保留的数据：umount ${cur_target}，再重跑本脚本"
+        fi
+        umount "$cur_target"
+        ok "已卸载空挂载点 ${cur_target}"
+      fi
+
       local fstype
       fstype="$(blkid -o value -s TYPE "$DISK" 2>/dev/null || true)"
-      if [[ -n "$fstype" ]]; then
-        # 已有文件系统：只挂载，绝不 mkfs
-        ok "${DISK} 已有文件系统（${fstype}），仅挂载不格式化"
-      else
-        warn "即将格式化 ${DISK}（XFS），该盘现有数据将全部丢失"
+      if [[ -z "$fstype" ]]; then
+        warn "即将格式化 ${DISK}（ext4），该盘现有数据将全部丢失"
         lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT "$DISK" || true
         if [[ "$ASSUME_YES" -ne 1 ]]; then
           local ans
-          read -r -p "确认格式化为 XFS 并挂载到 /data ？输入 yes 继续: " ans
+          read -r -p "确认格式化为 ext4 并挂载到 ${BASE_MOUNT} ？输入 yes 继续: " ans
           [[ "$ans" == "yes" ]] || die "已取消"
         fi
-        command -v mkfs.xfs >/dev/null 2>&1 || apt-get install -y -qq xfsprogs
-        mkfs.xfs -f "$DISK" >/dev/null
-        fstype="xfs"
-        ok "已格式化 ${DISK} 为 XFS"
+        mkfs.ext4 -F -L camera-data "$DISK" >/dev/null
+        fstype="ext4"
+        ok "已格式化 ${DISK} 为 ext4"
+      else
+        ok "${DISK} 已有文件系统（${fstype}），仅挂载不格式化"
       fi
-      mkdir -p /data
-      grep -q "^${DISK}[[:space:]]" /etc/fstab 2>/dev/null \
-        || printf '%s /data %s defaults,noatime 0 2\n' "$DISK" "$fstype" >> /etc/fstab
+
+      mkdir -p "$BASE_MOUNT"
+      local uuid
+      uuid="$(blkid -o value -s UUID "$DISK" 2>/dev/null || true)"
+      [[ -n "$uuid" ]] || die "取不到 ${DISK} 的 UUID，拒绝写 fstab"
+      # ★ 用 UUID 而非设备名：sda/sdb 顺序会变，写错就是开机挂不上。
+      # ★ 绝不加 nofail：盘挂不上必须让服务启动失败，而不是静默写系统盘。
+      if grep -qE "[[:space:]]${BASE_MOUNT}[[:space:]]" /etc/fstab; then
+        sed -i "\|${BASE_MOUNT}[[:space:]]|s|^.*$|UUID=${uuid} ${BASE_MOUNT} ${fstype} defaults 0 2|" /etc/fstab
+      else
+        printf 'UUID=%s %s %s defaults 0 2\n' "$uuid" "$BASE_MOUNT" "$fstype" >> /etc/fstab
+      fi
       systemctl daemon-reload 2>/dev/null || true
-      mount /data
-      ok "已挂载 ${DISK} → /data"
+      mount "$BASE_MOUNT"
+
+      local mnt_src root_src
+      mnt_src="$(findmnt -n -o SOURCE --target "$BASE_MOUNT" 2>/dev/null || true)"
+      root_src="$(findmnt -n -o SOURCE --target / 2>/dev/null || true)"
+      [[ -n "$mnt_src" && "$mnt_src" != "$root_src" ]] \
+        || die "${BASE_MOUNT} 挂载后仍不是独立设备（${mnt_src:-未知}），已中止"
+      ok "已挂载 ${DISK} → ${BASE_MOUNT}（UUID=${uuid}）"
     fi
   fi
 
-  if [[ -d /data ]] && findmnt -no TARGET /data >/dev/null 2>&1; then
-    # /data 是 755 root:root，应用以 cdsys 运行建不了目录，必须 root 先建树
-    mkdir -p "${DATA_BASE}/images/defect-images" "${DATA_BASE}/backup/db/full" "${DATA_BASE}/backup/db/binlog"
-    ok "/data 可用：$(df -h /data | awk 'NR==2{print $2" 总 / "$4" 可用"}')"
+  if [[ -d "$BASE_MOUNT" ]] && findmnt -no TARGET "$BASE_MOUNT" >/dev/null 2>&1; then
+    # 统一目录树：root 先建好再 chown —— 数据盘根是 755 root，cdsys 建不了目录
+    mkdir -p "${DATA_BASE}/images/defect-images" "${DATA_BASE}/images/.cleanup-trash" \
+             "${DATA_BASE}/uploads/images" \
+             "${DATA_BASE}/backup/db/full" "${DATA_BASE}/backup/db/binlog" "${DATA_BASE}/backup/db/logs" \
+             "${LOG_BASE}" "${BASE}/run" "${BASE}/tmp" "${BASE}/backup" \
+             "${MYSQL_DATA_DIR}" "/var/backups/camera-detection/db/full" \
+             "/var/backups/camera-detection/db/binlog" "/var/backups/camera-detection/images"
+    ok "${BASE_MOUNT} 可用：$(df -h "$BASE_MOUNT" | awk 'NR==2{print $2" 总 / "$4" 可用"}')"
   else
-    warn "未挂载 /data，图片将落在系统盘的 data/uploads 目录。"
-    warn "20 台相机日增可达 1.3 GB，100G 系统盘会很快写满 —— 建议先挂数据盘再继续。"
+    # 不提供"降级到系统盘"选项：统一布局下数据盘是硬要求
     echo "  可用的空白磁盘候选（未格式化、未挂载）："
     list_candidate_disks || true
-    echo "  选定后用法：sudo bash $0 --disk /dev/sdX --from p2"
-    if [[ "$ASSUME_YES" -ne 1 ]]; then
-      local ans
-      read -r -p "仍要用系统盘继续？输入 yes 继续: " ans
-      [[ "$ans" == "yes" ]] || die "已取消。请加 --disk /dev/sdX 后重跑"
-    fi
+    die "${BASE_MOUNT} 未挂载 —— 统一布局要求数据盘先挂载到 ${BASE_MOUNT}：
+       sudo bash $0 --disk /dev/sdX --from p2"
   fi
 }
 
@@ -426,15 +461,53 @@ SQL
   export MYSQL_PWD="$DB_PASSWORD"
 
   # buffer pool：默认 128M 是玩具口径。按物理内存 50% 且不超过 4G，给小内存机兜底。
-  local mem_kb pool_mb
+  local mem_kb pool_mb cur_datadir
   mem_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo)"
   pool_mb=$(( mem_kb / 1024 / 2 ))
   [[ "$pool_mb" -gt 4096 ]] && pool_mb=4096
   [[ "$pool_mb" -lt 256 ]] && pool_mb=256
 
+  # --- datadir 迁到数据盘（2026-11 统一布局）---------------------------------
+  # 统一布局要求「所有产品文件都在 /main/app 下」，数据库也不例外。
+  # 顺序有硬约束：先停库 → 复制 → chown → **写 AppArmor 放行规则** → 写 datadir → 启动。
+  # AppArmor 规则晚于 start 才写，mysqld 会在启动阶段被拒绝访问新目录
+  # （报 "Can't create/write to file ... (Errcode: 13)"）——这是 Ubuntu 上迁移 datadir 的头号失败原因。
+  cur_datadir="$(MYSQL_PWD="$DB_PASSWORD" mysql -N -B -e 'SELECT @@datadir;' 2>/dev/null | tr -d '[:space:]' || true)"
+
+  if [[ "${cur_datadir%/}" == "${MYSQL_DATA_DIR}" ]]; then
+    ok "MySQL datadir 已在 ${MYSQL_DATA_DIR}"
+  else
+    log "迁移 MySQL datadir：${cur_datadir:-未知} → ${MYSQL_DATA_DIR}"
+    systemctl stop mysql
+    mkdir -p "$MYSQL_DATA_DIR"
+    rsync -aHAX "${cur_datadir%/}/" "${MYSQL_DATA_DIR}/" \
+      || die "datadir 复制失败（${cur_datadir} → ${MYSQL_DATA_DIR}）"
+    chown -R mysql:mysql "$MYSQL_DATA_DIR"
+    chmod 700 "$MYSQL_DATA_DIR"
+    ok "已复制 $(du -sh "$MYSQL_DATA_DIR" 2>/dev/null | cut -f1) 到数据盘（原目录保留作回滚）"
+
+    if [[ -d /etc/apparmor.d ]]; then
+      local ap=/etc/apparmor.d/local/usr.sbin.mysqld
+      mkdir -p "$(dirname "$ap")"
+      touch "$ap"
+      if ! grep -qF "${MYSQL_DATA_DIR}/" "$ap"; then
+        {
+          printf '\n# 产线缺陷在线AI检测系统：MySQL datadir 位于数据盘（deploy.sh 追加）\n'
+          printf '  %s/ r,\n'  "$MYSQL_DATA_DIR"
+          printf '  %s/** rwk,\n' "$MYSQL_DATA_DIR"
+        } >> "$ap"
+        apparmor_parser -r /etc/apparmor.d/usr.sbin.mysqld 2>/dev/null \
+          || warn "AppArmor 规则重载失败（若系统未强制 AppArmor 可忽略）"
+        ok "AppArmor 已放行 ${MYSQL_DATA_DIR}"
+      fi
+    fi
+  fi
+
   cat > "$MYSQL_TUNE_CNF" <<EOF
 # 产线缺陷在线AI检测系统 —— 由 deploy.sh 生成，独立文件便于回滚
 [mysqld]
+# 数据库文件统一落在数据盘（/main），不再使用系统盘 /var/lib/mysql
+datadir=${MYSQL_DATA_DIR}
 innodb_buffer_pool_size=${pool_mb}M
 innodb_flush_log_at_trx_commit=2
 max_connections=200
@@ -442,8 +515,19 @@ max_connections=200
 bind-address=127.0.0.1
 EOF
   chmod 0644 "$MYSQL_TUNE_CNF"
+  systemctl reset-failed mysql 2>/dev/null || true
   systemctl restart mysql
-  ok "buffer pool=${pool_mb}M，bind-address=127.0.0.1"
+
+  # 断言：datadir 必须真的生效（写进 cnf 不等于 MySQL 接受了它）
+  local i final_datadir=""
+  for i in $(seq 1 15); do
+    final_datadir="$(MYSQL_PWD="$DB_PASSWORD" mysql -N -B -e 'SELECT @@datadir;' 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -n "$final_datadir" ]] && break
+    sleep 2
+  done
+  [[ "${final_datadir%/}" == "${MYSQL_DATA_DIR}" ]] \
+    || die "MySQL 未使用新 datadir（实际 ${final_datadir:-无响应}，期望 ${MYSQL_DATA_DIR}）。查看：journalctl -u mysql -n 50"
+  ok "datadir=${final_datadir}，buffer pool=${pool_mb}M，bind-address=127.0.0.1"
 }
 
 # ==============================================================================
@@ -588,7 +672,7 @@ stage_p7() {
     echo "----- journalctl -u camera-detection -n 40 -----"
     journalctl -u camera-detection -n 40 --no-pager 2>/dev/null || true
     echo "----------------------------------------------"
-    warn "若为启动失败：修好后可以 --from p7 重试；业务日志在 /var/lib/camera-detection-system/logs/"
+    warn "若为启动失败：修好后可以 --from p7 重试；业务日志在 /main/app/logs/"
   fi
 }
 
@@ -615,12 +699,12 @@ stage_p8() {
   set -e
 
   if [[ "$rc" -eq 0 ]]; then
-    ok "验收 32/32 全通过"
+    ok "验收全通过"
   else
     warn "验收有未通过项（verify.sh 退出码 ${rc}）"
     echo "  复查：sudo VERIFY_PASSWORD='<应用口令>' MYSQL_PASSWORD='<库口令>' bash ${APP_DIR}/scripts/verify.sh"
     echo "  服务日志：journalctl -u camera-detection -n 100 --no-pager"
-    echo "  业务日志：/var/lib/camera-detection-system/logs/camera-detection-system.log"
+    echo "  业务日志：/main/app/logs/camera-detection-system.log"
     echo "  备份未到时间属正常：定时器每日 01:00 首跑（systemctl list-timers camera-detection-backup）"
   fi
   return 0

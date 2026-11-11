@@ -49,7 +49,7 @@
 #         告警页反映「当前状态」，不是「历史次数」。
 #
 # 频率：cron 每小时 :15（root）
-# 日志：/data/camera-detection/backup/cleanup_zk54.log（追加，分级 INFO/WARN/ERROR）
+# 日志：/main/app/data/backup/cleanup_zk54.log（追加，分级 INFO/WARN/ERROR）
 #
 # 可配置环境变量（建议写进 /etc/default/camera-detection）：
 #   MYSQL_PASSWORD          数据库口令（必需）
@@ -59,7 +59,7 @@
 #   DB_NAME / DB_HOST / DB_USER
 #   PROTECTED_CODES         额外保护的真实相机编号（逗号分隔，运维临时加码用）
 #   MAX_SINGLE_DELETE       单轮允许删除的 defect_image_file 最大行数（默认 50000）
-#   TRASH                   待删中转目录（默认 /data/camera-detection/images/.cleanup-trash，
+#   TRASH                   待删中转目录（默认 /main/app/data/images/.cleanup-trash，
 #                           必须与 IMG_ROOT 同文件系统；勿指到 IMG_ROOT 内部）
 #
 # 参数：
@@ -74,16 +74,26 @@ set -uo pipefail
 # 优先从 /etc/default/camera-detection 读（640 root:root）——
 # cron 文件是全局可读的，把口令写进 cron 等于把库口令公开给所有本地用户。
 # 找不到该文件时回退到已导出的 MYSQL_PASSWORD 环境变量（手工调试用）。
+#
+# ★ 但「调用方显式传入的值必须优先于该文件」：
+#   运维临时收紧阈值 / 回归测试降到 2 行时，写在外面的 MAX_SINGLE_DELETE=2 不能被
+#   /etc/default 里的 50000 覆盖，否则防线三（超阈值中止）根本没法验证 —— 现场实测：
+#   迁移把 MAX_SINGLE_DELETE 写进 /etc/default 后，防线三回归从「退出码 4」变成「退出码 0」，
+#   而且真的删了数据。所以先记住外部值，source 之后再盖回去。
+_ENV_MAX_SINGLE_DELETE="${MAX_SINGLE_DELETE:-}"
+_ENV_PROTECTED_CODES="${PROTECTED_CODES:-}"
 if [[ -z "${MYSQL_PASSWORD:-}" && -r /etc/default/camera-detection ]]; then
   # shellcheck disable=SC1091
   . /etc/default/camera-detection
 fi
+[[ -n "$_ENV_MAX_SINGLE_DELETE" ]] && MAX_SINGLE_DELETE="$_ENV_MAX_SINGLE_DELETE"
+[[ -n "$_ENV_PROTECTED_CODES" ]] && PROTECTED_CODES="$_ENV_PROTECTED_CODES"
 
-IMG_ROOT="${IMG_ROOT:-/data/camera-detection/images/defect-images}"
+IMG_ROOT="${IMG_ROOT:-/main/app/data/images/defect-images}"
 # 待删中转区：必须与 IMG_ROOT 在同一文件系统（rename 不能跨盘），
 # 但要放在 IMG_ROOT **之外** —— 放里面会被其他清理任务和备份脚本当成日期目录扫到。
-TRASH="${TRASH:-/data/camera-detection/images/.cleanup-trash}"
-LOG="${LOG:-/data/camera-detection/backup/cleanup_zk54.log}"
+TRASH="${TRASH:-/main/app/data/images/.cleanup-trash}"
+LOG="${LOG:-/main/app/logs/cleanup_zk54.log}"
 LOCK="${LOCK:-/var/run/camera-detection-cleanup.lock}"
 DB_NAME="${DB_NAME:-wms-new}"
 DB_HOST="${DB_HOST:-127.0.0.1}"

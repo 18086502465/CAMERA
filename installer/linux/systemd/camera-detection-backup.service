@@ -3,6 +3,9 @@ Description=产线缺陷在线AI检测系统 —— 数据库全量备份
 After=network-online.target mysql.service
 Wants=network-online.target
 
+# 备份源在数据盘（/main），未挂载时不执行，避免备份出一份空目录
+RequiresMountsFor=/main
+
 [Service]
 Type=oneshot
 User=cdsys
@@ -12,15 +15,15 @@ Group=cdsys
 # 不把口令写在 unit 里 —— unit 文件是全局可读的
 EnvironmentFile=-/etc/default/camera-detection
 
-ExecStart=/opt/camera-detection-system/scripts/backup-database.sh
+ExecStart=/main/app/dist/scripts/backup-database.sh
 
 # 备份允许的最长运行时间（按 2.6GB 库约 60s 估算，留足余量）
 TimeoutStartSec=1800
 
-# 写备份目录需要权限（若 BACKUP_DIR 指向 /data 下的路径）
-ReadWritePaths=/data/camera-detection
-# 跨盘副本（2026-11-07 v3）：DB 副本与图片热窗口落在 vda 的 /var 上，
-# 与 /data 所在的 vdb 是两块物理盘 —— 这才是能抗单盘故障的那一份。
+# 主备份在数据盘；跨盘副本在系统盘
+ReadWritePaths=/main/app/data
+# 跨盘副本（2026-11 统一布局）：业务数据与库都在数据盘 /main 上，
+# 副本落在系统盘 /var/backups —— 这才是能抗单盘故障的那一份。
 # 路径写错会直接 EROFS 失败，比"以为有副本其实没写进去"好。
 ReadWritePaths=/var/backups/camera-detection
 

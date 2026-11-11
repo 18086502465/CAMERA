@@ -30,7 +30,7 @@
 # 安装：
 #   sudo install -m 0755 cleanup-defect-images.sh /usr/local/bin/
 #   sudo tee /etc/cron.d/cleanup-defect-images > /dev/null <<'EOF'
-#   30 3 * * * root /usr/local/bin/cleanup-defect-images.sh
+#   30 3 * * * root /main/app/dist/scripts/cleanup-defect-images.sh
 #   EOF
 #
 # 可配置环境变量（建议写进 /etc/default/camera-detection）：
@@ -51,7 +51,7 @@
 # ==============================================================================
 set -uo pipefail
 
-DIR="${DIR:-/data/camera-detection/images/defect-images}"
+DIR="${DIR:-/main/app/data/images/defect-images}"
 KEEP_DAYS="${KEEP_DAYS:-730}"
 KEEP_CAMERA_IMAGES_DAYS="${KEEP_CAMERA_IMAGES_DAYS:-30}"
 DB_NAME="${DB_NAME:-wms-new}"

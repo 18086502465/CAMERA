@@ -10,20 +10,19 @@
 #   5. 可选异机同步（rsync）
 #
 # 安装：
-#   sudo install -m 0755 backup-database.sh /opt/camera-detection-system/scripts/
+#   sudo install -m 0755 backup-database.sh /main/app/dist/scripts/
 #
 # 手动执行：
-#   MYSQL_PASSWORD='xxx' bash /opt/camera-detection-system/scripts/backup-database.sh
+#   MYSQL_PASSWORD='xxx' bash /main/app/dist/scripts/backup-database.sh
 #
 # 作为 systemd timer 运行（推荐，见 camera-detection-backup.service/.timer）：
 #   由 /etc/default/camera-detection 提供 MYSQL_PASSWORD 环境变量
 # ==============================================================================
 set -euo pipefail
 
-# 注意：备份目录的父路径（/data）默认是 755 root:root，
-# 而备份脚本以 cdsys 身份运行 —— 无法在 /data 下自行创建 /data/backup。
-# 因此默认路径必须落在已由 root 建好并 chown 给 cdsys 的 /data/camera-detection/ 内。
-BACKUP_DIR="${BACKUP_DIR:-/data/camera-detection/backup/db}"
+# 统一布局（2026-11）：业务数据与备份主目录都在数据盘 /main/app/data 下，
+# 由 install.sh 以 root 建好并 chown 给 cdsys —— 本脚本以 cdsys 身份运行也能写。
+BACKUP_DIR="${BACKUP_DIR:-/main/app/data/backup/db}"
 DB_NAME="${DB_NAME:-wms-new}"
 DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-3306}"
@@ -33,11 +32,10 @@ KEEP_FULL_DAYS="${KEEP_FULL_DAYS:-14}"
 # 磁盘水位上限（百分比），超过则跳过本次备份，避免把磁盘写满
 MAX_DISK_USE="${MAX_DISK_USE:-85}"
 # 是否同步到跨盘副本（目录存在才同步）
-# ★ 2026-11-07 v3：原默认值 /data/camera-detection/backup/offsite 与源目录**同一块盘**
-#   （实测 df 目标同为 /dev/mapper/vg0-data），日志却写「已同步到异机目录」——
-#   单盘故障源和副本一起丢，而且 rsync --delete 会在源被误清时把副本一并清空。
-#   现场 vda（系统盘，/var 43G 可用）与 vdb（数据盘，/data）是两块物理盘，
-#   把副本落到 /var/backups 才真正抗得住 /data 那块盘坏。
+# ★ 统一布局后业务数据全在数据盘：主备份 ${BACKUP_DIR} 在 /main 上，
+#   副本必须落在**系统盘**（/var/backups/...）才真正抗得住单盘故障。
+#   backup-database.sh 会校验两者是否同一设备，同盘则告警并**跳过同步**
+#   （同盘副本不仅无意义，还会因 rsync 把源侧误删一起复制过去）。
 OFFSITE_DIR="${OFFSITE_DIR:-/var/backups/camera-detection/db}"
 
 # --- 图片热窗口备份（v3 P0-3）--------------------------------------------------
@@ -48,7 +46,7 @@ OFFSITE_DIR="${OFFSITE_DIR:-/var/backups/camera-detection/db}"
 #   跨盘副本按全量镜像会长期占用 /var 这块系统盘（43G），不划算。
 # 只备份近 30 天（≈2GB，随业务量浮动），覆盖「最近一个月业务追溯」这个真实需求。
 # ⚠️ 估算容量前必须先排除 TEST 相机：含压测流量是 780MB/天，会高估一个数量级。
-IMAGES_SRC="${IMAGES_SRC:-/data/camera-detection/images/defect-images}"
+IMAGES_SRC="${IMAGES_SRC:-/main/app/data/images/defect-images}"
 IMAGES_DST="${IMAGES_DST:-/var/backups/camera-detection/images}"
 IMAGE_BACKUP_KEEP_DAYS="${IMAGE_BACKUP_KEEP_DAYS:-30}"
 # 副本总量上限（GB）。★ 2026-11-07 实测副本 3.6G vs 源 911M，全部是 TEST 相机压测
@@ -61,7 +59,7 @@ IMAGE_BACKUP_MAX_GB="${IMAGE_BACKUP_MAX_GB:-20}"
 
 FULL_DIR="${BACKUP_DIR}/full"
 BINLOG_DIR="${BACKUP_DIR}/binlog"
-LOG_DIR="${BACKUP_DIR}/logs"
+LOG_DIR="${LOG_DIR:-/main/app/logs}"
 LOG_FILE="${LOG_DIR}/backup.log"
 # binlog 副本保留天数。与 KEEP_FULL_DAYS 对齐（默认都是 14 天）：
 # 比最早的本地全量还旧的 binlog 没有「可以往上回放」的基线快照，留着也没用。
@@ -403,32 +401,32 @@ if [[ "$DELETED" -gt 0 ]]; then
   log "已清理 ${DELETED} 份超过 ${KEEP_FULL_DAYS} 天的旧备份"
 fi
 
-# --- 跨盘副本（v3 P1-2）--------------------------------------------------------
-# 2026-11-07 v3 改动：
-#   1. 默认目录从 /data/.../offsite（同盘）改为 /var/backups/camera-detection/db
-#      （现场 vda，与 /data 所在的 vdb 是两块物理盘）；
-#   2. 去掉 --delete —— 它是「镜像」语义不是「备份」语义。源目录被误清空
+# --- 跨盘副本 -------------------------------------------------------------------
+# 2026-11 统一布局后：主备份在数据盘（/main），副本必须落在系统盘才抗单盘故障。
+#   1. 默认目录 /var/backups/camera-detection/db（系统盘）；
+#   2. 不用 --delete —— 它是「镜像」语义不是「备份」语义。源目录被误清空
 #      （脚本 bug / 误 rm / 磁盘错误）时，--delete 会把副本一起清空；
-#   3. 副本侧自己做保留期清理，避免只增不减。
-#   仍然只是「跨盘」，不是「异机」：抗单盘故障，不抗整机/机房故障。日志如实这么写。
+#   3. 副本侧自己做保留期清理，避免只增不减；
+#   4. 与源同设备时直接跳过同步并告警（同盘副本无意义）。
+#   仍然只是「跨盘」，不是「异机」：抗单盘故障，不抗整机/机房故障。
 if [[ -d "$OFFSITE_DIR" ]]; then
   if same_device "$FULL_DIR" "$OFFSITE_DIR"; then
-    log "WARN: 副本目录与备份源在同一文件系统（$(df --output=source "$OFFSITE_DIR" 2>/dev/null | tail -1)）—— 不抗单盘故障"
+    log "WARN: 副本目录与备份源在同一文件系统（$(df --output=source "$OFFSITE_DIR" 2>/dev/null | tail -1)）—— 跳过本次同步，不抗单盘故障"
     alert "MEDIUM" "数据库备份副本与源同盘" \
-          "OFFSITE_DIR=${OFFSITE_DIR} 与 ${FULL_DIR} 在同一文件系统，该副本不能抵御磁盘故障。请指向独立挂载点。"
-  fi
-
-  if rsync -a "$FULL_DIR/" "${OFFSITE_DIR}/full/" 2>/dev/null; then
-    # 副本侧按保留期清理（+2 天余量，避免与源侧删除竞争导致副本先删）
-    find "${OFFSITE_DIR}/full" -name "${DB_NAME}_*.sql.zst" -mtime "+$((KEEP_FULL_DAYS + 2))" -delete 2>/dev/null || true
-    find "${OFFSITE_DIR}/full" -name "${DB_NAME}_*.sql.zst.sha256" -mtime "+$((KEEP_FULL_DAYS + 2))" -delete 2>/dev/null || true
-    log "已同步到跨盘副本：${OFFSITE_DIR}/full/（$(ls -1 "${OFFSITE_DIR}/full"/*.sql.zst 2>/dev/null | wc -l) 份）"
+          "OFFSITE_DIR=${OFFSITE_DIR} 与 ${FULL_DIR} 在同一文件系统，该副本不能抵御磁盘故障。请指向独立挂载点（如系统盘 /var/backups）。"
   else
-    log "WARN: 副本同步失败（不影响本地备份）"
-  fi
+    if rsync -a "$FULL_DIR/" "${OFFSITE_DIR}/full/" 2>/dev/null; then
+      # 副本侧按保留期清理（+2 天余量，避免与源侧删除竞争导致副本先删）
+      find "${OFFSITE_DIR}/full" -name "${DB_NAME}_*.sql.zst" -mtime "+$((KEEP_FULL_DAYS + 2))" -delete 2>/dev/null || true
+      find "${OFFSITE_DIR}/full" -name "${DB_NAME}_*.sql.zst.sha256" -mtime "+$((KEEP_FULL_DAYS + 2))" -delete 2>/dev/null || true
+      log "已同步到跨盘副本：${OFFSITE_DIR}/full/（$(ls -1 "${OFFSITE_DIR}/full"/*.sql.zst 2>/dev/null | wc -l) 份）"
+    else
+      log "WARN: 副本同步失败（不影响本地备份）"
+    fi
 
-  if [[ -d "$BINLOG_DIR" ]] && rsync -a "$BINLOG_DIR/" "${OFFSITE_DIR}/binlog/" 2>/dev/null; then
-    log "已同步到跨盘副本：${OFFSITE_DIR}/binlog/"
+    if [[ -d "$BINLOG_DIR" ]] && rsync -a "$BINLOG_DIR/" "${OFFSITE_DIR}/binlog/" 2>/dev/null; then
+      log "已同步到跨盘副本：${OFFSITE_DIR}/binlog/"
+    fi
   fi
 fi
 

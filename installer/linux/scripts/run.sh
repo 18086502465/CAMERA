@@ -15,8 +15,8 @@
 # ==============================================================================
 set -euo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-/opt/camera-detection-system}"
-WORK_DIR="${WORK_DIR:-/var/lib/camera-detection-system}"
+INSTALL_DIR="${INSTALL_DIR:-/main/app/dist}"
+WORK_DIR="${WORK_DIR:-/main/app}"
 CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config/application.yml}"
 JAR_FILE="${JAR_FILE:-${INSTALL_DIR}/app/time-bucket-demo.jar}"
 JAVA_HOME="${JAVA_HOME:-}"
@@ -42,8 +42,8 @@ if [[ -r /etc/default/camera-detection ]]; then
 fi
 
 # 二次兜底：配置里没写或写坏了的项，用默认值补上
-INSTALL_DIR="${INSTALL_DIR:-/opt/camera-detection-system}"
-WORK_DIR="${WORK_DIR:-/var/lib/camera-detection-system}"
+INSTALL_DIR="${INSTALL_DIR:-/main/app/dist}"
+WORK_DIR="${WORK_DIR:-/main/app}"
 CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config/application.yml}"
 JAR_FILE="${JAR_FILE:-${INSTALL_DIR}/app/time-bucket-demo.jar}"
 JAVA_HOME="${JAVA_HOME:-}"
@@ -75,25 +75,22 @@ resolve_java() {
 JAVA_BIN="$(resolve_java)" || die "未找到 java，请安装 openjdk-8-jre-headless 或设置 JAVA_HOME"
 
 # --- 运行时目录（权限不足会导致启动失败，这里先自愈一次）-------------------
-# ⚠️ 2026-10-31 修正：
-#   原来这里会创建 "${WORK_DIR}/data/uploads/defect-images"。
-#   但缺陷图片实际落盘目录是 **/data/camera-detection/images/defect-images/**
-#   （见 config/application.yml 的 defect-image.upload.dir），
-#   这个 ${WORK_DIR}/data/uploads/defect-images 是**迁移前的遗留路径**，
-#   应用根本不用它 —— 每次服务启动都白建一个空目录，
-#   还会让人误以为图片存在那里（实际看过去是空的）。
-#
-#   现在只创建真正在用的：
-#     - logs              业务日志目录（配置项 logging.file.name）
-#     - data/uploads/images  旧相机图片目录（app.upload.image-dir）
-#   缺陷图片目录由 install.sh 按实际配置项建（/data/...），不在这硬编码。
+# 统一布局（2026-11）：APP_HOME=/main/app，因此
+#   日志   → ${APP_HOME}/logs
+#   旧图   → ${APP_HOME}/data/uploads/images（app.upload.image-dir）
+#   缺陷图 → ${APP_HOME}/data/images/defect-images（application.yml 的 defect-image.upload.dir）
+#   状态   → ${APP_HOME}/run
+# 目录由 install.sh 统一建好并 chown 给 cdsys；这里只做兜底。
 mkdir -p "${WORK_DIR}/logs" \
-         "${WORK_DIR}/data/uploads/images" 2>/dev/null || true
+         "${WORK_DIR}/data/uploads/images" \
+         "${WORK_DIR}/run" \
+         "${WORK_DIR}/data/images/defect-images" 2>/dev/null || true
 
 # --- 磁盘水位预检 ------------------------------------------------------------
 # 磁盘写满时应用能启动，但图片上传与数据库写入会陆续失败，
 # 表现为"服务活着但业务全错"，极难排查。这里在启动前先看一眼。
-for MOUNT in /var /data; do
+# 统一布局后数据全在数据盘（/main），系统盘（/）只放程序与依赖 —— 两块都要看。
+for MOUNT in / /main; do
   [[ -d "$MOUNT" ]] || continue
   USE=$(df --output=pcent "$MOUNT" 2>/dev/null | tail -1 | tr -d ' %')
   if [[ -n "$USE" && "$USE" -gt 90 ]]; then

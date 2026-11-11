@@ -1,13 +1,22 @@
 # ==============================================================================
-# 产线缺陷在线AI检测系统 —— 服务安装脚本（Ubuntu 22.04 LTS）
+# 产线缺陷在线AI检测系统 —— 服务安装脚本（Ubuntu 22.04 / 24.04 LTS）
 #
 # 用法（在解压后的发布目录内执行）：
 #   sudo ./install.sh
-#   sudo ./install.sh --work-dir /data/camera-detection   # 指定工作目录
+#   sudo ./install.sh --base /main/app        # 指定统一根目录（默认 /main/app）
+#
+# 统一布局（2026-11 改造：所有产品文件收敛到一个根，便于查找与跟踪）：
+#   /main/app/dist     程序（jar / config / sql / scripts / docs）
+#   /main/app/data     业务数据（mysql / images / uploads / backup）
+#   /main/app/logs     全部日志
+#   /main/app/run      状态与锁
+#   /main/app/tmp      临时文件
+#   ★ /main 必须是**数据盘挂载点**。脚本会校验；未挂载直接报错退出 ——
+#     否则数据会静默落到系统盘的空目录里，表现为「跑得好好的，重启后数据全没了」。
 #
 # 做的事：
-#   1. 建系统账号 cdsys（应用以非 root 运行）
-#   2. 建安装目录 /opt/camera-detection-system 与工作目录
+#   1. 校验 /main 为独立数据盘挂载点
+#   2. 建系统账号 cdsys（应用以非 root 运行）与统一目录树
 #   3. 下发 /etc/default/camera-detection（可改参数集中在这里）
 #   4. 安装并启用 systemd 服务
 #   5. 放行防火墙端口
@@ -19,8 +28,21 @@ set -euo pipefail
 SERVICE_NAME="camera-detection"
 SERVICE_USER="cdsys"
 SERVICE_GROUP="cdsys"
-INSTALL_DIR="/opt/camera-detection-system"
-WORK_DIR="/var/lib/camera-detection-system"
+
+# ---- 统一布局根（唯一权威定义点：本文件的 heredoc 写进 /etc/default，其余脚本继承）----
+BASE="${BASE:-/main/app}"
+BASE_MOUNT="${BASE_MOUNT:-$(dirname "${BASE}")}"     # 数据盘挂载点（/main）
+INSTALL_DIR="${INSTALL_DIR:-${BASE}/dist}"
+WORK_DIR="${WORK_DIR:-${BASE}}"
+DATA_BASE="${DATA_BASE:-${BASE}/data}"
+LOG_BASE="${LOG_BASE:-${BASE}/logs}"
+RUN_BASE="${RUN_BASE:-${BASE}/run}"
+BACKUP_BASE="${BACKUP_BASE:-${DATA_BASE}/backup}"
+OFFSITE_BASE="${OFFSITE_BASE:-/var/backups/camera-detection}"   # 跨盘副本：系统盘
+IMAGES_SRC="${IMAGES_SRC:-${DATA_BASE}/images/defect-images}"
+IMAGE_TRASH="${IMAGE_TRASH:-${DATA_BASE}/images/.cleanup-trash}"
+MYSQL_DATA_DIR="${MYSQL_DATA_DIR:-${DATA_BASE}/mysql}"
+
 DEFAULT_CONFIG="/etc/default/camera-detection"
 PORT="${PORT:-8091}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,10 +50,15 @@ SOURCE_DIR="${SOURCE_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --base) BASE="$(readlink -m "$2")"; INSTALL_DIR="${BASE}/dist"; WORK_DIR="$BASE"
+            DATA_BASE="${BASE}/data"; LOG_BASE="${BASE}/logs"; RUN_BASE="${BASE}/run"
+            BACKUP_BASE="${DATA_BASE}/backup"; IMAGES_SRC="${DATA_BASE}/images/defect-images"
+            IMAGE_TRASH="${DATA_BASE}/images/.cleanup-trash"; MYSQL_DATA_DIR="${DATA_BASE}/mysql"
+            shift 2 ;;
     --work-dir) WORK_DIR="$2"; shift 2 ;;
     --install-dir) INSTALL_DIR="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 1 ;;
   esac
 done
@@ -42,6 +69,41 @@ die() { printf '\033[1;31m错误：\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "请用 root 运行（sudo ./install.sh）"
 [[ -f "${SOURCE_DIR}/app/time-bucket-demo.jar" ]] || die "发布目录不完整，缺少 app/time-bucket-demo.jar（当前：${SOURCE_DIR}）"
+
+# --- 0. 数据盘挂载断言（2026-11 统一布局后新增）----------------------------
+#   /main 必须是**独立设备**的挂载点。原因：
+#     盘没挂上时 /main 只是系统盘上的普通目录，程序、图片、数据库会静默写进系统盘，
+#     盘修好后一挂载就被"盖住"，表现为「数据全丢」——却没有任何报错。
+#   因此这里宁可拒绝安装，也不做任何"自动降级"。
+require_main_mount() {
+  local mnt base_src root_src
+  command -v findmnt >/dev/null 2>&1 || { log "未找到 findmnt，跳过挂载校验"; return 0; }
+
+  # /main 可能尚未创建 —— 此时 findmnt --target 会失败，正好作为「未挂载」判据
+  mnt="$(dirname "$BASE")"
+  base_src="$(findmnt -n -o SOURCE --target "$mnt" 2>/dev/null || true)"
+  root_src="$(findmnt -n -o SOURCE --target / 2>/dev/null || true)"
+
+  if [[ -z "$base_src" || -z "$root_src" ]]; then
+    die "无法确定 ${mnt} 所在设备 —— 该目录不存在或未挂载数据盘。
+     请先挂载数据盘，例如：
+       sudo mkdir -p ${mnt}
+       echo 'UUID=<数据盘UUID> ${mnt} ext4 defaults 0 2' | sudo tee -a /etc/fstab
+       sudo mount ${mnt}
+     然后重跑本脚本。"
+  fi
+  if [[ "$base_src" == "$root_src" ]]; then
+    die "${BASE} 仍在系统盘（设备 ${root_src}）—— 数据盘没有挂载到 ${mnt}。
+     请先挂载数据盘，例如：
+       sudo mkdir -p ${mnt}
+       echo 'UUID=<数据盘UUID> ${mnt} ext4 defaults 0 2' | sudo tee -a /etc/fstab
+       sudo mount ${mnt}
+     然后重跑本脚本。"
+  fi
+  ok "统一根 ${BASE}：设备 ${base_src}，与系统盘 ${root_src} 不同 ✓"
+}
+log "校验数据盘挂载点"
+require_main_mount
 
 # 兜底：解压后的包可能丢失执行位（跨平台打包 / 传输工具不一定保留 Unix 权限）
 # 没有执行位时直接 ./install.sh 会报 Permission denied，这里就地补上。
@@ -57,14 +119,15 @@ else
   ok "账号创建完成"
 fi
 
-# --- 2. 目录 ----------------------------------------------------------------
-log "创建安装目录 ${INSTALL_DIR}"
-mkdir -p "${INSTALL_DIR}/app" "${INSTALL_DIR}/config" "${INSTALL_DIR}/sql" "${INSTALL_DIR}/scripts" "${INSTALL_DIR}/docs"
-
-log "创建工作目录 ${WORK_DIR}"
-mkdir -p "${WORK_DIR}/logs" \
-         "${WORK_DIR}/data/uploads/images" \
-         "${WORK_DIR}/data/uploads/defect-images"
+# --- 2. 目录（统一根下的完整树）---------------------------------------------
+log "创建统一目录树 ${BASE}"
+mkdir -p "${BASE}" \
+         "${INSTALL_DIR}/app" "${INSTALL_DIR}/config" "${INSTALL_DIR}/sql" "${INSTALL_DIR}/scripts" "${INSTALL_DIR}/docs" \
+         "${IMAGES_SRC}" "${IMAGE_TRASH}" \
+         "${DATA_BASE}/uploads/images" \
+         "${DATA_BASE}/backup/db/full" "${DATA_BASE}/backup/db/binlog" "${DATA_BASE}/backup/db/logs" \
+         "${LOG_BASE}" "${RUN_BASE}" "${BASE}/tmp" "${BASE}/backup"
+ok "布局：dist(程序) / data(数据) / logs / run / tmp / backup"
 
 # --- 3. 同步程序文件 --------------------------------------------------------
 log "同步程序文件"
@@ -89,6 +152,13 @@ chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$WORK_DIR"
 # 工作目录需可写；安装目录只需可读
 chmod -R u+rwX,g+rX,o+rX "$INSTALL_DIR"
 chmod -R u+rwX,g+rwX "$WORK_DIR"
+
+# ★ MySQL datadir 必须归还 mysql:mysql 700 —— 上面的 chown -R 会把它改成 cdsys，
+#   MySQL 见到属主不对会直接拒绝启动（且报错只含糊地说 datadir 不可用）。
+if [[ -d "$MYSQL_DATA_DIR" ]]; then
+  chown -R mysql:mysql "$MYSQL_DATA_DIR" 2>/dev/null || true
+  chmod 700 "$MYSQL_DATA_DIR" 2>/dev/null || true
+fi
 ok "文件同步完成"
 
 # --- 3b. 捕获现场既有配置值（必须在第 4 节覆盖之前读取）-----------------
@@ -201,11 +271,20 @@ cat > "$DEFAULT_CONFIG_TMP" <<EOF
 # 导致 "-Xmx1024m: command not found" 而启动失败。
 JAVA_OPTS="-Xms512m -Xmx1024m"
 
-# 安装目录与工作目录
+# ---- 统一布局（2026-11：全部产品文件收敛到 ${BASE} 一个根）----
+# 改这里等于整体搬迁；改完 systemctl restart camera-detection（并同步 unit 的 ReadWritePaths）
+BASE=${BASE}
 INSTALL_DIR=${INSTALL_DIR}
 WORK_DIR=${WORK_DIR}
+DATA_BASE=${DATA_BASE}
+LOG_BASE=${LOG_BASE}
+RUN_BASE=${RUN_BASE}
+IMAGES_SRC=${IMAGES_SRC}
+IMAGE_TRASH=${IMAGE_TRASH}
+MYSQL_DATA_DIR=${MYSQL_DATA_DIR}
+OFFSITE_BASE=${OFFSITE_BASE}
 
-# 应用主目录：决定日志与上传图片的落盘位置
+# 应用主目录：决定日志与上传图片的落盘位置（${app.home}/logs、${app.home}/data/uploads）
 APP_HOME=${WORK_DIR}
 
 # Java 运行时（留空则依次尝试 内置 jre → JAVA_HOME → PATH）
@@ -244,30 +323,29 @@ fi
 # --- 5. systemd 服务 --------------------------------------------------------
 log "安装 systemd 服务"
 
-# --- 5a. 数据目录（图片）----------------------------------------------------
-# 图片按 144000 张/天 写入，350KB/张时日增 48GB —— 必须放在大容量分区。
-# /data 是 755 root:root，应用以 cdsys 运行无法在其下创建目录，
-# 因此这里由 root 先建好目录树，再 chown 给服务账号。
-DATA_BASE="/data/camera-detection"
-if [[ -d /data ]]; then
-  mkdir -p "${DATA_BASE}/images/defect-images"
-  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${DATA_BASE}" 2>/dev/null || true
-  chmod 750 "${DATA_BASE}" "${DATA_BASE}/images" 2>/dev/null || true
-  ok "图片目录：${DATA_BASE}/images/defect-images"
-else
-  log "未发现 /data，图片将存放在 ${WORK_DIR}/data/uploads"
-fi
+# --- 5a. 图片目录（统一根下，落在数据盘）------------------------------------
+# ★ 目录名 defect-images **不可改**：Java 读图白名单按 "/defect-images/" 过滤
+#   （DefectImageServiceImpl），改名会导致所有读图请求 403。
+# ★ .cleanup-trash 必须与图片同一文件系统：清理用「先 mv 到中转区再 rm」保证原子性。
+mkdir -p "${IMAGES_SRC}" "${IMAGE_TRASH}"
+chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${DATA_BASE}/images" 2>/dev/null || true
+chmod 750 "${DATA_BASE}" "${DATA_BASE}/images" 2>/dev/null || true
+ok "图片目录：${IMAGES_SRC}（删除中转区 ${IMAGE_TRASH}）"
 
-# 先把 unit 装到位，再改它的 ReadWritePaths —— 顺序反了会报
+# 先把 unit 装到位，再改它的路径 —— 顺序反了会报
 # "sed: can't read /etc/systemd/system/camera-detection.service: No such file or directory"
 install -m 0644 "${SOURCE_DIR}/systemd/${SERVICE_NAME}.service" "/etc/systemd/system/${SERVICE_NAME}.service"
 
+# unit 的路径按 BASE 校正（默认值已与 /main/app 一致；--base 覆盖时才需要改）
 # systemd 沙箱：ProtectSystem=full 下，未列入 ReadWritePaths 的路径不可写。
 # 漏了这一步会表现为「上传返回成功但文件不落盘」，极难排查。
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-if [[ -d /data ]] && ! grep -q "${DATA_BASE}" "$UNIT_FILE" 2>/dev/null; then
-  sed -i "s|^ReadWritePaths=.*|ReadWritePaths=${WORK_DIR} ${DATA_BASE}|" "$UNIT_FILE"
-  ok "systemd ReadWritePaths 已放行 ${DATA_BASE}"
+if ! grep -qx "ReadWritePaths=${BASE}" "$UNIT_FILE" 2>/dev/null; then
+  sed -i "s|^WorkingDirectory=.*|WorkingDirectory=${BASE}|" "$UNIT_FILE"
+  sed -i "s|^ExecStart=.*|ExecStart=${INSTALL_DIR}/scripts/run.sh|" "$UNIT_FILE"
+  sed -i "s|^ReadWritePaths=.*|ReadWritePaths=${BASE}|" "$UNIT_FILE"
+  sed -i "s|^RequiresMountsFor=.*|RequiresMountsFor=$(dirname "$BASE")|" "$UNIT_FILE"
+  ok "unit 路径已按 BASE=${BASE} 校正"
 fi
 
 systemctl daemon-reload
@@ -346,9 +424,11 @@ fi
 
 # --- 7. 日志轮转 ------------------------------------------------------------
 if [[ -d /etc/logrotate.d ]]; then
-  log "配置业务日志轮转"
+  log "配置日志轮转"
   cat > /etc/logrotate.d/camera-detection <<EOF
-${WORK_DIR}/logs/*.log {
+# 统一布局：全部产品日志集中在 ${LOG_BASE}
+${LOG_BASE}/camera-detection-system.log
+${LOG_BASE}/backup.log {
     daily
     rotate 30
     compress
@@ -359,37 +439,12 @@ ${WORK_DIR}/logs/*.log {
     su ${SERVICE_USER} ${SERVICE_GROUP}
 }
 
-# 部署日志（deploy.sh 写入，root 所有）—— 每次部署追加，长期不轮转会缓慢变大
-/var/log/camera-detection-deploy.log {
-    weekly
-    rotate 8
-    compress
-    delaycompress
-    missingok
-    notifempty
-    copytruncate
-    su root root
-}
-
-# 备份日志（cdsys 所有）
-/data/camera-detection/backup/db/logs/backup.log {
-    weekly
-    rotate 8
-    compress
-    delaycompress
-    missingok
-    notifempty
-    copytruncate
-    su ${SERVICE_USER} ${SERVICE_GROUP}
-}
-
-# 清理与巡检日志（root 所有）
-# 2026-11-07 v3：这三条此前完全没纳入轮转。cleanup_zk54.log 每小时追加、
-# 约 300KB/月，长期不轮转会缓慢吃掉 /data —— 而 /data 正是被水位监控的那块盘，
-# 形成闭环噪声。
-/var/log/camera-detection-cleanup.log
-/var/log/camera-detection-disk-alert.log
-/data/camera-detection/backup/cleanup_zk54.log {
+# 部署 / 清理 / 巡检日志（root 所有）
+# cleanup_zk54.log 每小时追加、约 300KB/月，长期不轮转会缓慢吃掉数据盘。
+${LOG_BASE}/deploy.log
+${LOG_BASE}/cleanup-defect-images.log
+${LOG_BASE}/cleanup_zk54.log
+${LOG_BASE}/disk-alert.log {
     weekly
     rotate 8
     compress
@@ -400,7 +455,7 @@ ${WORK_DIR}/logs/*.log {
     su root root
 }
 EOF
-  ok "logrotate 规则已写入（业务日志 + 备份日志 + 清理/巡检日志）"
+  ok "logrotate 规则已写入（业务/备份 + 部署/清理/巡检，均指向 ${LOG_BASE}）"
 fi
 
 # --- 7b. journald 限额（2026-11-04 补充）---------------------------------
@@ -437,44 +492,27 @@ fi
 # 本脚本补齐这个缺口，且严格「先删库记录、再删磁盘文件」，避免产生孤儿记录。
 
 if [[ -f "${SOURCE_DIR}/scripts/cleanup-defect-images.sh" ]]; then
-  log "安装缺陷图片清理脚本"
-  install -m 0755 "${SOURCE_DIR}/scripts/cleanup-defect-images.sh" /usr/local/bin/
+  log "安装缺陷图片清理任务"
 
-  # 图片目录：从外部配置里读，改过路径时自动跟随
-  IMAGE_DIR=$(sed -n 's|.*dir:\s*\([^ ]*/defect-images/\).*|\1|p' \
-    "${INSTALL_DIR}/config/application.yml" 2>/dev/null | head -1 | tr -d "\r")
-  [[ -z "$IMAGE_DIR" ]] && IMAGE_DIR="${WORK_DIR}/data/uploads/defect-images"
-
-  # 数据目录：优先用容量更大的独立分区（实测 /var 仅 50G，/data 有 500G）
-  if [[ -d /data ]] && df --output=target /data 2>/dev/null | tail -1 | grep -q "/data"; then
-    IMAGE_BASE="/data/camera-detection/images"
-  else
-    IMAGE_BASE="${WORK_DIR}/data/uploads"
-  fi
-  IMAGE_DIR="${IMAGE_BASE}/defect-images"
-
-  # 目录必须由 root 建好再 chown —— 应用以 cdsys 运行，
-  # 若父目录（如 /data）是 755 root，cdsys 无法在其下创建子目录
+  # 2026-11 修正（老 bug）：原实现先按 application.yml 解析出图片目录，
+  # 随后又被「若 /data 存在则用它」无条件覆盖 —— 解析白做，改 yml 根本不生效。
+  # 现在统一由统一布局变量推导，application.yml 与该目录的一致性由 verify.sh 校验。
+  IMAGE_DIR="${IMAGES_SRC}"
   mkdir -p "${IMAGE_DIR}"
-  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$(dirname "${IMAGE_DIR}")" 2>/dev/null || true
-  chmod 750 "$(dirname "${IMAGE_DIR}")" 2>/dev/null || true
+  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${DATA_BASE}/images" 2>/dev/null || true
+  chmod 750 "${DATA_BASE}/images" 2>/dev/null || true
 
-  # 数据库口令见本节开头（已从 application.yml 提取）
-
-  if [[ ! -f /etc/cron.d/cleanup-defect-images ]]; then
-    cat > /etc/cron.d/cleanup-defect-images <<EOF
+  # cron 是生成物：路径随布局变化，每次都重写（重复执行结果一致）
+  cat > /etc/cron.d/cleanup-defect-images <<EOF
 # 每天 03:30 清理过期缺陷图片磁盘文件（错开应用 02:00 清理与 02:30 归档任务）
 # ★ 保留期必须与图片归档月表口径一致（application.yml app.archive.images.retain-days，默认 730 天）：
 #   两边不同步会出现「库里有记录、磁盘没文件」的裂图。改这里之前先改 application.yml。
 # ★ 口令不写进 cron（cron 全局可读）：脚本自己从 /etc/default/camera-detection 读取。
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-30 3 * * * root DIR="${IMAGE_DIR}" KEEP_DAYS=730 KEEP_CAMERA_IMAGES_DAYS=30 DB_NAME="wms-new" /usr/local/bin/cleanup-defect-images.sh >> /var/log/camera-detection-cleanup.log 2>&1
+30 3 * * * root DIR="${IMAGE_DIR}" KEEP_DAYS=730 KEEP_CAMERA_IMAGES_DAYS=30 DB_NAME="wms-new" ${INSTALL_DIR}/scripts/cleanup-defect-images.sh >> ${LOG_BASE}/cleanup-defect-images.log 2>&1
 EOF
-    ok "已加入 cron（03:30 每日，磁盘文件保留 730 天，与归档月表口径一致）"
-  else
-    log "cron 规则已存在，保留不动"
-  fi
+  ok "已加入 cron（03:30 每日，磁盘文件保留 730 天，与归档月表口径一致）"
   ok "图片清理目录：${IMAGE_DIR}"
 fi
 
@@ -486,8 +524,7 @@ fi
 #   cron 文件全局可读，把口令写进去等于把库口令公开给所有本地用户。
 #   脚本自己 source 该文件取口令。
 if [[ -f "${SOURCE_DIR}/scripts/cleanup-zk54-incremental.sh" ]]; then
-  log "安装测试相机增量清理脚本"
-  install -m 0755 "${SOURCE_DIR}/scripts/cleanup-zk54-incremental.sh" /usr/local/bin/
+  log "安装测试相机增量清理任务"
 
   # 脚本自读口令：/etc/default/camera-detection → MYSQL_PASSWORD
   if [[ -f /etc/default/camera-detection ]] \
@@ -506,34 +543,27 @@ EOF
   fi
 
   # 图片根目录与脚本默认一致（脚本内 IMG_ROOT 默认值相同）
-  if [[ ! -f /etc/cron.d/cleanup-test-camera-images ]]; then
-    cat > /etc/cron.d/cleanup-test-camera-images <<'EOF'
+  cat > /etc/cron.d/cleanup-test-camera-images <<EOF
 # 每小时 :15 清理测试相机的无效图片与对应数据库记录
 # 真实相机（camera_type='REAL'）的数据一律不参与清理。
 # 口令由脚本自己从 /etc/default/camera-detection 读取，此处不写口令。
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-15 * * * * root /usr/local/bin/cleanup-zk54-incremental.sh
+15 * * * * root IMG_ROOT="${IMAGES_SRC}" TRASH="${IMAGE_TRASH}" LOG="${LOG_BASE}/cleanup_zk54.log" ${INSTALL_DIR}/scripts/cleanup-zk54-incremental.sh
 EOF
-    ok "已加入 cron（每小时 :15，仅清理测试相机）"
-  else
-    log "cron 规则已存在，保留不动"
-  fi
+  ok "已加入 cron（每小时 :15，仅清理测试相机）"
 fi
 
 # --- 8b. 磁盘水位监控 --------------------------------------------------------
 # 磁盘写满时应用能启动，但图片上传与数据库写入会陆续失败，
 # 表现为「服务活着但业务全错」，极难排查。每 30 分钟巡检一次。
 if [[ -f "${SOURCE_DIR}/scripts/check-disk-usage.sh" ]]; then
-  install -m 0755 "${SOURCE_DIR}/scripts/check-disk-usage.sh" /usr/local/bin/
-  if [[ ! -f /etc/cron.d/check-disk-usage ]]; then
-    cat > /etc/cron.d/check-disk-usage <<'EOF'
+  cat > /etc/cron.d/check-disk-usage <<EOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-*/30 * * * * root /usr/local/bin/check-disk-usage.sh
+*/30 * * * * root MOUNTS="/ ${BASE_MOUNT}" CAPACITY_MOUNT="${BASE_MOUNT}" ${INSTALL_DIR}/scripts/check-disk-usage.sh >> ${LOG_BASE}/disk-alert.log 2>&1
 EOF
-    ok "已加入磁盘水位巡检（每 30 分钟）"
-  fi
+  ok "已加入磁盘水位巡检（每 30 分钟，监控 / 与 ${BASE_MOUNT}）"
 fi
 
 # --- 8c. 数据库定时备份 ------------------------------------------------------
@@ -544,28 +574,20 @@ if [[ -f "${SOURCE_DIR}/systemd/camera-detection-backup.service" && \
   log "安装数据库备份定时器"
   install -m 0755 "${SOURCE_DIR}/scripts/backup-database.sh" "${INSTALL_DIR}/scripts/"
 
-  # 备份输出目录必须在 cdsys 可写的路径下（/data 本身是 755 root）
-  BACKUP_BASE="/data/camera-detection/backup"
-  if [[ -d /data ]]; then
-    mkdir -p "${BACKUP_BASE}/db/full" "${BACKUP_BASE}/db/binlog" \
-             "${BACKUP_BASE}/db/images" "${BACKUP_BASE}/db/logs" "${BACKUP_BASE}/offsite"
-  else
-    BACKUP_BASE="${WORK_DIR}/backup"
-    mkdir -p "${BACKUP_BASE}/db/full" "${BACKUP_BASE}/db/binlog" \
-             "${BACKUP_BASE}/db/images" "${BACKUP_BASE}/db/logs" "${BACKUP_BASE}/offsite"
-  fi
+  # 主备份：与业务数据同盘（数据盘），目录已由第 2 节建好
+  mkdir -p "${BACKUP_BASE}/db/full" "${BACKUP_BASE}/db/binlog" \
+           "${BACKUP_BASE}/db/images" "${BACKUP_BASE}/db/logs"
   chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${BACKUP_BASE}" 2>/dev/null || true
   chmod 700 "${BACKUP_BASE}" 2>/dev/null || true
 
-  # --- 跨盘副本目录（2026-11-07 v3）--------------------------------------------
-  # 主备份在 /data（vdb），副本落在 /var（vda）—— 两块物理盘，才抗得住单盘故障。
-  # 之前副本在 /data/camera-detection/backup/offsite，与源同盘，日志却写「异机」。
-  CROSS_BASE="/var/backups/camera-detection"
-  mkdir -p "${CROSS_BASE}/db/full" "${CROSS_BASE}/db/binlog" "${CROSS_BASE}/images"
-  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${CROSS_BASE}" 2>/dev/null || true
-  chmod 750 "$(dirname "${CROSS_BASE}")" 2>/dev/null || true
-  chmod 700 "${CROSS_BASE}" 2>/dev/null || true
-  ok "跨盘副本目录：${CROSS_BASE}（$(df --output=source "${CROSS_BASE}" 2>/dev/null | tail -1)）"
+  # --- 跨盘副本目录（2026-11 统一布局后重新启用）----------------------------
+  # 业务数据与数据库现在全在数据盘上 —— 盘坏即全失，副本必须落在**系统盘**。
+  # backup-database.sh 会校验「副本与源不同设备」，同盘则 WARN 并跳过。
+  mkdir -p "${OFFSITE_BASE}/db/full" "${OFFSITE_BASE}/db/binlog" "${OFFSITE_BASE}/images"
+  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "${OFFSITE_BASE}" 2>/dev/null || true
+  chmod 750 "$(dirname "${OFFSITE_BASE}")" 2>/dev/null || true
+  chmod 700 "${OFFSITE_BASE}" 2>/dev/null || true
+  ok "跨盘副本目录：${OFFSITE_BASE}（$(df --output=source "${OFFSITE_BASE}" 2>/dev/null | tail -1)）"
 
   # 口令与备份参数写进 /etc/default/camera-detection（640 root）
   # unit 里不写口令 —— unit 文件是全局可读的
@@ -601,9 +623,9 @@ MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 BACKUP_DIR="${BACKUP_BASE}/db"
 KEEP_FULL_DAYS=14
 MAX_DISK_USE=85
-OFFSITE_DIR="${CROSS_BASE}/db"
-IMAGES_SRC="/data/camera-detection/images/defect-images"
-IMAGES_DST="${CROSS_BASE}/images"
+OFFSITE_DIR="${OFFSITE_BASE}/db"
+IMAGES_SRC="${IMAGES_SRC}"
+IMAGES_DST="${OFFSITE_BASE}/images"
 # 图片副本总量上限（GB）。超限时从最旧日期目录开始回收 ——
 # 防 REAL 相机台数增长后 30 天窗口本身撑满系统盘。
 IMAGE_BACKUP_MAX_GB=20
@@ -622,6 +644,14 @@ EOF
 
   install -m 0644 "${SOURCE_DIR}/systemd/camera-detection-backup.service" /etc/systemd/system/
   install -m 0644 "${SOURCE_DIR}/systemd/camera-detection-backup.timer" /etc/systemd/system/
+
+  # 自定义 BASE 时同步 unit 的执行路径（默认 /main/app 与 unit 内值一致，无需改）
+  BU="/etc/systemd/system/camera-detection-backup.service"
+  if [[ "$BASE" != "/main/app" ]]; then
+    sed -i "s|^ExecStart=.*|ExecStart=${INSTALL_DIR}/scripts/backup-database.sh|" "$BU"
+    sed -i "s|^RequiresMountsFor=.*|RequiresMountsFor=${BASE_MOUNT}|" "$BU"
+    log "自定义 BASE=${BASE}：请同步修改 ${BU} 里的两行 ReadWritePaths"
+  fi
   systemctl daemon-reload
   systemctl enable --now camera-detection-backup.timer >/dev/null 2>&1
   if systemctl is-active --quiet camera-detection-backup.timer; then

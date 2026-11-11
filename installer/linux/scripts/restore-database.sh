@@ -23,14 +23,14 @@
 #
 # 环境变量：
 #   MYSQL_PASSWORD   数据库口令（不给则自读 /etc/default/camera-detection）
-#   BACKUP_DIR       备份根目录（默认 /data/camera-detection/backup/db）
+#   BACKUP_DIR       备份根目录（默认 /main/app/data/backup/db）
 #   DB_HOST / DB_PORT / DB_USER
 #
 # 退出码：0=成功；1=参数或环境错误；2=校验/恢复失败；3=比对不一致（仅告警，不算失败时用 0）
 # ==============================================================================
 set -uo pipefail
 
-BACKUP_DIR="${BACKUP_DIR:-/data/camera-detection/backup/db}"
+BACKUP_DIR="${BACKUP_DIR:-/main/app/data/backup/db}"
 FULL_DIR="${BACKUP_DIR}/full"
 DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-3306}"
@@ -44,10 +44,14 @@ DROP_AFTER=0
 USE_LATEST=0
 
 # cron / systemd 环境下没有已导出的变量，靠自己读（640 root:root）
+# ★ 外部显式传入的 BACKUP_DIR 优先：恢复演练时常指向别处的历史备份目录，
+#   被 /etc/default 里的主备份目录盖掉就会「恢复的还是主目录那份」，看着成功实则恢复错文件。
+_ENV_BACKUP_DIR="${BACKUP_DIR:-}"
 if [[ -z "${MYSQL_PASSWORD:-}" && -r /etc/default/camera-detection ]]; then
   # shellcheck disable=SC1091
   . /etc/default/camera-detection
 fi
+[[ -n "$_ENV_BACKUP_DIR" ]] && BACKUP_DIR="$_ENV_BACKUP_DIR"
 
 log() { printf '[restore] %s\n' "$*"; }
 die() { log "ERROR: $*"; exit 1; }

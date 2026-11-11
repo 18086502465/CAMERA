@@ -16,7 +16,7 @@
 set -uo pipefail
 
 SERVICE_NAME="camera-detection"
-INSTALL_DIR="${INSTALL_DIR:-/opt/camera-detection-system}"
+INSTALL_DIR="${INSTALL_DIR:-/main/app/dist}"
 APP_DIR="${INSTALL_DIR}/app"
 TARGET_JAR="${APP_DIR}/time-bucket-demo.jar"
 DEFAULT_CFG="/etc/default/camera-detection"
