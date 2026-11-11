@@ -207,6 +207,13 @@ ok "建库脚本 ${SQL_COUNT} 个"
 
 log "⑦ 复制 Linux 部署脚本与 systemd unit"
 install -m 0755 "${LINUX_DIR}/scripts/"*.sh "${STAGE_DIR}/scripts/"
+# *.py 也要进包：deploy_jar.sh 的 **增量模式**（*.zip）靠同目录的 jar_manifest.py
+# 合成 classes 段，只复制 *.sh 会让服务器上报「缺少合成工具」→ 增量部署直接不可用。
+if compgen -G "${LINUX_DIR}/scripts/*.py" > /dev/null; then
+  install -m 0755 "${LINUX_DIR}/scripts/"*.py "${STAGE_DIR}/scripts/"
+fi
+[[ -f "${STAGE_DIR}/scripts/jar_manifest.py" ]] \
+  || die "缺少 scripts/jar_manifest.py —— 服务器端 deploy_jar.sh 的增量模式（*.zip）会直接报「缺少合成工具」"
 # 注意：除 *.service 外还要打包 *.timer（备份定时器）——
 # 只匹配 *.service 会漏掉 timer，导致 install.sh 找不到它而跳过定时备份安装。
 install -m 0644 "${LINUX_DIR}/systemd/"*.service "${STAGE_DIR}/systemd/"
@@ -272,7 +279,7 @@ base = os.path.dirname(stage)
 
 def mode_for(rel):
     r = "/" + rel.replace("\\", "/")
-    if "/scripts/" in r and r.endswith(".sh"):
+    if "/scripts/" in r and r.endswith((".sh", ".py")):
         return 0o755
     return 0o644
 
