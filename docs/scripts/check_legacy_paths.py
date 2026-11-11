@@ -56,10 +56,17 @@ WHITELIST = {
 
 
 def tracked_files():
-    """优先用 git 列表（避免扫到 node_modules / target）；非 git 环境退回 walk。"""
+    """优先用 git 列表（避免扫到 node_modules / target）；非 git 环境退回 walk。
+
+    必须带 --others --exclude-standard：只用 `git ls-files` 只列已跟踪文件，
+    新写的脚本还没 git add 就扫不到 —— 本地跑出「✅ 全绿」而 CI 才红，
+    甚至提交前根本发现不了。--others 把未跟踪但未被 .gitignore 排除的文件
+    也纳进来，本地与 CI 行为一致。
+    """
     try:
         out = subprocess.check_output(
-            ["git", "ls-files"], cwd=ROOT, stderr=subprocess.DEVNULL
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=ROOT, stderr=subprocess.DEVNULL,
         ).decode("utf-8", "replace")
         files = [line.strip() for line in out.splitlines() if line.strip()]
         if files:

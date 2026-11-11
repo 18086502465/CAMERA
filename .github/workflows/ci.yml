@@ -194,6 +194,15 @@ jobs:
           #   失效的相对链接 / 失效的锚点 / docs 根混入历史稿 / 源目录出现 .md。
           python3 docs/scripts/check_doc_links.py
 
+      - name: 旧布局路径检查
+        run: |
+          # 2026-11 起所有产品文件收敛到 /main/app（/main 为数据盘挂载点）。
+          # 改造涉及 15 个脚本的 179 处绝对路径，漏改一处就是线上故障：
+          # 脚本写 /data/... 而应用读 /main/app/data/... → 上传成功但看不到图；
+          # cron 还调 /usr/local/bin/xxx.sh 而新布局不再装到那里 → 清理任务静默不执行。
+          # 白名单仅迁移脚本（它的职责就是操作旧路径）。
+          python3 docs/scripts/check_legacy_paths.py
+
   verify:
     name: 产物一致性校验
     runs-on: ubuntu-latest
