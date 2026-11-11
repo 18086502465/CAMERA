@@ -16,8 +16,8 @@
 set -uo pipefail
 
 DB_NAME="${DB_NAME:-wms-new}"
-SCRIPT="/usr/local/bin/cleanup-zk54-incremental.sh"
-LOG="/data/camera-detection/backup/cleanup_zk54.log"
+SCRIPT="/main/app/dist/scripts/cleanup-zk54-incremental.sh"
+LOG="/main/app/logs/cleanup_zk54.log"
 TEST_CODE="ZZTEST-GUARD-CAM"
 FAILED=0
 
@@ -63,7 +63,7 @@ seed_test_data() {
     SQLX "INSERT INTO defect_image_file(batch_id, camera_id, camera_name, file_name, image_path, image_url,
              capture_time, upload_time, defect_count)
            VALUES(999999, '${TEST_CODE}', 'ZZTEST相机', 'zztest_${i}.jpg',
-             '/data/camera-detection/images/defect-images/20261105/${TEST_CODE}/zztest_${i}.jpg',
+             '/main/app/data/images/defect-images/20261105/${TEST_CODE}/zztest_${i}.jpg',
              '/api/v1/defect-images/999999', NOW(), NOW(), 1);" >/dev/null
     i=$((i+1))
   done

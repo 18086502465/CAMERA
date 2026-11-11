@@ -12,7 +12,7 @@
 
 | 脚本 | 用途 |
 |---|---|
-| `deploy_jar.sh` | 部署到服务器：按扩展名自动识别 zip=增量 / jar=全量；原子替换 + 健康检查 + **失败自动回滚**。用法 `SUDO_PASSWORD='xxx' bash deploy_jar.sh /tmp/update-*.zip` |
+| `installer/linux/scripts/deploy_jar.sh` | 部署到服务器：按扩展名自动识别 zip=增量 / jar=全量；原子替换 + 健康检查 + **失败自动回滚** + 历史 JAR 自动保留 3 份（`JAR_BACKUP_KEEP`）。用法 `SUDO_PASSWORD='xxx' bash installer/linux/scripts/deploy_jar.sh /tmp/update-*.zip`。**本目录不再保留副本**：曾出现副本漂移到旧路径（`/opt/...`）且缺保留策略，实际部署用的是旧逻辑 |
 | `jar_manifest.py` | 轻量增量发版核心（构建端/部署端共用）：`make-update` 产 2.1MB update 包、`merge` 与线上 fat jar 在线合成（lib 指纹不一致 exit 2 强制走全量） |
 | `upload_jar_b64.py` | 上传大文件到服务器的**唯一可行通道**（base64 分块 + 普通命令通道；scp/SFTP/管道直传均不可用）。Git Bash 需 `MSYS_NO_PATHCONV=1` |
 | `sync_static.py` | 把 `frontend/dist` 同步到后端 `static/` 并清理陈旧 chunk |
@@ -43,7 +43,8 @@
 | `verify_camera_type_guards.sh` | **实机验证三道防误删防线 + 正向清理**：造 ZZTEST 数据 → 验证被清 → 验证真实相机数据分毫不动 → 验证保护集合为空中止(3)/超阈值中止(4) → 自动还原。服务器上以 root 执行 |
 | `verify_camera_type_browser.cjs` | 前端浏览器回归：相机类型列、真实/测试标签、编辑弹窗下拉与回填、0 JS 错误（9 项） |
 | `verify_line_analytics_browser.cjs` | 产线统计页回归：筛选产线与不筛选的检测总数**必须一致**、数据源一致、图片通道无良率卡片、趋势图无良率线、0 JS 错误（11 项） |
-| `verify_camera_status_browser.cjs` | 相机状态页回归：各产线的【近批次图片】【高危缺陷】之和 **=== 不筛选总数**、重名相机的图片数不被共享、0 JS 错误（11 项）。★ Element Plus 下拉是 toggle 语义，连续切换不可靠 → 脚本每次筛选前重新加载页面。⚠️ 累加断言用「少算严格报错 + 多算 2% 时序容差」：总数在遍历产线前取、遍历期间现场持续上传，严格相等必然假红（实测差 5~96 条） |
+| `verify_camera_kpi_browser.cjs` | 相机状态页 KPI 口径回归（9 项）：断言文案是「累计图片/累计高危缺陷」且**不再出现「近批次」**、口径说明可见、数值与 `camera-summaries` 接口一致（允许实时上传漂移 ≤ 30）、0 JS 错误。★ 这两个 KPI **不带时间参数 = 全部历史**，且**计入测试相机**，与产线统计（按时间窗、只算真实相机）不可直接对比 —— 曾因文案写「近批次」被当成数据错误（4337 vs 2411） |
+| `verify_camera_status_browser.cjs` | 相机状态页回归：各产线的【累计图片】【累计高危缺陷】之和 **=== 不筛选总数**、重名相机的图片数不被共享、0 JS 错误（11 项）。★ Element Plus 下拉是 toggle 语义，连续切换不可靠 → 脚本每次筛选前重新加载页面。⚠️ 累加断言用「少算严格报错 + 多算 2% 时序容差」：总数在遍历产线前取、遍历期间现场持续上传，严格相等必然假红（实测差 5~96 条） |
 | `verify_login_flow_browser.cjs` | 登录回跳流程回归（12 项）：凭据错误返回 **400 而非 401**（否则拦截器当会话过期，把回跳上下文改写成默认落地页）、登录后回到原页面。★ 回归脚本的 401 豁免正则必须写 `status code 401`，axios 实际文本带 `code` |
 | `验证脚本-P0修复回归.cjs` | 用户接口路径、告警页数据、检测记录页数据源与「—」显示（13 项断言） |
 | `验证脚本-403拦截器行为.cjs` | 拦截器分流：403 ACCESS_DENIED 不跳转 / 401 跳登录（9 项断言） |

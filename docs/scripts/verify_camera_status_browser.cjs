@@ -2,7 +2,7 @@
  * 相机状态页 —— 各产线图片/缺陷数可加性浏览器回归（2026-11-05）
  *
  * 回归现场 bug：
- *   相机状态页顶部【近批次图片】【高危缺陷】在"不筛选产线"时比"筛选产线"
+ *   相机状态页顶部【累计图片】【累计高危缺陷】在"不筛选产线"时比"筛选产线"
  *   多一整条产线（ZK54=0、ZK23=3133，但全量=6266）。
  *
  * 根因：现场 camera_name 跨产线重名，前端把 cameraName 也当匹配键，
@@ -11,7 +11,7 @@
  * 验证点：
  *   ① 每台相机的「图/缺」按 camera_code 归属（重名相机不共享统计）
  *   ② 各产线的图片数之和 === 不筛选产线时的总数
- *   ③ 高危缺陷同理
+ *   ③ 累计高危缺陷同理
  *   ④ 无 JS 错误
  *
  * 用法：node verify_camera_status_browser.cjs
@@ -207,8 +207,8 @@ async function clearLine(page) {
     const allKpi = await readKpis(page)
     const allRows = await readRows(page)
     console.log('    [全部] KPI:', JSON.stringify(allKpi))
-    check('不筛选读到「近批次图片」', '近批次图片' in allKpi, String(allKpi['近批次图片']))
-    check('不筛选读到「高危缺陷」', '高危缺陷' in allKpi, String(allKpi['高危缺陷']))
+    check('不筛选读到「累计图片」', '累计图片' in allKpi, String(allKpi['累计图片']))
+    check('不筛选读到「累计高危缺陷」', '累计高危缺陷' in allKpi, String(allKpi['累计高危缺陷']))
 
     // ---- 逐产线累加 ----
     const lineNames = await page.evaluate(() => {
@@ -226,18 +226,18 @@ async function clearLine(page) {
       if (!picked) continue
       const kpi = await readKpis(page)
       const rows = await readRows(page)
-      const img = Number(String(kpi['近批次图片'] || '0').replace(/,/g, ''))
-      const high = Number(String(kpi['高危缺陷'] || '0').replace(/,/g, ''))
+      const img = Number(String(kpi['累计图片'] || '0').replace(/,/g, ''))
+      const high = Number(String(kpi['累计高危缺陷'] || '0').replace(/,/g, ''))
       sumImg += img
       sumHigh += high
       perLine.push({ line: ln, img, high, cams: rows.length })
-      console.log(`    [${ln}] 近批次图片=${img} 高危缺陷=${high} 相机数=${rows.length}`)
+      console.log(`    [${ln}] 累计图片=${img} 累计高危缺陷=${high} 相机数=${rows.length}`)
     }
     console.log('    各产线累加:', JSON.stringify(perLine), '→ 图片', sumImg, '高危', sumHigh)
 
     // ---- 核心断言 ----
-    const allImg = Number(String(allKpi['近批次图片'] || '0').replace(/,/g, ''))
-    const allHigh = Number(String(allKpi['高危缺陷'] || '0').replace(/,/g, ''))
+    const allImg = Number(String(allKpi['累计图片'] || '0').replace(/,/g, ''))
+    const allHigh = Number(String(allKpi['累计高危缺陷'] || '0').replace(/,/g, ''))
     // ★ 2026-11-07：原断言用严格相等，在现场实时写入下**必然假红**。
     //   allKpi 在遍历各产线之前取，而遍历每条产线都要重新加载页面（4s+ 等待），
     //   期间相机继续上传 → 各产线之和恒大于「不筛选总数」，差值约等于耗时×写入速率
@@ -247,11 +247,11 @@ async function clearLine(page) {
     //   所以：少算仍然严格报错（说明筛选丢了数据），多算只允许容差内。
     const tolImg = Math.max(200, Math.round(allImg * 0.02))
     const okImg = sumImg >= allImg && (sumImg - allImg) <= tolImg
-    check('★ 各产线「近批次图片」之和 === 不筛选总数', okImg,
+    check('★ 各产线「累计图片」之和 === 不筛选总数', okImg,
       `各产线合计 ${sumImg} vs 不筛选 ${allImg}（时序容差 ${tolImg}）`)
     const tolHigh = Math.max(50, Math.round(allHigh * 0.02))
     const okHigh = sumHigh >= allHigh && (sumHigh - allHigh) <= tolHigh
-    check('★ 各产线「高危缺陷」之和 === 不筛选总数', okHigh,
+    check('★ 各产线「累计高危缺陷」之和 === 不筛选总数', okHigh,
       `各产线合计 ${sumHigh} vs 不筛选 ${allHigh}（时序容差 ${tolHigh}）`)
 
     // ---- 逐行归属检查：重名相机不得共享统计 ----
