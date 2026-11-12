@@ -4,6 +4,7 @@
 #
 # 用法：
 #   sudo ./init-database.sh                      # 用本机 mysql 客户端导入
+#   sudo ./init-database.sh --force              # 库非空时确认清空重建（会 DROP 21 张表）
 #   MYSQL_HOST=... MYSQL_USER=... MYSQL_PASSWORD=... ./init-database.sh
 #
 # 关键点（已实测）：
@@ -26,6 +27,7 @@ MYSQL_PASSWORD="${MYSQL_PASSWORD:-}"
 DATABASE="${DATABASE:-wms-new}"
 INSTALL_DIR="${INSTALL_DIR:-/main/app/dist}"
 SQL_DIR="${SQL_DIR:-${INSTALL_DIR}/sql}"
+FORCE_REINIT="${FORCE_REINIT:-false}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,10 +35,14 @@ while [[ $# -gt 0 ]]; do
     --user) MYSQL_USER="$2"; shift 2 ;;
     --password) MYSQL_PASSWORD="$2"; shift 2 ;;
     --sql-dir) SQL_DIR="$2"; shift 2 ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    --force) FORCE_REINIT=true; shift ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "未知参数：$1" >&2; exit 1 ;;
   esac
 done
+
+# 库名会拼进 information_schema 查询与 CREATE DATABASE 语句，先挡掉非法字符
+[[ "$DATABASE" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "错误：库名含非法字符：${DATABASE}" >&2; exit 1; }
 
 log() { printf '\033[1;36m[init-db]\033[0m %s\n' "$*"; }
 ok()  { printf '\033[1;32m  ✓\033[0m %s\n' "$*"; }
@@ -55,6 +61,24 @@ fi
 log "创建数据库 ${DATABASE}"
 mysql "${MYSQL_ARGS[@]}" -e "CREATE DATABASE IF NOT EXISTS \`${DATABASE}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
 ok "数据库就绪"
+
+# --- 1.5 空库保护 -------------------------------------------------------------
+# 02_final_schema_p0.sql 含 21 处 DROP TABLE（实测），在存量库上执行会直接清空
+# 业务数据。deploy.sh 早就有这个判断，本脚本此前没有 —— 而它恰好是运维手工建库
+# 时最常用的入口。sys_ 前缀是 MySQL 8 自带的系统表，不计入。
+EXISTING_TABLES="$(mysql "${MYSQL_ARGS[@]}" -N -B -e \
+  "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DATABASE}' AND table_name NOT LIKE 'sys_%'" 2>/dev/null || echo 0)"
+EXISTING_TABLES="${EXISTING_TABLES//[^0-9]/}"
+[[ -n "$EXISTING_TABLES" ]] || EXISTING_TABLES=0
+
+if [[ "$EXISTING_TABLES" -gt 0 ]]; then
+  if [[ "$FORCE_REINIT" != "true" ]]; then
+    die "数据库 ${DATABASE} 已有 ${EXISTING_TABLES} 张业务表。
+  02_final_schema_p0.sql 会 DROP 并重建 21 张表，继续执行将丢数据。
+  确认要清空重建请加 --force；只是想升级存量库请用增量补丁（05/06）。"
+  fi
+  log "⚠ --force 已指定：将 DROP 重建 ${DATABASE} 中的 ${EXISTING_TABLES} 张业务表"
+fi
 
 # --- 2. 逐段导入 -------------------------------------------------------------
 SCRIPTS=(
