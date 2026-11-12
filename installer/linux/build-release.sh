@@ -102,10 +102,25 @@ cp "${FRONTEND_DIR}/dist/index.html" "${STATIC_DIR}/index.html"
 if [[ -n "$OLD_ASSETS_TMP" && -d "$OLD_ASSETS_TMP" ]]; then
   # 先读入已有清单
   declare -A STATIC_VERSIONS=()
-  if [[ -f "${STATIC_ASSETS}/.versions" ]]; then
+  # ★ 2026-11-12 修复（两个连着的 bug，导致历史 chunk 只进不出）：
+  #   ① 原来从 ${STATIC_ASSETS}/.versions 读 —— 但该目录在 96 行刚被 rm -rf
+  #      并用本次 dist 产物覆盖，而 vite 不生成 .versions，所以这里**永远读到空**，
+  #      所有历史文件又被重新标成「上一版入口 hash」。实测 .versions 453 行里
+  #      404 行同标一个版本、版本号只有 2 个，static/assets 已 34MB（index-*.js 28MB）。
+  #      真实清单在 $OLD_ASSETS_TMP（上一版的完整快照）。
+  #   ② 清单里的 "current" 标记不降级：上一轮的 current 到本轮就是「上一版」，
+  #      不换掉的话这批文件永远带 current 标记，淘汰逻辑永远删不到它们。
+  VERSIONS_SRC="${OLD_ASSETS_TMP}/.versions"
+  [[ -f "$VERSIONS_SRC" ]] || VERSIONS_SRC="${STATIC_ASSETS}/.versions"
+  if [[ -f "$VERSIONS_SRC" ]]; then
     while IFS='=' read -r fname ver; do
-      [[ -n "$fname" ]] && STATIC_VERSIONS["$fname"]="$ver"
-    done < "${STATIC_ASSETS}/.versions"
+      [[ -n "$fname" && -n "$ver" ]] || continue
+      if [[ "$ver" == "current" ]]; then
+        ver="${OLD_ENTRY:-00000000}"
+      fi
+      STATIC_VERSIONS["$fname"]="$ver"
+    done < "$VERSIONS_SRC"
+    ok "已载入历史版本清单（${#STATIC_VERSIONS[@]} 条）"
   fi
   # 历史文件：文件名 → 版本
   # ⚠️ 顺序很关键：必须**先**标当前版本（只针对本次 dist 的文件），
@@ -122,9 +137,15 @@ if [[ -n "$OLD_ASSETS_TMP" && -d "$OLD_ASSETS_TMP" ]]; then
     b=$(basename "$f")
     case "$b" in .versions) continue ;; esac
     [[ -f "${FRONTEND_DIR}/dist/assets/$b" ]] && continue   # 本次产物里已有同名（哈希相同）
-    [[ -n "${STATIC_VERSIONS[$b]:-}" ]] && continue        # 已在清单里（更早的版本），保留原标记
+    # ★ 2026-11-12 修复：原实现还有一行 `[[ -n "${STATIC_VERSIONS[$b]:-}" ]] && continue`
+    #   —— 语义是「清单里已有就跳过」。在读 STATIC_ASSETS 的旧实现下它是对的（文件确实已存在），
+    #   但改成从 $OLD_ASSETS_TMP 读清单后就成了 bug：文件还在快照里、没拷进新目录，
+    #   却因「清单里有记录」被跳过 → 物理只剩本次产物，而 .versions 仍列着 482 条幻影记录。
+    #   正确语义：**拷不拷由「本次 dist 是否已有同名」决定，标记保不保留由清单决定**。
     install -m 0644 "$f" "${STATIC_ASSETS}/$b" 2>/dev/null || true
-    STATIC_VERSIONS["$b"]="${OLD_ENTRY}"
+    if [[ -z "${STATIC_VERSIONS[$b]:-}" ]]; then
+      STATIC_VERSIONS["$b"]="${OLD_ENTRY}"
+    fi
   done < <(find "$OLD_ASSETS_TMP" -maxdepth 1 -type f \( -name '*.js' -o -name '*.css' \) 2>/dev/null)
 
   # 按版本保留最近 N 版（current 永远保留）
@@ -149,7 +170,9 @@ if [[ -n "$OLD_ASSETS_TMP" && -d "$OLD_ASSETS_TMP" ]]; then
     for fname in "${!STATIC_VERSIONS[@]}"; do
       echo "${fname}=${STATIC_VERSIONS[$fname]}" >> "${STATIC_ASSETS}/.versions"
     done
-    ok "静态资源历史版本保留数: ${#HIST_VERSIONS[@]}（上限 ${KEEP_STATIC_VERSIONS}）"
+    # 打印淘汰后的真实保留数（原来打印的是淘汰前的 HIST_VERSIONS，会偏大）
+    mapfile -t HIST_AFTER < <(printf '%s\n' "${STATIC_VERSIONS[@]}" | grep -v '^current$' | sort -u)
+    ok "静态资源历史版本保留数: ${#HIST_AFTER[@]}（上限 ${KEEP_STATIC_VERSIONS}），共 ${#STATIC_VERSIONS[@]} 个文件"
   fi
   rm -rf "$OLD_ASSETS_TMP"
 fi
