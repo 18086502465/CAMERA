@@ -76,12 +76,19 @@ public class ServerMetricsServiceImpl implements IServerMetricsService {
     /** 采集失败错误码：OSHI 初始化失败（多为 JNA native 库不可用） */
     public static final String ERR_OSHI_INIT = "OSHI_INIT_FAILED";
 
-    /** 采集间隔（毫秒），默认 5 秒 */
-    @Value("${app.server-metrics.interval-ms:5000}")
+    /**
+     * 采集间隔（毫秒），默认 5 秒。
+     *
+     * <p>★ 2026-11-12 修复：原写法只读 {@code app.server-metrics.*}，而
+     * {@code application.yml} 与《配置项清单》写的都是顶层 {@code server-metrics.*}
+     * —— 改配置永远不生效，恒用默认值。这里用嵌套默认值同时兼容两种 key：
+     * 优先 {@code app.server-metrics.*}（标准写法），回落到 {@code server-metrics.*}。
+     */
+    @Value("${app.server-metrics.interval-ms:${server-metrics.interval-ms:5000}}")
     private long intervalMs;
 
     /** 环形缓存容量（点数），默认 120 点 = 10 分钟 */
-    @Value("${app.server-metrics.history-size:120}")
+    @Value("${app.server-metrics.history-size:${server-metrics.history-size:120}}")
     private int historySize;
 
     /**
@@ -158,8 +165,8 @@ public class ServerMetricsServiceImpl implements IServerMetricsService {
      * <p>⚠️ Spring 的 {@code @Scheduled} 会<b>吞掉方法内抛出的异常</b>，
      * 所以这里必须自己 try-catch，否则采集器一旦异常就会静默停止工作。
      */
-    @Scheduled(fixedDelayString = "${app.server-metrics.interval-ms:5000}",
-               initialDelayString = "${app.server-metrics.initial-delay-ms:1000}")
+    @Scheduled(fixedDelayString = "${app.server-metrics.interval-ms:${server-metrics.interval-ms:5000}}",
+               initialDelayString = "${app.server-metrics.initial-delay-ms:${server-metrics.initial-delay-ms:1000}}")
     public void scheduledCollect() {
         try {
             collectNow();
