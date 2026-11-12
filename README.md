@@ -61,9 +61,14 @@ cd frontend && npm ci && npm run build      # CI 用 npm ci，本地同样按 lo
 ### 发版（轻量增量，日常推荐）
 
 ```bash
-bash installer/linux/build-release.sh --update-only    # 产出 ~2MB update-*.zip
-SUDO_PASSWORD='xxx' bash docs/scripts/deploy_jar.sh /tmp/update-*.zip  # 服务器增量部署，失败自动回滚
+# 构建机：产出 update-*.zip（实测 10~11MB，随历史 chunk 数量增长）
+bash installer/linux/build-release.sh --update-only
+# 服务器：执行部署（失败自动回滚）。脚本随包安装到 /main/app/dist/scripts/
+SUDO_PASSWORD='xxx' bash /main/app/dist/scripts/deploy_jar.sh /tmp/update-*.zip
 ```
+
+> `docs/scripts/` 下**不再保留** `deploy_jar.sh` 副本（副本漂移会让人测的是旧版）。
+> 构建机要直接用请写 `installer/linux/scripts/deploy_jar.sh`；增量模式依赖同目录的 `jar_manifest.py`。
 
 ### 建库
 
@@ -74,16 +79,19 @@ sql/deploy/01_init_schema_nodb.sql
 sql/deploy/02_final_schema_p0.sql
 sql/deploy/03_system_settings.sql
 sql/deploy/04_align_entity_columns.sql
+sql/deploy/05_camera_type_migration.sql
 ```
 
 > ⚠️ `02_final_schema_p0.sql` 会 **DROP 并重建 21 张表**，生产库升级绝不能跑全量流程。
+> **05 必须进全新库流程**（不是可选补丁）：它给两张相机表加 `camera_type` 列，缺了
+> 清理脚本查不到"哪些相机不能删"，保护集恒为空 → 每小时清理直接中止并告警。
+> 用 `scripts/init-database.sh` 建库时它会自动按 01→05 执行，且**库非空时会拒绝**（需 `--force`）。
 
-已有库升级时按需追加增量补丁（幂等，可重复执行，不进全新库流程）：
+已有库按需追加增量补丁（幂等，可重复执行，不进全新库流程）：
 
 | 脚本 | 作用 |
 |---|---|
-| `05_camera_type_migration.sql` | 相机类型字段（`REAL` / `TEST`）迁移 |
-| `06_index_tuning.sql` | `camera_images.capture_time` 索引（清理分批查询用） |
+| `06_index_tuning.sql` | `camera_images.capture_time` 索引（两处清理任务的判据字段） |
 
 ### 部署（首次/全量）
 
