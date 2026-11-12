@@ -36,7 +36,11 @@
         />
         <el-button type="primary" @click="handleSearch">🔍 搜索</el-button>
         <el-button @click="handleReset">重置</el-button>
-        <el-button type="success" @click="handleExport">📊 导出 Excel</el-button>
+        <el-tooltip content="导出接口尚未实现，暂不可用" placement="top">
+          <span>
+            <el-button type="success" disabled>📊 导出 Excel</el-button>
+          </span>
+        </el-tooltip>
       </el-space>
       <el-alert
         v-if="historyQueryHint"
@@ -215,10 +219,10 @@ const handlePageChange = (page) => {
   loadData()
 }
 
-const handleExport = () => {
-  ElMessage.info('导出功能：后端接口完成后实现')
-  // window.open(`/api/detection/records/export?${new URLSearchParams({...}).toString()}`)
-}
+// 导出按钮已置灰（见模板 disabled）：后端没有 /detection/records/export 端点，
+// 原实现点了只弹「后端接口完成后实现」—— 给了可用外观却不可用，现场会当成故障反复点。
+// 实现导出后再回来加回 handleExport 与 window.open。
+
 
 onMounted(() => loadData())
 </script>
