@@ -95,6 +95,14 @@ upload:
   max-file-size: 10MB
   max-request-size: 1024MB
 
+camera:
+  token:
+    # 设备令牌严格模式（2026-11-12 新增）
+    #   false → 未配置令牌的相机放行 + WARN；配置了但传错 → 拒绝（默认）
+    #   true  → 未配置令牌的相机也拒绝。运维把现场相机配齐后再收紧。
+    #   背景：心跳端点原实现只校验 "Bearer " 前缀、从不比对令牌，等于匿名可写。
+    strict: false
+
 server-metrics:
   # 服务器资源指标采集器（OSHI 6.9.3）。
   # 后台定时采集 + 内存缓存，接口只读缓存（理由见开发版注释）。

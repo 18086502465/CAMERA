@@ -8,6 +8,7 @@ import com.wms.inspection.app.InspectionUploadService;
 import com.wms.inspection.infra.repository.InspectionUploadRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,6 +37,16 @@ public class InspectionUploadServiceImpl implements InspectionUploadService {
     /** DDD P3 批次⑥：SQL 已下沉到 InspectionUploadRepository */
     @Autowired
     private InspectionUploadRepository inspectionUploadRepository;
+
+    /**
+     * 严格模式：未配置令牌的相机是否拒绝上报。
+     *
+     * <p>与 {@code com.wms.device.app.CameraTokenVerifier} 读同一个 key、同一套语义
+     * （两处都改了才算改全）。默认 false 的原因见该类注释：现场大量相机未配 token，
+     * 一律拒绝会直接停线。
+     */
+    @Value("${camera.token.strict:false}")
+    private boolean tokenStrictMode;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -245,6 +256,17 @@ public class InspectionUploadServiceImpl implements InspectionUploadService {
             return;
         }
         if (rows == null || rows.isEmpty()) {
+            // ★ 2026-11-12 修复：原实现直接 return —— 该相机未配令牌即完全跳过校验，
+            //   与「令牌无效即 422」的契约相反。现按 camera.token.strict 决定：
+            //   严格模式拒绝，兼容模式放行但留 WARN（让「哪些相机还没配令牌」可见）。
+            if (tokenStrictMode) {
+                fail422(response, "TOKEN_NOT_CONFIGURED", null,
+                        "该相机未配置设备令牌，已按严格模式拒绝。",
+                        "请先在设备令牌页为该相机生成令牌，再重新上报。");
+            } else {
+                log.warn("相机未配置设备令牌，按兼容模式放行: cameraCode={} —— "
+                        + "配置后建议开启 camera.token.strict 收紧", cameraCode);
+            }
             return;
         }
         String sha256 = sha256(token);

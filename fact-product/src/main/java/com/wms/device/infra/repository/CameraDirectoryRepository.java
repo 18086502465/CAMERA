@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 相机域仓储（DDD P3 批次③ 收敛）。
@@ -29,6 +30,33 @@ public class CameraDirectoryRepository {
     private JdbcTemplate jdbcTemplate;
 
     // ==================== dim_camera 相机档案 ====================
+
+    /**
+     * 按 camera_code 查 dim_camera.camera_id（设备令牌校验需要数字主键）。
+     *
+     * <p>设备先于建档上线时返回 {@code null}，调用方按「未配置令牌」处理，
+     * 不要当成「档案不存在」直接拒绝 —— 现场新装相机就是先上报后建档。
+     */
+    public Long findCameraIdByCode(String cameraCode) {
+        List<Long> list = jdbcTemplate.queryForList(
+                "SELECT camera_id FROM dim_camera WHERE camera_code = ? AND IFNULL(is_deleted,0)=0 LIMIT 1",
+                Long.class, cameraCode);
+        return list.isEmpty() ? null : list.get(0);
+    }
+
+    /**
+     * 某相机的有效令牌（未禁用、未过期）。
+     *
+     * <p>返回空集合表示该相机<b>未配置</b>令牌，与「令牌错误」是两件事 ——
+     * 前者由 {@code camera.token.strict} 决定放行还是拒绝，后者一律拒绝。
+     */
+    public List<Map<String, Object>> listActiveCameraTokens(Long cameraId) {
+        return jdbcTemplate.queryForList(
+                "SELECT token_hash FROM cfg_camera_token "
+                        + "WHERE camera_id = ? AND is_enabled = 1 "
+                        + "AND (expire_time IS NULL OR expire_time > NOW())",
+                cameraId);
+    }
 
     /** 按相机编码查档案数（排除已删除） */
     public int countDimCameraByCode(String cameraCode) {
