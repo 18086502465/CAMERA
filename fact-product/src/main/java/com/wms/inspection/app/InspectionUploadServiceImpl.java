@@ -6,6 +6,7 @@ import com.wms.inspection.api.dto.InspectionBatchUploadResponse;
 import com.wms.inspection.app.InspectionUploadException;
 import com.wms.inspection.app.InspectionUploadService;
 import com.wms.inspection.infra.repository.InspectionUploadRepository;
+import com.wms.shared.util.LogThrottle;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -263,9 +264,11 @@ public class InspectionUploadServiceImpl implements InspectionUploadService {
                 fail422(response, "TOKEN_NOT_CONFIGURED", null,
                         "该相机未配置设备令牌，已按严格模式拒绝。",
                         "请先在设备令牌页为该相机生成令牌，再重新上报。");
-            } else {
-                log.warn("相机未配置设备令牌，按兼容模式放行: cameraCode={} —— "
-                        + "配置后建议开启 camera.token.strict 收紧", cameraCode);
+            } else if (LogThrottle.allow("token-not-configured:" + cameraCode, 10 * 60 * 1000L)) {
+                // 与心跳共用同一 key 前缀与间隔：同一台相机的心跳/上传任意一路
+                // 报过一次，另一路也不会重复刷。
+                log.warn("相机未配置设备令牌，上报按兼容模式放行: cameraCode={} —— "
+                        + "配置后建议开启 camera.token.strict（本告警每相机 10 分钟最多一条）", cameraCode);
             }
             return;
         }

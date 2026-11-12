@@ -5,6 +5,7 @@ import com.wms.device.api.dto.CameraStatusHeartbeatDTO;
 import com.wms.device.app.CameraTokenVerifier;
 import com.wms.device.app.ICameraStatusService;
 import com.wms.shared.common.ResultVO;
+import com.wms.shared.util.LogThrottle;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
@@ -65,8 +66,12 @@ public class CameraStatusHeartbeatController {
                     log.warn("相机未配置设备令牌，严格模式拒绝: deviceId={}", deviceId);
                     return ResultVO.fail("该相机未配置设备令牌");
                 }
-                log.warn("相机未配置设备令牌，按兼容模式放行: deviceId={} —— "
-                        + "建议在设备令牌页配置后开启 camera.token.strict", deviceId);
+                // 心跳 5 秒/台，这条告警必须节流：实测 16 台相机一分钟 34 条、
+                // 占该时段日志 45%，不节流会把真实告警埋掉。
+                if (LogThrottle.allow("token-not-configured:" + deviceId, 10 * 60 * 1000L)) {
+                    log.warn("相机未配置设备令牌，心跳按兼容模式放行: deviceId={} —— "
+                            + "配置后建议开启 camera.token.strict（本告警每相机 10 分钟最多一条）", deviceId);
+                }
             }
 
             // 4. 校验必填字段
