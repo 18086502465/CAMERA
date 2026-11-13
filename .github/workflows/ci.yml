@@ -169,8 +169,13 @@ jobs:
           # 但本机若用 JDK 9+ 编译，javac 会**放行** Java 9+ API（只是 -source 8 的语法检查），
           # 于是「本机全绿、CI testCompile 直接失败」。历史上就是这样漏进 List.of() 的。
           # 这里用文本扫描兜住最常被误用的几个 API。
+          # ⚠ 2026-11-13 修正误报：`readAllBytes` 同时命中 `Files.readAllBytes(...)` ——
+          #   那是 **Java 7** 的 API，JDK 8 完全可用，却被判成 Java 9+，
+          #   导致 feat(license) 之后 CI 一直假红（同 run 的 JDK 8 编译其实是过的）。
+          #   收紧为 `\.readAllBytes\(\)`（空参）：只抓 `InputStream.readAllBytes()`（Java 9），
+          #   带参的 `Files.readAllBytes(path)` 不再命中。
           echo "::group::扫描 Java 9+ API"
-          PATTERN='List\.of\(|Set\.of\(|Map\.of\(|Map\.entry\(|\.isBlank\(\)|\.strip\(\)|\.repeat\(|readAllBytes|readString\(|writeString\(|transferTo\(.*OutputStream|Collectors\.toUnmodifiable|Optional<[^>]*>[^;]*\.isEmpty\(\)|^[[:space:]]*var[[:space:]]+[a-zA-Z]'
+          PATTERN='List\.of\(|Set\.of\(|Map\.of\(|Map\.entry\(|\.isBlank\(\)|\.strip\(\)|\.repeat\(|\.readAllBytes\(\)|readString\(|writeString\(|transferTo\(.*OutputStream|Collectors\.toUnmodifiable|Optional<[^>]*>[^;]*\.isEmpty\(\)|^[[:space:]]*var[[:space:]]+[a-zA-Z]'
           HITS=$(grep -rnE "$PATTERN" fact-product/src --include=*.java | grep -v '/target/' || true)
           echo "::endgroup::"
           if [ -n "$HITS" ]; then
