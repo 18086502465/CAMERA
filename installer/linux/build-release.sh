@@ -47,6 +47,19 @@ find "$FRONTEND_DIR" -maxdepth 1 -type f -name 'vite.config.js.timestamp-*.mjs' 
 rm -rf "${FRONTEND_DIR}"/dist.bak-* "${FRONTEND_DIR}"/dist.old.* 2>/dev/null || true
 ok "残留已清（update 包保留 7 天内）"
 
+# 全量包：VERSION 固定时同名覆盖，天然只有 1 份；但用 VERSION=x.y.z 构建多个版本
+# 就会累积（每份 55MB）。只留最近 2 份 —— 与 deploy_jar.sh 的 JAR_BACKUP_KEEP=3
+# 同一思路：本地产物随时可重造，留在构建机上只占磁盘。
+if [[ -d "$OUT_DIR" ]]; then
+  _OLD_TARBALLS="$(ls -1t "${OUT_DIR}"/camera-detection-system-*.tar.gz 2>/dev/null | tail -n +3 || true)"
+  if [[ -n "$_OLD_TARBALLS" ]]; then
+    printf '%s\n' "$_OLD_TARBALLS" | while IFS= read -r _f; do
+      [[ -n "$_f" ]] && rm -f "$_f"
+    done
+    ok "旧全量包已清（保留最近 2 份）"
+  fi
+fi
+
 # --- ⓿b 配置 key 对账 ---------------------------------------------------------
 # 两份 application.yml 必须认识同一套 key（Spring 外部配置按 key 合并，不是整文件替换）。
 # 只比 key 路径不比 value —— 值不同是有意的（本机 localhost/200 连接池 vs 现场 127.0.0.1/100）。

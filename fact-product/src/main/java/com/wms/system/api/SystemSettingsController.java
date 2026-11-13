@@ -22,6 +22,11 @@ import java.util.Map;
  * 说明：运行参数先落到 sys_system_setting；数据保留策略继续复用
  * sys_data_retention_policy，避免重复维护同一类配置。
  *
+ * <p>⚠️ 2026-11-13 实测：sys_data_retention_policy 只被本接口读写与展示，
+ * <b>没有任何清理任务消费它</b>（真源是 DataCleanupTask 常量、DefectImageArchiveTask
+ * 的 app.archive.* 配置、以及 cleanup-defect-images.sh 的 730 天）。前端已加显式提示，
+ * 勿据此认为「改了保留天数就会生效」；要做成真正可配需先改各清理任务的取值来源。
+ *
  * <p>DDD P3 批次②：所有 SQL 已下沉到 {@link SystemSettingsRepository}，
  * 本类只保留参数校验、分组/摘要组装与响应封装。
  */

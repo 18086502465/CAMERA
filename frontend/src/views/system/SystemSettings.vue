@@ -71,6 +71,11 @@
         <div>
           <h4>数据保留与清理策略</h4>
           <p>用于缺陷图片、缺陷框、检测明细、聚合数据、操作日志的保留周期控制。生产环境建议先备份再清理。</p>
+          <p class="retention-warn">
+            ⚠️ 此表仅记录运维意向，<strong>当前不会驱动任何清理任务</strong>——改动这里不会改变实际清理行为。
+            真实生效值见《配置项清单》§五：图片日期目录 730 天（<code>cleanup-defect-images.sh</code>）、
+            主表转月表 31 天（<code>app.archive.images.hot-days</code>）、<code>camera_images</code> 30 天与操作日志 6 个月（<code>DataCleanupTask</code> 常量）。
+          </p>
         </div>
       </div>
       <el-table :data="retentionPolicies" border stripe class="settings-table">
@@ -221,6 +226,9 @@ onMounted(loadSettings)
 .setting-control { display: flex; align-items: center; gap: 8px; }
 .setting-control em { font-style: normal; color: #64748b; font-size: 12px; min-width: 24px; }
 .retention-head { margin-bottom: 16px; }
+/* 死配置提示：这张表不驱动清理（见 配置项清单 §五），必须让运维一眼看到 */
+.retention-warn { margin-top: 6px; padding: 8px 10px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 12.5px; line-height: 1.6; border-radius: 0 6px 6px 0; }
+.retention-warn code { background: rgba(146,64,14,.08); padding: 0 3px; border-radius: 3px; }
 .settings-table code { background: #f1f5f9; padding: 2px 7px; border-radius: 6px; color: #2563eb; }
 @media (max-width: 1000px) {
   .settings-hero { flex-direction: column; align-items: flex-start; }

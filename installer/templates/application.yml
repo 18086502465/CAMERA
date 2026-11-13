@@ -129,8 +129,7 @@ server-metrics:
   history-size: 120
 
 defect-image:
-  # 单批缺陷图片最大数量。超过 100 张请拆分批次上报。
-  # 设备端建议同步传 Header: X-Image-Count，便于服务端在解析图片流前快速拒绝超量请求。
+  # 单批缺陷图片最大数量。超过 100 张会整批拒绝（HTTP 422），请拆分批次上报。
   max-batch-images: 100
   upload:
     # 缺陷图片落盘根目录。
