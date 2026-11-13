@@ -127,7 +127,15 @@ if [[ -d "${STATIC_ASSETS}" ]]; then
   fi
   OLD_ENTRY="$PREV_ENTRY_NAME"
   if [[ -n "$OLD_ENTRY" ]]; then
-    OLD_ASSETS_TMP="$(mktemp -d)"
+    # ★ 暂存目录必须落在**仓库所在卷**，不能用裸 `mktemp -d`。
+    #   原因（2026-11-13 实测，构建直接中断）：Windows + Git Bash 下
+    #   `mktemp -d` 返回 `C:\Users\...\Temp/tmp.XXXX`（带盘符、混合分隔符），
+    #   脚本末尾 `rm -rf` 它时会被删除守卫判为
+    #   `SAFE_DELETE_INVALID_PATH: embedded drive prefix is not allowed`，
+    #   set -e 直接把构建停在「②之后」，全量包根本没有产生 ——
+    #   而外层若套了 `| tail`，退出码还会被管道吃掉，看起来像成功。
+    #   放到 OUT_DIR 下则是 `/d/.../` 形式的纯 POSIX 路径，且同卷 cp/mv 更快。
+    OLD_ASSETS_TMP="$(mktemp -d "${OUT_DIR}/.static-tmp.XXXXXX")"
     cp -r "${STATIC_ASSETS}/." "$OLD_ASSETS_TMP/" 2>/dev/null || true
     ok "已暂存上一版静态资源（版本 ${OLD_ENTRY}）"
   else
