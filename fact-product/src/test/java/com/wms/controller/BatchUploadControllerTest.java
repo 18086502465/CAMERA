@@ -114,7 +114,7 @@ class BatchUploadControllerTest {
 
     private InspectionBatchUploadRequest validRequest() {
         InspectionBatchUploadRequest request = new InspectionBatchUploadRequest();
-        request.setSchemaVersion("1.0");
+        request.setSchemaVersion("2.0");
         request.setBatchId("BATCH-HZ-001");
         request.setRequestId("REQ-HZ-001");
         request.setCameraCode("CAM-HZ-001");
