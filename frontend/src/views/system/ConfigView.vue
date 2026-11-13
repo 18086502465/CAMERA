@@ -1,5 +1,17 @@
 <template>
   <div class="sys-config">
+    <!-- 旧路由（/system/companies、/factories、/lines、/users、/brands…共 9 个）都是
+         redirect 到本页的桩，用户点旧书签会"页面莫名变了"却没任何说明。
+         vue-router 的 route.redirectedFrom 只在本次重定向导航时存在，刷新即消失，正合适。 -->
+    <el-alert
+      v-if="redirectedFrom"
+      class="merge-notice"
+      type="info"
+      show-icon
+      :title="`「${redirectedFrom}」已并入系统配置`"
+      description="该独立页面已合并到当前配置中心：工厂 / 产线 / 工位 / 相机 / 用户在此维护。请更新旧书签为 /system/config。"
+      @close="redirectedFrom = ''"
+    />
     <div class="config-layout" :class="{ resizing: isResizing }">
       <aside class="config-sidebar">
         <div class="sidebar-head">
@@ -303,6 +315,8 @@ import { useConfigRiskConfirm } from './config/useConfigRiskConfirm'
 
 const router = useRouter()
 const route = useRoute()
+// 从旧路由重定向进来时提示「已合并」，直接访问 /system/config 时为 null（不打扰）
+const redirectedFrom = ref(route.redirectedFrom ? route.redirectedFrom.fullPath : '')
 const menuKeys = ['factory', 'line', 'workstation', 'camera', 'user', 'operationLog']
 const configMenuKeys = ['factory', 'line', 'workstation', 'camera', 'user']
 const activeMenu = ref(menuKeys.includes(route.query.tab) ? route.query.tab : 'factory')
@@ -991,6 +1005,7 @@ onMounted(fetchAll)
 /* 表单字段下方的灰色提示（相机类型说明等） */
 .form-tip { margin-top: 4px; font-size: 12px; line-height: 1.5; color: #64748b; }
 .sys-config { max-width: 1420px; margin: 0 auto; }
+.merge-notice { margin-bottom: 12px; border-radius: 12px; }
 .config-layout { display: flex; min-height: calc(100vh - 200px); background: #fff; border-radius: 18px; box-shadow: 0 14px 34px rgba(15,23,42,.08); overflow: hidden; border: 1px solid rgba(226,232,240,.9); position: relative; }
 /* 宽度由 JS 拖拽写入 CSS 变量 --sidebar-width（默认值 288px） */
 .config-sidebar { width: var(--sidebar-width, 288px); background: linear-gradient(180deg,#f8fbff 0%,#f9fbff 48%,#ffffff 100%); border-right: 1px solid #e5e7eb; padding: 18px 14px; flex-shrink: 0; position: relative; transition: width .12s ease; }
