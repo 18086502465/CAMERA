@@ -185,6 +185,16 @@ const routes = [
         name: 'ServerMonitor',
         component: () => import('../views/system/ServerMonitorView.vue'),
         meta: { title: '服务器监控' }
+      },
+      {
+        // 服务器授权（2026-11-12 新增）
+        // 不设 requiresAdmin：剩余天数/机器码所有登录用户都该能看（现场运维要能自查）。
+        // 上传与重载按钮在页面内按 isAdmin 控制，后端另有 @PreAuthorize 兜底。
+        // 页面路由已加入 SecurityConfig 的 SPA 白名单，直接刷新不会 403。
+        path: 'system/license',
+        name: 'SystemLicense',
+        component: () => import('../views/system/LicenseView.vue'),
+        meta: { title: '服务器授权' }
       }
     ]
   }

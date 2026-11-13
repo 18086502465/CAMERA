@@ -38,6 +38,7 @@ public class CameraDashboardController {
     @Autowired private IDimWorkstationService workstationService;
     @Autowired private IDimProductionLineService lineService;
     @Autowired private CameraDirectory cameraDirectory;   // DDD P4：跨域只走 app 接口
+    @Autowired private com.wms.system.app.LicenseService licenseService;  // 授权配额（跨域只走 app 层）
 
     @GetMapping
     public ResultVO<IPage<CameraStatus>> pageQuery(
@@ -166,6 +167,12 @@ public class CameraDashboardController {
         }
         if (cameraDirectory.countDimCameraByCode(camera.getCameraCode()) > 0) {
             return ResultVO.fail("设备编号已存在");
+        }
+        // 授权相机数配额（2026-11-12）。放在「编号已存在」之后：重号是更明确的原因，
+        // 先报配额会让用户以为「加不了」而实际只是编号冲突。
+        String quotaError = licenseService.checkCameraQuota(cameraDirectory.countDimCameras());
+        if (quotaError != null) {
+            return ResultVO.fail(quotaError);
         }
         camera.setId(null);
         if (camera.getStatus() == null || camera.getStatus().trim().isEmpty()) camera.setStatus("RUNNING");

@@ -61,4 +61,13 @@ public interface CameraDirectory {
     /** 相机换绑后联动缺陷映射位置，返回行数 */
     int syncMappingLocation(Integer factoryId, Integer lineId, Integer workstationId,
                             String cameraCode, Long cameraId);
+
+    /**
+     * 当前有效相机档案总数（{@code dim_camera} 中未删除的行）。
+     *
+     * <p>用于 License 相机数配额判定。为什么算 {@code dim_camera} 而不是
+     * {@code camera_status}：前者是配置真源，删相机时软删；后者是运行快照，
+     * 会残留历史行，拿它计数会把配额撑爆。
+     */
+    int countDimCameras();
 }

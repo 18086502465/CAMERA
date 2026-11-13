@@ -148,7 +148,12 @@ public class SecurityConfig {
                     //    而此时用户可能还没登录、没有 token。
                     //    页面里的数据请求走 /api/v1/system/server/**，仍受鉴权保护。
                     "/server-monitor",
-                    "/server-monitor/**"
+                    "/server-monitor/**",
+                    // 服务器授权页（2026-11-12 新增）
+                    // 与 /server-monitor 同理：页面本身要能直接打开/刷新，
+                    // 真正的数据与上传走 /api/license/**，仍受登录 + ADMIN 保护。
+                    "/system/license",
+                    "/system/license/**"
                 ).permitAll()
                 // ---- 认证相关 ----
                 // /api/auth/register 保留匿名：注册角色已固定为普通用户(0)，

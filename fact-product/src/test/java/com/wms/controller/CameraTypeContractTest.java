@@ -70,6 +70,12 @@ class CameraTypeContractTest {
     private IDimProductionLineService lineService;
     @Mock
     private CameraDirectory cameraDirectory;
+    /**
+     * 2026-11-12：create 增加了授权相机数配额校验。
+     * 不 mock 它会导致 4 个 create 用例全部 NPE（standalone MockMvc 注入 null）。
+     */
+    @Mock
+    private com.wms.system.app.LicenseService licenseService;
 
     @InjectMocks
     private CameraDashboardController cameraDashboardController;
@@ -79,6 +85,10 @@ class CameraTypeContractTest {
     }
 
     private void stubRelation() {
+        // 授权配额不设限：本类冻结的是相机类型契约，不是授权上限。
+        // 用 lenient —— update 相关用例不会走到配额分支，严格模式会误报未使用 stub。
+        org.mockito.Mockito.lenient().when(licenseService.checkCameraQuota(anyInt())).thenReturn(null);
+
         DimWorkstation station = new DimWorkstation();
         station.setStationId(14);
         station.setStationName("CV1");

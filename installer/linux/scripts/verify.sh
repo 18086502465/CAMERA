@@ -153,7 +153,8 @@ fi
 # 最危险的故障模式是「数据盘没挂上」—— 此时 /main 只是系统盘上的普通目录，
 # 程序与数据静默写进系统盘，重启或修好挂载后看起来"数据全丢"，且没有任何报错。
 # 因此这里把「挂载、unit 依赖、fstab、结构、图片白名单、跨盘副本」全部变成可验证项。
-# 只在 /etc/default 声明了 BASE 的机器上检查（老布局机器跳过，保持原有 32 项口径）。
+# 只在 /etc/default 声明了 BASE 的机器上检查（老布局机器跳过 [3a] 这 6 项，
+# 因此老布局是 35 项、统一布局是 41 项；改动本文件的检查项数时两个数都要跟着改文档）。
 LAYOUT_ENABLED=0
 grep -q '^BASE=' /etc/default/camera-detection 2>/dev/null && LAYOUT_ENABLED=1
 
@@ -287,6 +288,45 @@ if [[ -n "$LEAK_FILES" ]]; then
   check "cron 无明文口令" false "${CRON_DIR} 下这些文件含 MYSQL_PASSWORD：${LEAK_FILES} —— 应改为脚本自读 /etc/default/camera-detection"
 elif [[ -d "$CRON_DIR" ]]; then
   check "cron 无明文口令" true "${CRON_DIR}（整个目录，$(find "$CRON_DIR" -maxdepth 1 -type f 2>/dev/null | wc -l) 个文件）"
+fi
+
+# --- 3b-2. cron 指向统一布局（2026-11-13）-----------------------------------
+# 现场实测：三个计划任务**全部**还指着 /usr/local/bin/*.sh（迁移前的副本）。
+# 后果不是"多占几个文件"，而是：
+#   旧版 check-disk-usage.sh 的 MOUNTS 默认是「/ /var /data」，而 /data 早就不是挂载点
+#   → `df /data` 返回的是**系统盘**（40G），500G 数据盘 /main 从未被巡检；
+#   旧版 cleanup-zk54-incremental.sh 缺「调用方显式传值优先于 /etc/default」的修复。
+# 根因：迁移只改了 install.sh 的**生成模板**，没有重写**已存在**的 /etc/cron.d/*，
+#       而本脚本当时只查「保留期口径」和「明文口令」，两项都通过 → 40/40 全绿却漏了。
+# 顺带查被调用脚本是否存在：cron 路径写错时只会静默失败，不产生任何日志。
+# ★ 只在统一布局机器上判「必须指向 ${INSTALL_DIR}/scripts/」——
+#   老布局机器（没声明 BASE）本来就该调 /usr/local/bin/*，判它错是假红。
+LEGACY_CRON_FILES=""
+MISSING_CRON_TARGETS=""
+if [[ -d "$CRON_DIR" ]]; then
+  while IFS= read -r _f; do
+    [[ -f "$_f" ]] || continue
+    if [[ "$LAYOUT_ENABLED" -eq 1 ]]; then
+      grep -qE '/usr/local/bin/(cleanup|check-disk)' "$_f" 2>/dev/null \
+        && LEGACY_CRON_FILES="${LEGACY_CRON_FILES} $(basename "$_f")"
+    fi
+    while IFS= read -r _p; do
+      [[ -n "$_p" ]] || continue
+      [[ -x "$_p" ]] || MISSING_CRON_TARGETS="${MISSING_CRON_TARGETS} ${_p}"
+    done < <(grep -oE '/(main/app|opt|camera)[^ ]*\.sh' "$_f" 2>/dev/null)
+  done < <(find "$CRON_DIR" -maxdepth 1 -type f 2>/dev/null)
+fi
+
+if [[ -n "$LEGACY_CRON_FILES" ]]; then
+  check "cron 脚本路径" false "${CRON_DIR} 下仍引用 /usr/local/bin 旧副本：${LEGACY_CRON_FILES} —— 应改指 ${INSTALL_DIR}/scripts/"
+elif [[ -n "$MISSING_CRON_TARGETS" ]]; then
+  check "cron 脚本路径" false "cron 引用的脚本不存在：${MISSING_CRON_TARGETS} —— cron 会静默失败"
+elif [[ -d "$CRON_DIR" ]]; then
+  if [[ "$LAYOUT_ENABLED" -eq 1 ]]; then
+    check "cron 脚本路径" true "全部指向 ${INSTALL_DIR}/scripts/ 且脚本存在"
+  else
+    check "cron 脚本路径" true "老布局：脚本路径存在且可执行（不校验统一布局）"
+  fi
 fi
 
 # --- 3c. 备份新鲜度（v3 P0-4）------------------------------------------------
@@ -442,6 +482,27 @@ if [[ -n "$TOKEN" ]]; then
     check "服务器指标采集可用" "$([[ -z "$METRICS_ERR" || "$METRICS_ERR" == "null" ]] && echo true || echo false)" \
           "$([[ -z "$METRICS_ERR" || "$METRICS_ERR" == "null" ]] && echo "OSHI 采集正常" || echo "采集异常：${METRICS_ERR}")"
   fi
+
+  # 服务器授权（2026-11-12 新增）
+  # 只断言「接口通 + 状态可解析」和「授权不是 INVALID」。
+  # MISSING 视为通过：现场可能还没装授权，而默认策略 warn 本来就不阻断 ——
+  # 这里若判红，会让每次自检都失败，把真正的问题淹掉。
+  # INVALID / MACHINE_MISMATCH 才判红：那两种是「装了但不对」，必须当场处理。
+  LIC_JSON=$(curl -s -m 10 -H "Authorization: Bearer ${TOKEN}" "${BASE_URL}/api/license" 2>/dev/null)
+  LIC_STATUS=$(printf '%s' "$LIC_JSON" | grep -oE '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+  LIC_MODE=$(printf '%s' "$LIC_JSON" | grep -oE '"expiredMode":"[^"]*"' | head -1 | cut -d'"' -f4)
+  LIC_MC=$(printf '%s' "$LIC_JSON" | grep -oE '"machineCode":"[^"]*"' | head -1 | cut -d'"' -f4)
+  check "授权接口" "$([[ -n "$LIC_STATUS" ]] && echo true || echo false)" \
+        "status=${LIC_STATUS:-无响应}，模式=${LIC_MODE:-?}，机器码=${LIC_MC:-未采集}"
+
+  case "$LIC_STATUS" in
+    VALID|EXPIRING|DISABLED)
+      check "授权可用性" true "status=${LIC_STATUS}" ;;
+    MISSING)
+      check "授权可用性" true "未安装授权（${LIC_MODE:-warn} 模式不阻断业务）" ;;
+    *)
+      check "授权可用性" false "status=${LIC_STATUS} —— 到「服务器授权」页看 message，或查 ${WORK_DIR}/data/license/" ;;
+  esac
 else
   check "看板统计接口（带 token）" false "未取到 token，无法验证"
 fi

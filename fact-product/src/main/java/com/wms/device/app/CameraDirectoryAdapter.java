@@ -86,4 +86,9 @@ public class CameraDirectoryAdapter implements CameraDirectory {
                                    String cameraCode, Long cameraId) {
         return repository.syncMappingLocation(factoryId, lineId, workstationId, cameraCode, cameraId);
     }
+
+    @Override
+    public int countDimCameras() {
+        return repository.countDimCameras();
+    }
 }

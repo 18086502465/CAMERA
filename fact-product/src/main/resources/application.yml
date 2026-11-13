@@ -120,6 +120,29 @@ server-metrics:
   # 内存环形缓存的历史点数。120 点 / 5 秒 = 10 分钟窗口
   history-size: 120
 
+license:
+  # ---- 服务器授权（2026-11-12 新增）----
+  # 签发工具：installer/linux/scripts/gen_license.py（离线，不联网）
+  # 文件格式：base64url(payloadJson) + "." + base64url(hmacSha256(payloadJson))
+  # 默认落 data 盘而不是 /etc：应用以 cdsys 运行，/etc 下的 640 root 文件写不进去，
+  # 「上传新授权」会永远失败。设计说明见 docs/服务器授权设计.md。
+  enabled: true
+  # 留空 = 用 LicenseSigner 内置默认密钥。生产可用环境变量 LICENSE_SECRET 覆盖；
+  # ⚠ 覆盖后必须用同一密钥重新签发，否则现有授权立刻失效。
+  secret: ${LICENSE_SECRET:}
+  file: ${app.home}/data/license/license.lic
+  # 过期策略（三分支）：
+  #   warn     → 只告警、永不阻断（默认。产线不能因为授权到期直接停摆）
+  #   readonly → 过宽限期后拒绝设备写入（上传/心跳/batch），管理端照常可用
+  #   block    → 在 readonly 基础上再拒绝业务查询，仅留登录与授权管理
+  expired-mode: warn
+  # 过期后的宽限天数。宽限期内即使 readonly/block 也不拦
+  grace-days: 7
+  # 剩余天数 <= 该值进入「即将到期」，前端顶部提示 + 日志告警
+  warn-days: 30
+  # 机器绑定校验。虚拟机批量克隆后指纹会变，排障时可临时关掉
+  enforce-machine: true
+
 camera:
   token:
     # 设备令牌严格模式（2026-11-12 新增）

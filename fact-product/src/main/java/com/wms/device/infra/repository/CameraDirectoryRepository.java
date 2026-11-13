@@ -69,6 +69,11 @@ public class CameraDirectoryRepository {
                 cameraCode, cameraId);
     }
 
+    /** 有效相机档案总数（License 配额判定用，只数未删除的配置行）。 */
+    public int countDimCameras() {
+        return countOrZero("SELECT COUNT(*) FROM dim_camera WHERE IFNULL(is_deleted,0)=0");
+    }
+
     /**
      * 写入 / 更新相机档案（按 camera_id 主键 upsert）。
      *

@@ -95,6 +95,23 @@ upload:
   max-file-size: 10MB
   max-request-size: 1024MB
 
+license:
+  # ---- 服务器授权（2026-11-12 新增）----
+  # 签发工具：installer/linux/scripts/gen_license.py（离线签发，不联网）
+  # 文件格式：base64url(payloadJson) + "." + base64url(hmacSha256(payloadJson))
+  # 文件放 data 盘（应用用户可写）。不要改到 /etc —— 那里 root:root 640，
+  # cdsys 写不进去，「上传新授权」会永远失败。
+  enabled: true
+  # 留空 = 用内置默认密钥；生产可用 LICENSE_SECRET 环境变量覆盖
+  # （覆盖后必须用同一密钥重新签发，否则现有授权全部失效）
+  secret: ${LICENSE_SECRET:}
+  file: ${app.home}/data/license/license.lic
+  # warn（默认，只告警不阻断）| readonly（拦设备写入）| block（拦业务查询）
+  expired-mode: warn
+  grace-days: 7
+  warn-days: 30
+  enforce-machine: true
+
 camera:
   token:
     # 设备令牌严格模式（2026-11-12 新增）
