@@ -85,6 +85,15 @@ jobs:
         run: npm test
         working-directory: frontend
 
+      # 前端此前完全没有 lint。这里只开 eslint-plugin-vue 的 flat/essential
+      # （能抓 v-for 缺 key、v-if/v-for 同元素、重复属性等真错），不引入
+      # 风格类规则——否则一次性冒出上百条纯格式告警，最后一定被整体忽略。
+      # 已关闭 vue/multi-word-component-names：本仓库页面组件按业务命名
+      # （Home/Cameras/Login 等），改名收益为零、破坏路由引用。
+      - name: ESLint
+        run: npm run lint
+        working-directory: frontend
+
       - name: 构建（含 element-plus guard 检查）
         run: npx vite build
         working-directory: frontend
