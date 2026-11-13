@@ -14,9 +14,14 @@
 #
 # 【安全措施】
 #   ① 要求工作区干净（有未提交改动就拒绝，避免拿未保存的工作去赌一个不可逆操作）；
-#   ② 自动 git bundle 全量备份到仓库外（可完整恢复）；
-#   ③ 自动打标签 backup/pre-slim-<时间戳>；
+#   ② 自动 git bundle 全量备份到**仓库外**（唯一恢复来源）；
+#   ③ 收尾做对象回收校验，确认旧产物真的被 gc 掉了；
 #   ④ 不自动 push —— 强推命令只打印，由人工执行。
+#
+# 【为什么不打 backup 标签】
+#   打过一次：`git tag backup/pre-slim-* HEAD` 指向重写前的 HEAD，
+#   于是旧历史对象全部被这个 ref 保住 → gc --prune=now 一个字节都回收不了，
+#   .git 体积纹丝不动（等于白干）。恢复一律走仓库外的 bundle。
 #
 # 用法：
 #   bash docs/scripts/git_slim.sh            # 只报告能回收多少（默认 dry-run）
@@ -86,24 +91,35 @@ fi
 STAMP=$(date +%Y%m%d-%H%M%S)
 BUNDLE="${REPO_ROOT}/../camera-git-backup-${STAMP}.bundle"
 
-echo "① 全量备份到仓库外（可用来完整恢复）："
+echo "① 全量备份到仓库外（唯一的恢复来源）："
 git bundle create "$BUNDLE" --all >/dev/null
 echo "   $BUNDLE（$(du -m "$BUNDLE" | cut -f1) MB）"
+echo "   ⚠️ 备份必须放在仓库外 —— 仓库内打 tag 会让旧对象一直被引用，"
+echo "      gc 之后一个字节都回收不了，瘦身等于没做。"
 
-git tag -f "backup/pre-slim-${STAMP}" HEAD >/dev/null
-echo "② 已打标签 backup/pre-slim-${STAMP}"
-
-echo "③ 重写历史（$(git rev-list --count --all) 个提交）..."
+echo "② 重写历史（$(git rev-list --count --all) 个提交）..."
 FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --index-filter \
   "git rm -r --cached --ignore-unmatch ${PRUNE_PATHS[*]}" \
   --prune-empty -- --all >/dev/null 2>&1
 
-echo "④ 清理旧引用并重新打包（可能需要几十秒）..."
+echo "③ 清理旧引用并重新打包（可能需要几十秒）..."
 rm -rf .git/refs/original
 git reflog expire --expire=now --all
+git for-each-ref --format='%(refname)' refs/tags | while IFS= read -r t; do
+  case "$t" in */backup/pre-slim-*) git tag -d "${t#refs/tags/}" >/dev/null 2>&1 || true ;; esac
+done
 git gc --prune=now --aggressive >/dev/null 2>&1
 
-NEW_SIZE=$(git_dir_size)
+echo "④ 校验：旧对象是否真的被回收"
+LEFTOVER=$(git rev-list --objects --all 2>/dev/null \
+  | awk '{
+      p = $0
+      sub(/^[0-9a-f]+ /, "", p)          # 去掉前导 "<sha> "
+      if (index(p, "dist-release/") == 1) c++
+      else if (index(p, "fact-product/src/main/resources/static/") == 1) c++
+    } END { print c + 0 }')
+echo "   仍被引用的产物对象：${LEFTOVER}（应为 0）"
+
 echo ""
 echo "完成：.git $(git_dir_size) MB（重写前请对照上面的数字）"
 echo "提交数：$(git rev-list --count --all)"
@@ -112,7 +128,7 @@ echo "下一步（需人工执行）："
 echo "  git push --force-with-lease origin main"
 echo ""
 echo "恢复办法（若结果不对）："
-echo "  git reset --hard backup/pre-slim-${STAMP}"
-echo "  # 或从 bundle 恢复：git clone ${BUNDLE} camera-restored"
+echo "  git clone ${BUNDLE} camera-restored"
+echo "  然后把 camera-restored 的 main 推回远端"
 echo ""
 echo "注意：历史已改写，其他机器/协作者必须重新 clone，不能 pull。"
