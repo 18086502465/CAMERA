@@ -1,0 +1,12 @@
+{
+  "name": "camera-detection-docs-scripts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "docs/scripts 下的验证与回归脚本依赖。仅浏览器回归脚本需要，与前端构建依赖无关。",
+  "scripts": {
+    "check-chrome": "node -e \"const{resolveChrome}=require('./browser-helper.cjs');console.log('Chrome:',resolveChrome())\""
+  },
+  "devDependencies": {
+    "puppeteer-core": "25.16.0"
+  }
+}

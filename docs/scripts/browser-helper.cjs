@@ -12,8 +12,52 @@
  * 可靠做法：**focus + Ctrl+A + Backspace + type**（真实键盘事件）。
  */
 
+const fs = require('fs')
+
 const USERNAME_SEL = 'input[placeholder="请输入用户名"]'
 const PASSWORD_SEL = 'input[placeholder="请输入密码"]'
+
+/** 各平台常见安装位置（puppeteer-core 不自带浏览器，必须外挂一个） */
+const CHROME_CANDIDATES = [
+  'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+]
+
+/**
+ * 解析 Chrome/Chromium 可执行文件路径。
+ *
+ * 优先 `PUPPETEER_CHROME` 环境变量（换机器只需设这一项），否则按平台常见路径探测。
+ * 全部失败时**在启动浏览器之前**抛出可执行的提示——否则 puppeteer 只会抛
+ * ERR_LAUNCH 之类看不出原因的错，换机器时极难排查。
+ */
+function resolveChrome() {
+  const envPath = process.env.PUPPETEER_CHROME
+  if (envPath) {
+    if (fs.existsSync(envPath)) return envPath
+    throw new Error(
+      'PUPPETEER_CHROME 指向的文件不存在：' + envPath + '\n' +
+      '请改成真实的浏览器可执行文件路径。'
+    )
+  }
+  for (const p of CHROME_CANDIDATES) {
+    try {
+      if (fs.existsSync(p)) return p
+    } catch (_) {
+      // 无权限访问的候选路径直接跳过
+    }
+  }
+  throw new Error(
+    '未找到 Chrome/Chromium。这些回归脚本用 puppeteer-core，不自带浏览器。\n' +
+    '请先安装 Chrome，或设置环境变量 PUPPETEER_CHROME 指向可执行文件：\n' +
+    '  Windows: set PUPPETEER_CHROME=C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\n' +
+    '  Linux:   export PUPPETEER_CHROME=/usr/bin/google-chrome\n' +
+    '依赖安装：cd docs/scripts && npm ci'
+  )
+}
 
 /** 清空并输入某个框 */
 async function fillInput(page, selector, text) {
@@ -92,4 +136,4 @@ async function login(page, username, password, waitMs = 4500) {
   }
 }
 
-module.exports = { fillInput, inputValues, login, USERNAME_SEL, PASSWORD_SEL }
+module.exports = { fillInput, inputValues, login, resolveChrome, USERNAME_SEL, PASSWORD_SEL }

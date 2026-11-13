@@ -5,11 +5,11 @@
  * 环境变量：BASE_URL（默认 http://10.2.77.72:8091）、ADMIN_PWD（默认 admin123）
  */
 const puppeteer = require('puppeteer-core')
-const { login } = require('./browser-helper.cjs')
+const { login, resolveChrome } = require('./browser-helper.cjs')
 
 const BASE = process.env.BASE_URL || 'http://10.2.77.72:8091'
 const PWD = process.env.ADMIN_PWD || 'admin123'
-const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+const CHROME = resolveChrome()
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 const results = []
