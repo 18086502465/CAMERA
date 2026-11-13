@@ -376,7 +376,7 @@ onMounted(() => {
 <style scoped>
 .defect-type-list {
   padding: 20px;
-  background: #fff;
+  background: var(--color-bg-card);
   border-radius: 8px;
 }
 

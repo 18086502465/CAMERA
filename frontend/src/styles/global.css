@@ -1,38 +1,22 @@
 /* 产线异常检测系统 — 全局样式
- * 基于 UI设计规范 v1.0
- * 主色调：#1677FF（蓝）
- * 辅助色：#F5F5F5（页面背景）、#FFFFFF（卡片背景）
- * 语义色：成功 #52C41A、警告 #FA8C16、错误 #FF4D4F
+ *
+ * ⚠️ 本文件当前**没有被任何文件 import**（2026-11-13 实测：全仓无
+ *    `global.css` 引用，index.html 只引 /src/main.js）。也就是说下面这些
+ *    .el-button / .el-card / .el-table / 工具类规则在生产环境从未生效过，
+ *    页面外观完全由各组件自己的 scoped 样式决定。
+ *
+ *    这是刻意维持的现状：整份引入会一次性激活 470 行从未生效的样式，
+ *    属于不可控的外观变更，需要逐屏目视回归，不在色值收敛的范围内。
+ *    要启用请单独开一轮任务，按页验证。
+ *
+ * ★ 颜色与 Element 主题令牌已抽到 `tokens.css`（由 main.js 引入，真正生效）。
+ *   本文件只保留字体/间距/圆角/阴影等非颜色令牌与选择器规则。
  */
 
 /* ========================================
-   一、CSS 变量（设计规范直接应用）
+   一、非颜色令牌（颜色见 tokens.css）
    ======================================== */
 :root {
-  /* 主色调 */
-  --color-primary: #1677FF;
-  --color-primary-hover: #4096FF;
-  --color-primary-active: #0958D9;
-  --color-primary-bg: #E6F4FF;
-
-  /* 辅助色 */
-  --color-bg-page: #F5F5F5;
-  --color-bg-card: #FFFFFF;
-  --color-border: #D9D9D9;
-  --color-border-hover: #4096FF;
-  --color-divider: #F0F0F0;
-  --color-text: #1F1F1F;
-  --color-text-secondary: #8C8C8C;
-  --color-text-disabled: #BFBFBF;
-
-  /* 语义色 */
-  --color-success: #52C41A;
-  --color-success-bg: #F6FFED;
-  --color-warning: #FA8C16;
-  --color-warning-bg: #FFF7E6;
-  --color-error: #FF4D4F;
-  --color-error-bg: #FFF1F0;
-
   /* 字体 */
   --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --font-mono: 'SF Mono', 'Monaco', 'Roboto Mono', monospace;
@@ -429,32 +413,11 @@ a:hover {
 }
 
 /* ========================================
-   十二、Element Plus 主题覆盖（设计规范 十七）
+   十二、Element Plus 主题
+   ★ 已全部迁至 `tokens.css`（含 light-N/dark-2 全套色阶）。
+     本文件不 import，若在此重复定义会成为第二份真源。
    ======================================== */
 :root {
-  --el-color-primary: #1677FF;
-  --el-color-primary-light-3: #4096FF;
-  --el-color-primary-light-5: #E6F4FF;
-  --el-color-primary-dark-2: #0958D9;
-
-  --el-color-success: #52C41A;
-  --el-color-success-light-3: #F6FFED;
-
-  --el-color-warning: #FA8C16;
-  --el-color-warning-light-3: #FFF7E6;
-
-  --el-color-danger: #FF4D4F;
-  --el-color-danger-light-3: #FFF1F0;
-
-  --el-bg-color-page: #F5F5F5;
-  --el-bg-color: #FFFFFF;
-  --el-border-color: #D9D9D9;
-  --el-border-color-hover: #4096FF;
-  --el-text-color-primary: #1F1F1F;
-  --el-text-color-regular: #1F1F1F;
-  --el-text-color-secondary: #8C8C8C;
-  --el-text-color-placeholder: #BFBFBF;
-
   --el-border-radius-base: 6px;
   --el-border-radius-small: 4px;
   --el-border-radius-round: 8px;

@@ -215,7 +215,7 @@ const shiftClass = computed(() => {
 </script>
 
 <style scoped>
-.topbar-sticky { position: sticky; top: 0; z-index: 200; background: #fff; box-shadow: 0 2px 10px rgba(15,23,42,.06); }
+.topbar-sticky { position: sticky; top: 0; z-index: 200; background: var(--color-bg-card); box-shadow: 0 2px 10px rgba(15,23,42,.06); }
 /* ⚠️ 顶栏防压缩（2026-11-12 修）
  * 历史缺陷：工厂/产线/工位三个 select 用内联 style 固定 200/240/240px，
  * 加上标题与右侧操作区，总需求宽约 1635px。视口 1366~1600 时 flex 把
@@ -223,29 +223,29 @@ const shiftClass = computed(() => {
  * 溢出固定 52px 的头部，与下方 tab 行重叠。
  * 修法：左右两段 flex:0 0 auto 且不换行（任何情况都不许压），
  * 中间 select 改 class 控制宽度，按断点收缩。 */
-.hdr { min-height: 52px; background: #fff; border-bottom: 1px solid #e5e5e5; display: flex; align-items: center; padding: 0 20px; gap: 16px; }
+.hdr { min-height: 52px; background: var(--color-bg-card); border-bottom: 1px solid #e5e5e5; display: flex; align-items: center; padding: 0 20px; gap: 16px; }
 .hdr-left { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
 .hdr-logo { font-size: 17px; font-weight: 700; color: #262626; white-space: nowrap; }
 .shift-badge { font-size: 12px; padding: 3px 14px; border-radius: 12px; font-weight: 600; white-space: nowrap; }
-.shift-day { background: #fef3c7; color: #92400e; }
+.shift-day { background: var(--color-warning-bg); color: #92400e; }
 .shift-night { background: #e0e7ff; color: #3730a3; }
 .hdr-center { display: flex; gap: 16px; flex: 1 1 auto; min-width: 0; }
 .hdr-select { display: flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; }
 .sel-factory { width: 200px; flex: 0 1 auto; }
 .sel-line, .sel-station { width: 240px; flex: 0 1 auto; }
 .hs-label { font-size: 13px; color: #525252; font-weight: 600; white-space: nowrap; }
-.badge { display: inline-block; background: #3b82f6; color: #fff; font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
+.badge { display: inline-block; background: var(--color-primary-hover); color: #fff; font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
 .hdr-right { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
-.syscfg-btn { display: flex; align-items: center; gap: 6px; background: #3b82f6; color: #fff; padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; text-decoration: none; transition: background .2s; flex: 0 0 auto; white-space: nowrap; }
-.syscfg-btn:hover { background: #1d4ed8; }
+.syscfg-btn { display: flex; align-items: center; gap: 6px; background: var(--color-primary-hover); color: #fff; padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; text-decoration: none; transition: background .2s; flex: 0 0 auto; white-space: nowrap; }
+.syscfg-btn:hover { background: var(--color-primary-active); }
 .user-trigger { cursor: pointer; font-size: 13px; color: #525252; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-.user-role { font-weight: 700; color: #1d4ed8; }
-.user-name { font-weight: 600; color: #334155; }
+.user-role { font-weight: 700; color: var(--color-primary-active); }
+.user-name { font-weight: 600; color: var(--color-text-regular); }
 .user-sep { color: #cbd5e1; }
-.tb { background: #fff; border-bottom: 1px solid #e5e5e5; display: flex; padding: 0 20px; overflow-x: auto; }
+.tb { background: var(--color-bg-card); border-bottom: 1px solid #e5e5e5; display: flex; padding: 0 20px; overflow-x: auto; }
 .tb-item { display: flex; align-items: center; gap: 8px; padding: 14px 28px; font-size: 15px; color: #737373; text-decoration: none; border-bottom: 3px solid transparent; transition: all .2s; white-space: nowrap; }
-.tb-item:hover { color: #2563eb; background: #f8fafc; }
-.tb-item.active { color: #2563eb; border-bottom-color: #2563eb; font-weight: 600; }
+.tb-item:hover { color: var(--color-primary); background: var(--color-bg-page); }
+.tb-item.active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: 600; }
 .cnt { max-width: 1440px; margin: 0 auto; padding: 24px 20px; }
 /* 1635px 是原始布局的实际需求宽度，视口低于此值右侧必然被压 —— 提前收缩 */
 @media (max-width: 1680px) {

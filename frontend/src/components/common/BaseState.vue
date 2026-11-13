@@ -45,17 +45,17 @@ const defaultText = computed(() => ({
   gap: 8px;
   min-height: 180px;
   padding: 44px 20px;
-  color: #94a3b8;
+  color: var(--color-text-placeholder);
   text-align: center;
-  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  background: linear-gradient(180deg, #fff 0%, var(--color-bg-page) 100%);
   border: 1px dashed #dbe3ef;
   border-radius: 12px;
 }
 .state-icon { font-size: 36px; line-height: 1; }
-.state-title { color: #334155; font-size: 15px; }
+.state-title { color: var(--color-text-regular); font-size: 15px; }
 .state-text {
   max-width: 460px;
-  color: #64748b;
+  color: var(--color-text-secondary);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -65,7 +65,7 @@ const defaultText = computed(() => ({
 }
 .base-state.is-error .state-title { color: #c2410c; }
 .base-state.is-loading {
-  background: #eff6ff;
+  background: var(--color-primary-bg);
   border-color: #bfdbfe;
 }
 </style>

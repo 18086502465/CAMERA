@@ -1,0 +1,109 @@
+/* =========================================================
+   设计令牌（Design Tokens）— 全站唯一真源
+   =========================================================
+   ★ 本文件由 main.js 在 element-plus/dist/index.css 之后引入。
+     顺序不能颠倒：Element Plus 自己的 CSS 也在 :root 上定义同名
+     --el-* 变量，同权重下后加载者胜出。放在前面 = 覆盖失效且不报错。
+
+   ★ 这里只放"变量定义"，不放任何选择器规则。
+     global.css 有 470 行 .el-button/.el-card/工具类等规则，但它从未被
+     任何文件 import（2026-11-13 实测），是死文件——若整份引入，会一次性
+     激活大量从未生效的样式，属于不可控的外观变更。故令牌单独抽出。
+
+   调色板：Tailwind slate/blue 系，取页面实际在用的值。
+   历史标称的 "UI设计规范 v1.0"（AntD #1677FF 系）已废止：该系在组件
+   样式块里只剩 22 处，而 slate/blue 系有 310 处，规范事实上早被页面抛弃。
+   ========================================================= */
+
+:root {
+  /* ---------- 调色板（页面样式直接引用这一层） ---------- */
+
+  /* 主色（blue） */
+  --color-primary: #2563eb;
+  --color-primary-hover: #3b82f6;
+  --color-primary-active: #1d4ed8;
+  --color-primary-bg: #eff6ff;
+
+  /* 文本（slate，由深到浅） */
+  --color-text: #0f172a;
+  --color-text-regular: #334155;
+  --color-text-secondary: #64748b;
+  --color-text-placeholder: #94a3b8;
+  --color-text-disabled: #bfbfbf;
+
+  /* 背景、边框 */
+  --color-bg-page: #f8fafc;
+  --color-bg-card: #ffffff;
+  --color-bg-subtle: #f1f5f9;
+  --color-border: #e5e7eb;
+  --color-border-strong: #e2e8f0;
+  --color-border-hover: #3b82f6;
+  --color-divider: #f0f0f0;
+
+  /* 语义色 */
+  --color-success: #16a34a;
+  --color-success-light: #22c55e;
+  --color-success-bg: #dcfce7;
+  --color-warning: #f59e0b;
+  --color-warning-dark: #d97706;
+  --color-warning-bg: #fef3c7;
+  --color-error: #dc2626;
+  --color-error-light: #ef4444;
+  --color-error-bg: #fee2e2;
+
+  /* ---------- Element Plus 主题 ---------- */
+  /* 语义色引用 --color-*，不写字面值，避免两份真源。
+     但 light-N / dark-2 必须写字面值：它们是 Element 内部按
+     mix(white, base, N*10%) / mix(black, base, 20%) 预算的色阶，
+     而 Element 的 CSS 自带的是它自己默认主色（#409eff）的色阶，
+     只覆盖 --el-color-primary 而不覆盖色阶 → 主色变了、hover 底色还是
+     旧蓝的淡色，两者对不上。下面数值由 #2563eb 等按同一公式算得。 */
+
+  --el-color-primary: var(--color-primary);
+  --el-color-primary-light-3: #6692f1;
+  --el-color-primary-light-5: #92b1f5;
+  --el-color-primary-light-7: #bed0f9;
+  --el-color-primary-light-8: #d3e0fb;
+  --el-color-primary-light-9: #e9effd;
+  --el-color-primary-dark-2: #1e4fbc;
+
+  --el-color-success: var(--color-success);
+  --el-color-success-light-3: #5cbf80;
+  --el-color-success-light-5: #8bd1a5;
+  --el-color-success-light-7: #b9e3c9;
+  --el-color-success-light-8: #d0eddb;
+  --el-color-success-light-9: #e8f6ed;
+  --el-color-success-dark-2: #12823b;
+
+  --el-color-warning: var(--color-warning);
+  --el-color-warning-light-3: #f8bb54;
+  --el-color-warning-light-5: #facf85;
+  --el-color-warning-light-7: #fce2b6;
+  --el-color-warning-light-8: #fdecce;
+  --el-color-warning-light-9: #fef5e7;
+  --el-color-warning-dark-2: #c47e09;
+
+  --el-color-danger: var(--color-error);
+  --el-color-danger-light-3: #e76767;
+  --el-color-danger-light-5: #ee9393;
+  --el-color-danger-light-7: #f5bebe;
+  --el-color-danger-light-8: #f8d4d4;
+  --el-color-danger-light-9: #fce9e9;
+  --el-color-danger-dark-2: #b01e1e;
+
+  --el-color-error: var(--color-error);
+  --el-color-error-light-3: #e76767;
+  --el-color-error-light-5: #ee9393;
+  --el-color-error-light-9: #fce9e9;
+
+  /* 面层与文字 */
+  --el-bg-color-page: var(--color-bg-page);
+  --el-bg-color: var(--color-bg-card);
+  --el-border-color: var(--color-border);
+  --el-border-color-hover: var(--color-primary-hover);
+  --el-text-color-primary: var(--color-text);
+  --el-text-color-regular: var(--color-text-regular);
+  --el-text-color-secondary: var(--color-text-secondary);
+  --el-text-color-placeholder: var(--color-text-placeholder);
+  --el-text-color-disabled: var(--color-text-disabled);
+}

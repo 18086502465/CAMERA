@@ -255,7 +255,7 @@ onMounted(() => loadData())
 
 <style scoped>
 .table-card {
-  background: #fff;
+  background: var(--color-bg-card);
   border-radius: 10px;
   padding: 16px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.06);

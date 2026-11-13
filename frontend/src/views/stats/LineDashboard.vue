@@ -357,7 +357,7 @@ onUnmounted(() => {
 }
 
 .chart-card {
-  background: #fff;
+  background: var(--color-bg-card);
   border-radius: 8px;
   padding: 16px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
@@ -370,7 +370,7 @@ onUnmounted(() => {
   color: #1f1f1f;
   margin-bottom: 12px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--color-divider);
 }
 
 .chart-container {

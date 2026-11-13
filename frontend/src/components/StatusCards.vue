@@ -63,7 +63,7 @@ defineProps({ stats: { type: Object, default: () => ({}) } })
 .card-item {
   border-radius: 10px;
   padding: 16px 20px;
-  background: #fff;
+  background: var(--color-bg-card);
   box-shadow: 0 2px 8px rgba(0,0,0,0.06);
   transition: transform 0.2s;
 }

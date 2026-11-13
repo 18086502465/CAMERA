@@ -110,15 +110,15 @@ const handleLogin = async () => {
 @keyframes slideUp { from { opacity:0; transform:translateY(30px) } to { opacity:1; transform:translateY(0) } }
 .logo-area { width: 80px; height: 80px; margin: 0 auto 20px; background: linear-gradient(135deg, #dbeafe, #bfdbfe); border-radius: 20px; display: flex; align-items: center; justify-content: center; font-size: 40px; box-shadow: 0 8px 24px rgba(37,99,235,.15); }
 .title { text-align: center; font-size: 24px; font-weight: 700; color: #1e293b; margin-bottom: 6px; }
-.subtitle { text-align: center; font-size: 14px; color: #64748b; }
+.subtitle { text-align: center; font-size: 14px; color: var(--color-text-secondary); }
 .custom-item { margin-bottom: 4px; }
 .custom-item :deep(.el-form-item__content) { flex-direction: column; align-items: flex-start; }
 .field-label { display: block; font-size: 13px; font-weight: 600; color: #1e293b; margin-bottom: 6px; }
 .custom-item :deep(.el-form-item__error) { position: static; padding-top: 4px; }
-.error-msg { padding: 10px 14px; background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; border-radius: 8px; font-size: 13px; text-align: center; margin-bottom: 12px; animation: shake .3s ease-in-out; }
+.error-msg { padding: 10px 14px; background: #fef2f2; color: var(--color-error); border: 1px solid #fecaca; border-radius: 8px; font-size: 13px; text-align: center; margin-bottom: 12px; animation: shake .3s ease-in-out; }
 /* 登录态失效提示（与"账号密码错误"区分：橙色警示而非红色报错） */
 .notice-msg { padding: 10px 14px; background: #fffbeb; color: #b45309; border: 1px solid #fde68a; border-radius: 8px; font-size: 13px; text-align: center; margin-bottom: 12px; }
 @keyframes shake { 0%,100% { transform:translateX(0) } 25% { transform:translateX(-6px) } 75% { transform:translateX(6px) } }
 .login-btn { width: 100%; height: 44px; font-size: 16px; font-weight: 600; border-radius: 10px; }
-.version { text-align: center; margin-top: 20px; font-size: 11px; color: #94a3b8; }
+.version { text-align: center; margin-top: 20px; font-size: 11px; color: var(--color-text-placeholder); }
 </style>

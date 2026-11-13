@@ -203,33 +203,33 @@ onMounted(loadSettings)
 
 <style scoped>
 .settings-center { display: flex; flex-direction: column; gap: 16px; }
-.settings-hero { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px; border: 1px solid #dbeafe; border-radius: 18px; background: linear-gradient(135deg, #eff6ff 0%, #fff 70%); }
-.settings-hero .eyebrow { margin: 0 0 6px; font-size: 12px; letter-spacing: .14em; color: #2563eb; font-weight: 900; }
-.settings-hero h3 { margin: 0 0 8px; font-size: 22px; color: #0f172a; }
-.settings-hero p { margin: 0; color: #64748b; font-size: 13px; line-height: 1.7; }
+.settings-hero { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px; border: 1px solid #dbeafe; border-radius: 18px; background: linear-gradient(135deg, var(--color-primary-bg) 0%, #fff 70%); }
+.settings-hero .eyebrow { margin: 0 0 6px; font-size: 12px; letter-spacing: .14em; color: var(--color-primary); font-weight: 900; }
+.settings-hero h3 { margin: 0 0 8px; font-size: 22px; color: var(--color-text); }
+.settings-hero p { margin: 0; color: var(--color-text-secondary); font-size: 13px; line-height: 1.7; }
 .settings-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .settings-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.settings-kpi { padding: 14px; border-radius: 16px; border: 1px solid #e5e7eb; background: #fff; box-shadow: 0 1px 4px rgba(15,23,42,.04); }
-.settings-kpi span { display: block; color: #64748b; font-size: 12px; margin-bottom: 6px; }
-.settings-kpi strong { color: #1d4ed8; font-size: 24px; }
+.settings-kpi { padding: 14px; border-radius: 16px; border: 1px solid var(--color-border); background: var(--color-bg-card); box-shadow: 0 1px 4px rgba(15,23,42,.04); }
+.settings-kpi span { display: block; color: var(--color-text-secondary); font-size: 12px; margin-bottom: 6px; }
+.settings-kpi strong { color: var(--color-primary-active); font-size: 24px; }
 .settings-alert { border-radius: 12px; }
 .settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.settings-card, .retention-card { border: 1px solid #e5e7eb; border-radius: 18px; background: #fff; box-shadow: 0 1px 4px rgba(15,23,42,.04); padding: 16px; }
+.settings-card, .retention-card { border: 1px solid var(--color-border); border-radius: 18px; background: var(--color-bg-card); box-shadow: 0 1px 4px rgba(15,23,42,.04); padding: 16px; }
 .card-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
-.card-icon { width: 38px; height: 38px; display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; background: #eff6ff; font-size: 20px; }
-.card-head h4 { margin: 0 0 5px; color: #0f172a; font-size: 16px; }
-.card-head p { margin: 0; color: #64748b; font-size: 12px; line-height: 1.6; }
+.card-icon { width: 38px; height: 38px; display: inline-flex; align-items: center; justify-content: center; border-radius: 14px; background: var(--color-primary-bg); font-size: 20px; }
+.card-head h4 { margin: 0 0 5px; color: var(--color-text); font-size: 16px; }
+.card-head p { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; }
 .setting-list { display: flex; flex-direction: column; gap: 10px; }
-.setting-row { display: grid; grid-template-columns: minmax(0, 1fr) 220px; align-items: center; gap: 12px; padding: 12px; border-radius: 14px; background: #f8fafc; border: 1px solid #eef2f7; }
-.setting-label b { display: block; color: #0f172a; font-size: 13px; margin-bottom: 4px; }
-.setting-label small { color: #64748b; font-size: 12px; line-height: 1.5; }
+.setting-row { display: grid; grid-template-columns: minmax(0, 1fr) 220px; align-items: center; gap: 12px; padding: 12px; border-radius: 14px; background: var(--color-bg-page); border: 1px solid #eef2f7; }
+.setting-label b { display: block; color: var(--color-text); font-size: 13px; margin-bottom: 4px; }
+.setting-label small { color: var(--color-text-secondary); font-size: 12px; line-height: 1.5; }
 .setting-control { display: flex; align-items: center; gap: 8px; }
-.setting-control em { font-style: normal; color: #64748b; font-size: 12px; min-width: 24px; }
+.setting-control em { font-style: normal; color: var(--color-text-secondary); font-size: 12px; min-width: 24px; }
 .retention-head { margin-bottom: 16px; }
 /* 死配置提示：这张表不驱动清理（见 配置项清单 §五），必须让运维一眼看到 */
-.retention-warn { margin-top: 6px; padding: 8px 10px; border-left: 3px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 12.5px; line-height: 1.6; border-radius: 0 6px 6px 0; }
+.retention-warn { margin-top: 6px; padding: 8px 10px; border-left: 3px solid var(--color-warning); background: #fffbeb; color: #92400e; font-size: 12.5px; line-height: 1.6; border-radius: 0 6px 6px 0; }
 .retention-warn code { background: rgba(146,64,14,.08); padding: 0 3px; border-radius: 3px; }
-.settings-table code { background: #f1f5f9; padding: 2px 7px; border-radius: 6px; color: #2563eb; }
+.settings-table code { background: var(--color-bg-subtle); padding: 2px 7px; border-radius: 6px; color: var(--color-primary); }
 @media (max-width: 1000px) {
   .settings-hero { flex-direction: column; align-items: flex-start; }
   .settings-kpis, .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

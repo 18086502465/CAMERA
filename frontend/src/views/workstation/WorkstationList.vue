@@ -306,7 +306,7 @@ onMounted(() => {
 <style scoped>
 .workstation-list {
   padding: 20px;
-  background: #fff;
+  background: var(--color-bg-card);
   border-radius: 8px;
 }
 

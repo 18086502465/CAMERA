@@ -137,6 +137,6 @@ onMounted(async () => { await fetchCamera(); await nextTick(); initChart() })
 .s-val { display: block; font-size: 22px; font-weight: 700; color: #1a1a2e; }
 .recent-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .recent-item { cursor: pointer; text-align: center; }
-.recent-placeholder { width: 100%; aspect-ratio: 4/3; background: #f0f0f0; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 28px; }
+.recent-placeholder { width: 100%; aspect-ratio: 4/3; background: var(--color-divider); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 28px; }
 .recent-placeholder:hover { background: #e0e0e0; }
 </style>

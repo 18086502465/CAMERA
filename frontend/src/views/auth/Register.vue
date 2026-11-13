@@ -206,7 +206,7 @@ onMounted(() => loadFactories())
 
 .auth-card {
   width: 440px;
-  background: #fff;
+  background: var(--color-bg-card);
   border-radius: 16px;
   padding: 40px 36px 32px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);

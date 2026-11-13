@@ -262,7 +262,7 @@ onMounted(() => {
 <style scoped>
 .holiday-config {
   padding: 20px;
-  background: #fff;
+  background: var(--color-bg-card);
   border-radius: 8px;
 }
 
