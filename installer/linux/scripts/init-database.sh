@@ -125,7 +125,7 @@ fi
 HAS_MAPPING="$(mysql "${MYSQL_ARGS[@]}" -N -B -e "SELECT COUNT(*) FROM \`${DATABASE}\`.cfg_camera_defect_mapping;" 2>/dev/null | tr -d '[:space:]' || true)"
 ok "缺陷映射条数：${HAS_MAPPING:-查询失败（表可能未建，不影响本次部署）}"
 
-# camera_type 是清理链路的安全阀：cleanup-zk54-incremental.sh 靠它算保护集。
+# camera_type 是清理链路的安全阀：cleanup-test-cameras.sh 靠它算保护集。
 # 缺这一列不会报错，只会让"哪些相机不能删"恒为空 —— 静默失效，必须显式校验。
 CAMERA_TYPE_COLS="$(mysql "${MYSQL_ARGS[@]}" -N -B -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='${DATABASE}' AND column_name='camera_type' AND table_name IN ('dim_camera','camera_status');" 2>/dev/null | tr -d '[:space:]')"
 if [[ "$CAMERA_TYPE_COLS" == "2" ]]; then

@@ -63,7 +63,7 @@ PURGE_BY_DB=0
 
 # --- 口令来源 ----------------------------------------------------------------
 # cron 行不再传 MYSQL_PASSWORD（cron 文件全局可读，写口令等于公开给所有本地用户）。
-# 与 cleanup-zk54-incremental.sh 同一模式：优先自读 /etc/default/camera-detection
+# 与 cleanup-test-cameras.sh 同一模式：优先自读 /etc/default/camera-detection
 # （640 root:root），找不到时回退到已导出的环境变量（手工调试用）。
 if [[ -z "${MYSQL_PASSWORD:-}" && -r /etc/default/camera-detection ]]; then
   # shellcheck disable=SC1091

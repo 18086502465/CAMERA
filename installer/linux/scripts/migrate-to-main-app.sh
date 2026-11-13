@@ -564,7 +564,7 @@ EOF
 # 口令由脚本自己从 /etc/default/camera-detection 读取，此处不写口令。
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-15 * * * * root IMG_ROOT="${IMAGES_SRC}" TRASH="${IMAGE_TRASH}" LOG="${LOG_BASE}/cleanup_zk54.log" ${INSTALL_DIR}/scripts/cleanup-zk54-incremental.sh
+15 * * * * root IMG_ROOT="${IMAGES_SRC}" TRASH="${IMAGE_TRASH}" LOG="${LOG_BASE}/cleanup_zk54.log" ${INSTALL_DIR}/scripts/cleanup-test-cameras.sh
 EOF
     cat > /etc/cron.d/check-disk-usage <<EOF
 SHELL=/bin/bash

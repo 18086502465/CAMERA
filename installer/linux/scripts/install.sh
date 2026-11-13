@@ -125,6 +125,7 @@ mkdir -p "${BASE}" \
          "${INSTALL_DIR}/app" "${INSTALL_DIR}/config" "${INSTALL_DIR}/sql" "${INSTALL_DIR}/scripts" "${INSTALL_DIR}/docs" \
          "${IMAGES_SRC}" "${IMAGE_TRASH}" \
          "${DATA_BASE}/uploads/images" \
+         "${DATA_BASE}/license" \
          "${DATA_BASE}/backup/db/full" "${DATA_BASE}/backup/db/binlog" "${DATA_BASE}/backup/db/logs" \
          "${LOG_BASE}" "${RUN_BASE}" "${BASE}/tmp" "${BASE}/backup"
 ok "布局：dist(程序) / data(数据) / logs / run / tmp / backup"
@@ -523,7 +524,7 @@ fi
 # ★ 口令来源：/etc/default/camera-detection（640 root:root），**不写进 cron 文件**。
 #   cron 文件全局可读，把口令写进去等于把库口令公开给所有本地用户。
 #   脚本自己 source 该文件取口令。
-if [[ -f "${SOURCE_DIR}/scripts/cleanup-zk54-incremental.sh" ]]; then
+if [[ -f "${SOURCE_DIR}/scripts/cleanup-test-cameras.sh" ]]; then
   log "安装测试相机增量清理任务"
 
   # 脚本自读口令：/etc/default/camera-detection → MYSQL_PASSWORD
@@ -549,7 +550,7 @@ EOF
 # 口令由脚本自己从 /etc/default/camera-detection 读取，此处不写口令。
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-15 * * * * root IMG_ROOT="${IMAGES_SRC}" TRASH="${IMAGE_TRASH}" LOG="${LOG_BASE}/cleanup_zk54.log" ${INSTALL_DIR}/scripts/cleanup-zk54-incremental.sh
+15 * * * * root IMG_ROOT="${IMAGES_SRC}" TRASH="${IMAGE_TRASH}" LOG="${LOG_BASE}/cleanup_zk54.log" ${INSTALL_DIR}/scripts/cleanup-test-cameras.sh
 EOF
   ok "已加入 cron（每小时 :15，仅清理测试相机）"
 fi

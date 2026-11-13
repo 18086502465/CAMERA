@@ -9,6 +9,7 @@
 #       解压后即为服务器上的安装源目录，直接 sudo ./install.sh 即可。
 #
 # 步骤：
+#   ⓿ 清理历史残留 + 配置 key 对账
 #   ① 前端构建        ② 前端产物并入后端静态目录
 #   ③ 后端打包        ④ 契约测试
 #   ⑤ 组装发布目录    ⑥ 复制建库脚本
@@ -31,10 +32,36 @@ die() { printf '\033[1;31m错误：\033[0m %s\n' "$*" >&2; exit 1; }
 
 cd "$ROOT_DIR"
 
+# --- ⓿ 构建前清扫 -------------------------------------------------------------
+# 这些目录/文件全是**中断遗留**，不清会持续吃磁盘（2026-11-12 实测累计 183MB），
+# 更要命的是排障时会被当成疑点 —— 曾把 parts/ 的 base64 分片误判成"包损坏"。
+log "⓿ 清理历史构建残留"
+rm -rf "${OUT_DIR}/parts"
+if [[ -d "${OUT_DIR}/update" ]]; then
+  # 只清 7 天前的：当天刚出的包可能还要上传/回滚
+  find "${OUT_DIR}/update" -maxdepth 1 -type f -name 'update-*.zip' -mtime +7 -delete 2>/dev/null || true
+fi
+# vite dev 启动残留（.gitignore 已排除，但会堆在 frontend/ 根目录）
+find "$FRONTEND_DIR" -maxdepth 1 -type f -name 'vite.config.js.timestamp-*.mjs' -delete 2>/dev/null || true
+# 手工腾 dist 时产生的备份目录，有了「清空 dist/assets」机制后不再需要
+rm -rf "${FRONTEND_DIR}"/dist.bak-* "${FRONTEND_DIR}"/dist.old.* 2>/dev/null || true
+ok "残留已清（update 包保留 7 天内）"
+
+# --- ⓿b 配置 key 对账 ---------------------------------------------------------
+# 两份 application.yml 必须认识同一套 key（Spring 外部配置按 key 合并，不是整文件替换）。
+# 只比 key 路径不比 value —— 值不同是有意的（本机 localhost/200 连接池 vs 现场 127.0.0.1/100）。
+# 新增配置项漏改一边 → 现场改了不生效，且两边都不报错，只有这个守卫能拦。
+log "⓿b 配置 key 对账"
+python3 "${LINUX_DIR}/scripts/check_config_parity.py" || die "两份 application.yml 的 key 结构不一致，见上方差异"
+ok "配置 key 结构一致"
+
 # --- ① 前端构建 -------------------------------------------------------------
 log "① 前端构建"
 cd "$FRONTEND_DIR"
-[[ -d node_modules ]] || npm install
+# ★ 只用 npm ci，不用 npm install：CI 用 npm ci，构建机若装出不同的依赖树，
+#   就是「本机能构建、CI 能过、但产物不一致」。代价是必须先有 package-lock.json（本项目有）。
+#   首次拉仓库没有 node_modules 时才装；已有则不重装，避免每次构建都全量重下。
+[[ -d node_modules ]] || npm ci
 # ★ 必须先清空 dist/assets —— vite build **不清空**输出目录，
 #   会把上一次的 chunk 一起留在 dist 里。后果有两个：
 #     1) 打进 JAR 的产物里混着陈旧 chunk（JAR 体积虚增、来源不明）
@@ -235,6 +262,9 @@ install -m 0755 "${LINUX_DIR}/scripts/"*.sh "${STAGE_DIR}/scripts/"
 if compgen -G "${LINUX_DIR}/scripts/*.py" > /dev/null; then
   install -m 0755 "${LINUX_DIR}/scripts/"*.py "${STAGE_DIR}/scripts/"
 fi
+# check_config_parity.py 是**构建期**守卫，服务器上用不到（现场只有 config/application.yml 一份），
+# 不进发布包，免得运维误以为是运维脚本。
+rm -f "${STAGE_DIR}/scripts/check_config_parity.py"
 [[ -f "${STAGE_DIR}/scripts/jar_manifest.py" ]] \
   || die "缺少 scripts/jar_manifest.py —— 服务器端 deploy_jar.sh 的增量模式（*.zip）会直接报「缺少合成工具」"
 # 注意：除 *.service 外还要打包 *.timer（备份定时器）——
@@ -346,6 +376,11 @@ ok "产物权限自检通过（install.sh 为 755，无反斜杠路径）"
 
 SIZE_MB=$(du -m "$TARBALL" | cut -f1)
 ok "产物：${TARBALL}（约 ${SIZE_MB} MB）"
+
+# 打包自检全部通过后再清 stage（60MB）。放在最后而不是开头，是因为中途失败时
+# stage 是唯一能看出"哪一步没进去"的现场。要查成品内容用：tar -tzf <tarball> | head -50
+rm -rf "$STAGE_DIR"
+ok "已清理打包中间目录 stage/（重建只需再跑一次本脚本）"
 
 echo
 log "部署到服务器："

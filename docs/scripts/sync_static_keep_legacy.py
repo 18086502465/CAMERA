@@ -30,8 +30,11 @@ import re
 import shutil
 import sys
 
-DIST = r'D:\031_45344camera\frontend\dist'
-STATIC = r'D:\031_45344camera\fact-product\src\main\resources\static'
+# 路径从脚本位置推导（本文件在 <repo>/docs/scripts/ 下，上溯 3 层即仓库根）。
+# 原来写死 D:\031_45344camera\...，换机器/换目录就直接失效。
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DIST = os.path.join(_REPO, 'frontend', 'dist')
+STATIC = os.path.join(_REPO, 'fact-product', 'src', 'main', 'resources', 'static')
 ASSET_NAME = 'assets'
 VERSIONS = '.versions'
 

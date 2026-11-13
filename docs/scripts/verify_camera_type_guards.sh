@@ -16,7 +16,7 @@
 set -uo pipefail
 
 DB_NAME="${DB_NAME:-wms-new}"
-SCRIPT="/main/app/dist/scripts/cleanup-zk54-incremental.sh"
+SCRIPT="/main/app/dist/scripts/cleanup-test-cameras.sh"
 LOG="/main/app/logs/cleanup_zk54.log"
 TEST_CODE="ZZTEST-GUARD-CAM"
 FAILED=0

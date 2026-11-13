@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 直接测装机使用的那一份，**不再保留副本**：
 # 之前 docs/scripts/ 下有一份下划线命名的拷贝，与 installer 版逐渐漂移
 # （314 行 vs 429 行），测试测的是旧版 —— 「测试全绿、线上仍有 bug」的经典成因。
-TARGET="${SCRIPT_DIR}/../../installer/linux/scripts/cleanup-zk54-incremental.sh"
+TARGET="${SCRIPT_DIR}/../../installer/linux/scripts/cleanup-test-cameras.sh"
 
 if command -v python3 >/dev/null 2>&1; then
   PY=python3

@@ -174,7 +174,7 @@ same_device() {
 }
 
 # 当前标记为 TEST 的相机编号（dim_camera 与 camera_status 两表并集）。
-# TEST = 压测相机，数据由 cleanup-zk54-incremental.sh 每小时清掉，没有备份价值。
+# TEST = 压测相机，数据由 cleanup-test-cameras.sh 每小时清掉，没有备份价值。
 # 查询失败或返回空 → 不排除任何目录：**宁可多备份，不可漏备份**。
 test_camera_codes() {
   MYSQL_PWD="$DB_PASS" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" -N -B -D "$DB_NAME" -e "

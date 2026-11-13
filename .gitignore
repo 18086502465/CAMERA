@@ -15,6 +15,14 @@ npm-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# ---- 后端 static（Vite 产物副本，2026-11-13 出库）----
+# 由 frontend 的 postbuild 或 build-release.sh 生成，不入库：
+#   ① 产物文件名带内容哈希，每次构建 140 个文件全改名 → 提交噪音淹没真实改动；
+#   ② 曾「只跟踪 51/142 个文件」→ 新 clone 得到半新半旧的 static，打出混合包；
+#   ③ 历史 chunk 的版本链（KEEP_STATIC_VERSIONS）只对线上 JAR 有意义，与仓库无关。
+# 打包唯一入口仍是 installer/linux/build-release.sh，它会自动完成构建+同步。
+/fact-product/src/main/resources/static/
+
 # ---- 运行时与日志 ----
 logs/
 *.log
@@ -31,11 +39,14 @@ uploads/
 __pycache__/
 *.pyc
 
-# ---- 构建产物目录（由 installer/linux/build-release.sh 生成，不入库）----
-dist-release/linux/stage/
-dist-release/linux/*.tar.gz
-# Web SFTP 传不上整包时切的 10MB 分片（本地临时产物）
-dist-release/linux/parts/
+# ---- 构建产物目录（由 installer/linux/build-release.sh 生成，全目录不入库）----
+# 2026-11-12 收敛：此前是逐条排除 stage/tar.gz/parts/update，结果 README.md 被误跟踪
+# （唯一被跟踪的 dist-release 文件），且下方 2026-11-02「发布产物全部入库」的旧决策
+# 注释残留，与现状矛盾。产物完全可重现，一律不入库：
+#   bash installer/linux/build-release.sh   # 全量包
+#   bash installer/linux/build-release.sh --update-only   # 增量包
+# 历史已入库的 exe/jar 仍在 .git 历史里（~421MB），清理需 BFG，见 docs/踩坑速查.md
+dist-release/
 # 构建前手工腾空 dist 时挪走的旧产物
 frontend/dist.old.*
 
@@ -61,24 +72,9 @@ Thumbs.db
 desktop.ini
 
 # ---- 发布产物中的重型第三方运行时 ----
-# ⚠️ 2026-11-02 决策调整：
-#   用户要求「完全都进行推送」，因此**发布产物全部入库**，
-#   包括 Windows 安装包 exe（100M）与 Linux tar.gz（54M）——
-#   这两者是本项目的构建输出，可重现但体积大。
-#
-#   仅排除 **内置 JRE（209M）**：那是第三方 OpenJDK 运行时，
-#   不是本项目代码，且会随 JDK 版本更新而失效、由 build-release.ps1
-#   现场下载。入库会带来：
-#     1) 仓库体积膨胀 209M，且每次 JDK 升级都产生一个大二进制 diff；
-#     2) 第三方许可与安全更新责任混入本仓库；
-#     3) 与 .gitignore 里「jar 由 mvn package 现场构建」的原则冲突。
-#   需要时用 build-release.ps1 现场重建即可。
-dist-release/CameraDetectionSystem/jre/
-
-# 运行时日志（每次执行自检/备份都会产生）
-dist-release/logs/
-dist-release/build-release-latest.log
-dist-release/installer/install-verify.log
+# 已被上方 `dist-release/` 整目录规则覆盖，此段仅保留决策记录：
+# 内置 JRE（209MB）是第三方 OpenJDK 运行时，不是本项目代码，会随 JDK 升级失效，
+# 由 build-release.ps1 现场下载 —— 任何情况下都不要入库。
 
 # ---- 敏感文件 ----
 *.pem
