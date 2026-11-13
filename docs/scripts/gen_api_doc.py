@@ -118,3 +118,20 @@ for dom in DOMAINS:
 out_path = os.path.join(REPO, 'docs', '接口文档.md')
 open(out_path, 'w', encoding='utf-8', newline='\n').write('\n'.join(lines))
 print('生成完成: %s（%d 端点）' % (out_path, total))
+
+# 回写端点数到 docs/README.md —— 手写的数字迟早漂移（曾出现 135 vs 实际 139）。
+# 约定：README 里用 <!--API_COUNT-->N<!--/API_COUNT--> 包裹，本脚本只改中间的数字。
+readme_path = os.path.join(REPO, 'docs', 'README.md')
+try:
+    with open(readme_path, encoding='utf-8') as f:
+        readme = f.read()
+    new_readme, n = re.subn(r'(<!--API_COUNT-->)\d+(<!--/API_COUNT-->)',
+                            r'\g<1>%d\g<2>' % total, readme)
+    if n:
+        with open(readme_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(new_readme)
+        print('已回写 docs/README.md 端点数：%d' % total)
+    else:
+        print('⚠ docs/README.md 未找到 API_COUNT 标记，端点数未回写')
+except OSError as exc:
+    print('⚠ 回写 docs/README.md 失败：%s' % exc)

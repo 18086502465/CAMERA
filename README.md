@@ -24,8 +24,8 @@ fact-product/    后端源码（七业务域 DDD：iam/masterdata/device/defect/
   └ src/main/resources/sql/deploy/   建库脚本真源（01→02→03→04 全新库顺序执行；05/06 为增量补丁）
 frontend/        前端源码（Vue3 单页应用）
 installer/       Linux 安装脚本、systemd 单元、verify.sh 自检、配置模板
-docs/            交付文档（见 docs/README.md：现行 7 份 / archive 历史稿 / scripts 脚本）
-dist-release/    构建产物输出目录（由 installer/linux/build-release.sh 生成，不入库）
+docs/            交付文档（见 docs/README.md：现行规范 / archive 历史稿 / scripts 脚本）
+dist-release/    构建产物输出目录（由 installer/linux/build-release.sh 生成，全目录不入库）
 ```
 
 ## 核心能力
@@ -48,15 +48,17 @@ dist-release/    构建产物输出目录（由 installer/linux/build-release.sh
 ```bash
 # 后端
 cd fact-product && mvn -B -DskipTests clean package   # target/time-bucket-demo.jar
-cd fact-product && mvn -B test                        # 148 个用例（145 个 @Test，含 3 条架构守护）
+cd fact-product && mvn -B test                        # 全量测试（含 ArchUnit 架构守护），必须全绿
 
 # 前端
-cd frontend && npm ci && npm run build      # CI 用 npm ci，本地同样按 lock 安装
+cd frontend && npm ci && npm run build      # 只用 npm ci，与 CI 严格一致（不要用 npm install）
 ```
 
-> ⚠️ **前端产物必须双份同步**：`frontend/dist/*` → `fact-product/src/main/resources/static/`
-> （用 `docs/scripts/sync_static_keep_legacy.py`，**只补不删**；漏了会导致打包出的 JAR 里没有前端页面，
-> 用 `sync_static.py` 则会删掉旧 chunk，正是「部署后旧页面点不动」的根因）
+> ⚠️ **`static/` 是构建产物，已出库**：`fact-product/src/main/resources/static/` 不在 git 里
+> （Vite 产物每次构建 140 个文件全改名，入库只制造噪音）。`npm run build` 的 `postbuild` 会在
+> static **为空**时自动填充一次；平时打包走 `installer/linux/build-release.sh`，它独占同步与历史 chunk 版本链。
+> 手工同步用 `docs/scripts/sync_static_keep_legacy.py`（**只补不删**），别整目录 `rm -rf`。
+> 已退役的 `sync_static.py` 会删旧 chunk（「部署后旧页面点不动」的根因），见 `docs/archive/scripts-retired/`。
 
 ### 发版（轻量增量，日常推荐）
 
@@ -67,8 +69,9 @@ bash installer/linux/build-release.sh --update-only
 SUDO_PASSWORD='xxx' bash /main/app/dist/scripts/deploy_jar.sh /tmp/update-*.zip
 ```
 
-> `docs/scripts/` 下**不再保留** `deploy_jar.sh` 副本（副本漂移会让人测的是旧版）。
-> 构建机要直接用请写 `installer/linux/scripts/deploy_jar.sh`；增量模式依赖同目录的 `jar_manifest.py`。
+> `installer/linux/scripts/` 是**唯一真源**，`docs/scripts/` 自 2026-11-12 起不留任何副本
+> （曾因副本漂移导致"测的是旧版"）。构建机直接用 `installer/linux/scripts/deploy_jar.sh`；
+> 增量模式依赖**同目录**的 `jar_manifest.py`。
 
 ### 建库
 
@@ -99,19 +102,20 @@ sql/deploy/05_camera_type_migration.sql
 bash installer/linux/build-release.sh     # 组装 stage + tar.gz
 # 解包后执行
 sudo ./scripts/install.sh                 # 口令从环境变量 / /etc/default 读取
-sudo bash scripts/verify.sh               # 32 项自检
+sudo bash scripts/verify.sh               # 自检（统一布局 41 项，未迁移老布局 35 项）
 ```
 
 ## 文档索引
 
-**唯一入口：[`docs/README.md`](docs/README.md)** —— 现行规范 7 份、历史评审稿 `docs/archive/`、脚本索引
+**唯一入口：[`docs/README.md`](docs/README.md)** —— 现行规范清单、历史评审稿 `docs/archive/`、脚本索引
 `docs/scripts/README.md`，以及「遇到什么问题查哪份」的场景导航，都在那一页。
+文档份数以该页目录为准，此处不再硬编码数字（曾因写死"7 份"与实际不一致而失真）。
 
 最常用的三份：
 
 | 文档 | 内容 |
 |---|---|
-| [`docs/踩坑速查.md`](docs/踩坑速查.md) | 13 节真实事故与根因，**改代码前必读** |
+| [`docs/踩坑速查.md`](docs/踩坑速查.md) | 真实事故与根因（按时间编号，逐节累加），**改代码前必读** |
 | [`docs/部署与运维手册.md`](docs/部署与运维手册.md) | 安装、升级、备份恢复、保留策略、故障排查 |
 | [`docs/接口文档.md`](docs/接口文档.md) | 全部端点（`gen_api_doc.py` 自动生成，勿手改） |
 

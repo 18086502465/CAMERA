@@ -40,6 +40,7 @@ LEGACY_PATTERNS = [
     r"/data/camera-detection",
     r"/usr/local/bin/cleanup-defect-images\.sh",
     r"/usr/local/bin/cleanup-zk54-incremental\.sh",
+    r"/usr/local/bin/cleanup-test-cameras\.sh",
     r"/usr/local/bin/check-disk-usage\.sh",
 ]
 

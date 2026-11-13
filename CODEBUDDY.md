@@ -42,20 +42,28 @@ MYSQL_PASSWORD=xxx JWT_SECRET=xxx mvn spring-boot:run -Dspring-boot.run.argument
 ```bash
 npm ci                 # CI 用 npm ci，本地也建议与 lock 严格一致
 npm run dev            # 3000（--host 0.0.0.0），/api 代理到 localhost:8091
-npm run build          # vite build，内置 element-plus-guard 构建期断言
+npm run build          # vite build + postbuild 自动把产物填进后端 static（仅当 static 为空）
 npm run preview        # 预览 dist 产物
 ```
 
-前端**没有 lint、没有单元测试**（`package.json` 只有 dev/build/preview 三个脚本）。所以 `npm run build` 就是前端唯一的门禁 —— 它挂了才算挂，它过了不代表逻辑对，行为正确性只能靠 `docs/scripts/verify_*_browser.cjs` 浏览器回归。
+前端**没有 lint、没有单元测试**（`package.json` 只有 dev/build/preview + postbuild 钩子）。所以 `npm run build` 就是前端唯一的门禁 —— 它挂了才算挂，它过了不代表逻辑对，行为正确性只能靠 `docs/scripts/verify_*_browser.cjs` 浏览器回归。
 
-> `README.md` 里的前端/发版命令是旧口径（`npm install`、`sync_static.py`），以本文件为准。
+> 只用 `npm ci`（与 CI 一致）。`npm install` 会在 lock 漂移时装出不同依赖树，
+> 导致"本机能构建、CI 也能过、但产物不一致"。已退役的 `sync_static.py` 会删旧 chunk，别再用。
+>
+> `fact-product/src/main/resources/static/` 已于 2026-11-13 **出库**（见 `.gitignore`）：
+> 它是 Vite 产物的副本，140 个文件每次构建全改名，入库只会淹没真实改动。CI 本来就不看它
+> （`ci.yml` 第 229 行自己 `rm -rf` 后从 `frontend/dist` 复制）。`postbuild` 只在 static
+> **为空**时填充，非空就跳过 —— 覆盖 `index.html` 会让 `build-release.sh` 把新版本误判成上一版，
+> 打断历史 chunk 版本链。
+
 
 ### 发版链路
 
 ```bash
 bash installer/linux/build-release.sh              # 全量包：前端构建 → 同步 static → 打 JAR → 组装 stage → tar.gz
 bash installer/linux/build-release.sh --update-only # 轻量增量包（~2MB，只含 BOOT-INF/classes/**）
-SUDO_PASSWORD='xxx' bash docs/scripts/deploy_jar.sh /tmp/update-*.zip  # 服务器端：*.zip 增量 / *.jar 全量，失败自动回滚
+SUDO_PASSWORD='xxx' bash installer/linux/scripts/deploy_jar.sh /tmp/update-*.zip  # 服务器端：*.zip 增量 / *.jar 全量，失败自动回滚
 sudo env VERIFY_PASSWORD='xxx' MYSQL_PASSWORD='xxx' bash installer/linux/scripts/verify.sh
 ```
 
@@ -176,6 +184,8 @@ com.wms
 | 要改什么 | 往哪写 |
 |---|---|
 | 新增/修改 HTTP 端点 | `com.wms.<域>/api/*Controller.java` + `@PreAuthorize`；同时在 `SecurityConfig` 与 `installer/linux/scripts/verify.sh` 补回归项 |
+| 新增配置项 | **两份 `application.yml` 同时改**（`fact-product/src/main/resources/` + `installer/templates/`），改完跑 `python3 installer/linux/scripts/check_config_parity.py`。Spring 外部配置按 key 合并，漏改一边 = 现场改了不生效且两边都不报错 |
+| 新增/改计划任务 | 改 `install.sh` 的**生成模板**还不够 —— 已经在跑的那台机器上 `/etc/cron.d/*` 不会自动更新，必须同时重写现场文件，否则跑的还是旧副本（现场踩着过：磁盘巡检一直监控的是系统盘） |
 | 新增查询/写入 SQL | `com.wms.<域>/infra/repository/`（表属哪个域就放哪个域，跟调用方无关） |
 | 新增 MyBatis 查询 | `com.wms.<域>/infra/mapper/` + `resources/mapper/*.xml`（XML 优先于 `@Select`，id 不得与 BaseMapper 方法重名） |
 | 跨域取数 | 消费方定义端口接口 → 提供方 `app/` 下写 Adapter；或走 `ApplicationEvent` |
@@ -189,14 +199,17 @@ com.wms
 - **异常语义不要顺手优化**：`countOrZero` 吞异常返回 0、`ensureColumn` 只记 WARN、`insertAnomalyAlert` 只 catch `DataAccessException`、`line_id` 空写 0 而非 NULL —— 都是有意的。
 - **写操作超过 5 个参数用 DTO**（如 19 列的 `CameraDefectMappingRow`），否则位置参数错位。
 - **SQL 按表所属域下沉**，不是按调用方分置：device 的 Service 查 `sys_system_setting`，SQL 仍放 system 域 Repository。
-- **前端产物双份同步**：`frontend/dist/*` → `fact-product/src/main/resources/static/`。同步要**只补不删**（`sync_static_keep_legacy.py`）；`sync_static.py` 会删旧 chunk，正是"部署后旧页面点不动"的根因。别整目录 `rm -rf`。
+- **前端产物不双份入库**：`static/` 已出库，`frontend/dist` 才是唯一产物源。需要手工同步时用 `sync_static_keep_legacy.py`（**只补不删**）；`sync_static.py` 会删旧 chunk，正是"部署后旧页面点不动"的根因。别整目录 `rm -rf static`。打包走 `build-release.sh`，它独占版本链逻辑。
 - **构建前清空 `dist/assets`**：`vite build` 默认不清理输出目录，会混入上次的旧 chunk。
 - **shell / sql / py 一律 LF**（`.gitattributes` 强制）。CRLF 传到 Linux 会报 `set: pipefail: invalid option name`，整条部署链直接失败。
 - **配置与密钥分离**：唯一密钥源 `/etc/default/camera-detection`（640 root），systemd `EnvironmentFile` 注入。占位符写成 `${MYSQL_PASSWORD}`，**绝不能带空默认值** —— 带空默认值是"服务 active 但业务全错"，无默认值才会启动即报 `Could not resolve placeholder`。生产还须显式覆盖 `mybatis-plus.configuration.log-impl=Slf4jImpl` 与 `logging.level.com.wms.mapper=INFO`。
 - **测试数据只用 `ZZTEST*` 前缀**，验证后清理；现场（杭州临平二期）数据一律不得动。
 - **磁盘图片文件只有一个删除者**：`cleanup-defect-images.sh`（730 天日期目录）。`DataCleanupTask` 清 `camera_images` **只删行、不删文件** —— 两表 `image_path` 完全重叠，Java 侧删文件会让「记录留 730 天、文件 30 天消失」直接裂图。测试相机清理脚本另有三道防误删防线（双表 OR 保护集 / 保护集为空即中止 / 单轮超阈值即中止），改脚本时必须保留。
 - **脚本的「先删库后删盘」只适用于 shell 侧同类清理**：`cleanup-defect-images.sh` 删库记录 → 删磁盘文件；反过来会留「库有行、盘无文件」的裂图。Java 侧不再有这个顺序问题（不碰文件）。
-- **4 个脚本有两份副本**：`docs/scripts/` 与 `installer/linux/scripts/` 下的 `deploy_jar.sh`、`jar_manifest.py`、`prune_legacy_chunks.py`、`recover_legacy_chunks.py` 内容完全相同（前者供本地/手工调用，后者进发布包上服务器）。改一份必须同步另一份，否则线上跑的是旧版。
+- **同名脚本只有一份**：`installer/linux/scripts/` 是唯一真源，`docs/scripts/` **不留任何副本**。
+  2026-11-12 删除了 `jar_manifest.py`、`prune_legacy_chunks.py`、`recover_legacy_chunks.py` 三份
+  与 installer 逐字节一致的副本 —— 本仓库栽过「副本漂移、测的是旧版」，而增量部署正确性
+  直接依赖 `jar_manifest.py`。**不要再往 `docs/scripts/` 拷第二份。**
 
 ## 验证顺序（每轮改动照此走）
 
@@ -209,7 +222,7 @@ com.wms
 | 清理脚本 / `camera_type` 判定 | `docs/scripts/test_cleanup_protect_set.sh`、`verify_camera_type_guards.sh` |
 | 前端 API 路径 | `docs/scripts/probe_api_paths.sh`（防 `/users` vs `/api/user` 这类断裂） |
 | SQL 列名 | `docs/scripts/check_sql_columns.py`（information_schema 反查） |
-| 老 chunk / 旧标签页 | `recover_legacy_chunks.py`、`prune_legacy_chunks.py`、`verify-legacy-nav.cjs` |
+| 老 chunk / 旧标签页 | `installer/linux/scripts/recover_legacy_chunks.py`、`prune_legacy_chunks.py` |
 
 `verify.sh` 必须 **root + 正确 `VERIFY_PASSWORD`**，否则会有一批项误报失败。
 
