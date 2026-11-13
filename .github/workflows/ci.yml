@@ -79,6 +79,12 @@ jobs:
         run: npm ci
         working-directory: frontend
 
+      # 相机身份 code-first 匹配的单测。历史最易错处（现场 camera_name 跨产线重名），
+      # 有测试但此前无人执行 = 白写。node --test 由 Node 18 原生支持，无额外依赖。
+      - name: 单元测试
+        run: npm test
+        working-directory: frontend
+
       - name: 构建（含 element-plus guard 检查）
         run: npx vite build
         working-directory: frontend
