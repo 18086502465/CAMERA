@@ -97,6 +97,7 @@ lines = [
     '> - 认证：除登录/注册外均需 `Authorization: Bearer <token>`',
     '> - 权限语义：未认证 → **401** `AUTHENTICATION_REQUIRED`；已登录角色不足 → **403** `ACCESS_DENIED`',
     '> - 设备上报端点（heartbeat/upload/batch-upload）token 为设备令牌或白名单放行，见《架构说明》§3.4',
+    '> - **设备侧协议（字段/校验/错误码/重试）见 [`相机设备接口协议.md`](相机设备接口协议.md)**，本文只列端点与权限',
     '',
     '**端点总数：%d**' % total,
     '',
