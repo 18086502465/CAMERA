@@ -102,6 +102,11 @@ FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --index-filter \
   "git rm -r --cached --ignore-unmatch ${PRUNE_PATHS[*]}" \
   --prune-empty -- --all >/dev/null 2>&1
 
+# filter-branch 的临时目录在 Windows/MSYS 下经常删不掉（权限 + 文件占用），
+# 残留后 `git status` 会多出一条莫名其妙的未跟踪项 `?? .git-rewrite/`，
+# 下次 `git status --porcelain` 判脏时还可能被误认为工作区有改动。
+rm -rf .git-rewrite 2>/dev/null || true
+
 echo "③ 清理旧引用并重新打包（可能需要几十秒）..."
 rm -rf .git/refs/original
 git reflog expire --expire=now --all
@@ -119,6 +124,11 @@ LEFTOVER=$(git rev-list --objects --all 2>/dev/null \
       else if (index(p, "fact-product/src/main/resources/static/") == 1) c++
     } END { print c + 0 }')
 echo "   仍被引用的产物对象：${LEFTOVER}（应为 0）"
+if [[ -e .git-rewrite ]]; then
+  echo "   ✗ 临时目录 .git-rewrite 仍在，请手工 rm -rf 后再提交" >&2
+else
+  echo "   临时目录 .git-rewrite：已清理"
+fi
 
 echo ""
 echo "完成：.git $(git_dir_size) MB（重写前请对照上面的数字）"
