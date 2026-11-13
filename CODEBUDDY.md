@@ -201,6 +201,7 @@ com.wms
 | 跨域取数 | 消费方定义端口接口 → 提供方 `app/` 下写 Adapter；或走 `ApplicationEvent` |
 | 定时任务 | `infra/task/`，cron 用 `${app.xxx.cron:默认值}` 形式，别硬编码 |
 | 前端新页面 | `frontend/src/views/` + `router/index.js` + `api/*.js`；日期/相机身份一律用 `utils/` 下的公共函数 |
+| 前端配色 | 只用 `frontend/src/styles/tokens.css` 里的 `var(--color-*)`，**不要写死色值**。该文件是唯一真源（`main.js` 在 element-plus 的 CSS 之后引入，顺序不能改）。`global.css` 当前**未被任何文件 import**，是死文件，别往里加东西 |
 | 表结构变更 | `sql/deploy/` 新增 `0X_*.sql`（不改已发布的 01~04），并在对应域 Repository 的 `ensureXxx`（`ensureColumn` / `ensureSchemaFull`）里做幂等补列/补索引 —— `init/SchemaInitializer` 启动期统一调度，失败只记 ERROR 不阻断启动 |
 
 ## 改代码前必须知道的纪律
@@ -208,6 +209,10 @@ com.wms
 - **SQL 逐字搬运**：重构 / 搬包时 SQL 文本与参数拼接方式原样保留。但"文本一致"不等于"SQL 正确" —— 搬迁曾忠实保留 `w.station_id`（实为 `w.workstation_id`）的既有 bug，文本比对抓不到，要用 `docs/scripts/check_sql_columns.py`（information_schema 反查）静态校验列名。
 - **异常语义不要顺手优化**：`countOrZero` 吞异常返回 0、`ensureColumn` 只记 WARN、`insertAnomalyAlert` 只 catch `DataAccessException`、`line_id` 空写 0 而非 NULL —— 都是有意的。
 - **写操作超过 5 个参数用 DTO**（如 19 列的 `CameraDefectMappingRow`），否则位置参数错位。
+- **Controller 出口不许是裸 `Map<String,Object>`**：现存 17 个这样的返回值不一次性重构（前端表单依赖字段名，改了就是全链路回归），但
+  ①**新增接口一律返回具名 DTO/VO**；②**改动某个旧接口时顺手把它 DTO 化**（改哪个动哪个）。
+  理由：裸 Map 的字段名没有编译期约束，前端 `res.data.xxx` 拼错时后端毫无感知，只在页面上表现为"某个数字不显示"。
+  DTO 化时字段名必须与前端现有取值**逐字一致**，否则等于静默改契约。
 - **SQL 按表所属域下沉**，不是按调用方分置：device 的 Service 查 `sys_system_setting`，SQL 仍放 system 域 Repository。
 - **前端产物不双份入库**：`static/` 已出库，`frontend/dist` 才是唯一产物源。需要手工同步时用 `sync_static_keep_legacy.py`（**只补不删**）；`sync_static.py` 会删旧 chunk，正是"部署后旧页面点不动"的根因。别整目录 `rm -rf static`。打包走 `build-release.sh`，它独占版本链逻辑。
 - **构建前清空 `dist/assets`**：`vite build` 默认不清理输出目录，会混入上次的旧 chunk。
