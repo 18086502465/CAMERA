@@ -154,7 +154,7 @@ fi
 # 程序与数据静默写进系统盘，重启或修好挂载后看起来"数据全丢"，且没有任何报错。
 # 因此这里把「挂载、unit 依赖、fstab、结构、图片白名单、跨盘副本」全部变成可验证项。
 # 只在 /etc/default 声明了 BASE 的机器上检查（老布局机器跳过 [3a] 这 6 项，
-# 因此老布局是 35 项、统一布局是 41 项；改动本文件的检查项数时两个数都要跟着改文档）。
+# 因此老布局是 35 项、统一布局是 42 项；改动本文件的检查项数时两个数都要跟着改文档）。
 LAYOUT_ENABLED=0
 grep -q '^BASE=' /etc/default/camera-detection 2>/dev/null && LAYOUT_ENABLED=1
 
@@ -358,6 +358,39 @@ if [[ -d "$BACKUP_FULL_DIR" ]]; then
       check "备份新鲜度" false "$(basename "$LATEST_BACKUP") ${BACKUP_SHA_STATE} —— 这份备份不可用于恢复"
     else
       check "备份新鲜度" false "最新备份已 ${BACKUP_AGE_H} 小时（阈值 ${BACKUP_MAX_AGE_H}h）—— 备份定时器可能已停止：systemctl status camera-detection-backup.timer"
+    fi
+  fi
+fi
+
+# --- 3c-2. binlog 副本新鲜度（2026-11-13）------------------------------------
+# backup-database.sh 自 v2 P0-3（2026-11-07）就有 binlog 增量备份（mysqlbinlog
+# --read-from-remote-server --raw，只取 dump 起点之后的增量，副本侧保留 14 天），
+# 但**没有任何检查项验证它真的在跑**。该脚本自己的注释就记着历史状态：
+#   「${BACKUP_DIR}/binlog/ 从来是空目录 —— 有能力做分钟级恢复却从没接上」
+# 代码有、实际没跑 = RPO 静默退回 24 小时，且日志里什么都不报。
+#
+# 判据：目录非空 + 最新文件 mtime ≤ 26h（与全备同口径：01:00 + 5min 抖动 + 余量）。
+# ⚠️ 假红的唯一情形：产线长时间零写入 → binlog 不轮转、已封口文件不重拷 → mtime 不更新。
+#    此时看详情里的「共 N 个」即可判断机制本身是好的（N>1 说明历史增量都在）。
+BINLOG_DST="${BINLOG_DST:-/var/backups/camera-detection/binlog}"
+BINLOG_MAX_AGE_H="${BINLOG_MAX_AGE_H:-26}"
+if [[ "$LAYOUT_ENABLED" -eq 1 ]]; then
+  if [[ ! -d "$BINLOG_DST" ]]; then
+    check "binlog 副本" false "${BINLOG_DST} 不存在 —— binlog 增量备份从未跑过（RPO 退回 24h）：journalctl -u camera-detection-backup -n 50"
+  else
+    _BINLOG_N="$(ls -1 "$BINLOG_DST" 2>/dev/null | wc -l)"
+    if [[ "${_BINLOG_N:-0}" -eq 0 ]]; then
+      check "binlog 副本" false "${BINLOG_DST} 是空目录 —— 备份机制存在但从未成功复制（RPO 退回 24h）"
+    else
+      _BINLOG_LATEST="$(ls -1t "$BINLOG_DST"/* 2>/dev/null | head -1)"
+      _BINLOG_AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$_BINLOG_LATEST") ) / 3600 ))
+      _BINLOG_KB="$(du -sk "$BINLOG_DST" 2>/dev/null | cut -f1 || true)"
+      case "${_BINLOG_KB:-}" in ''|*[!0-9]*) _BINLOG_KB=0 ;; esac
+      if [[ "$_BINLOG_AGE_H" -le "$BINLOG_MAX_AGE_H" ]]; then
+        check "binlog 副本" true "$(basename "$_BINLOG_LATEST")，${_BINLOG_AGE_H} 小时前，共 ${_BINLOG_N} 个 / $(( _BINLOG_KB / 1024 ))MB"
+      else
+        check "binlog 副本" false "最新 $(basename "$_BINLOG_LATEST") 已 ${_BINLOG_AGE_H} 小时（阈值 ${BINLOG_MAX_AGE_H}h），共 ${_BINLOG_N} 个 —— 产线长期零写入时属正常；否则查 backup-database.sh 的 backup_binlogs"
+      fi
     fi
   fi
 fi

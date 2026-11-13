@@ -95,11 +95,11 @@ public class InspectionUploadServiceImpl implements InspectionUploadService {
             recordException(batchId, request.getRequestId(), cameraId, normalizedCameraCode, null, productName,
                     null, "PRODUCT_NOT_FOUND",
                     "产品未配置或已停用：" + productName,
-                    "请在系统配置 > 产品管理中维护产品名称，设备上报 productName 必须完全匹配。",
+                    "产品清单存于 dim_product 表，当前界面无维护入口。请联系管理员通过 POST /api/v1/config/products 或直接维护数据库；设备上报 productName 必须与 product_name 完全一致。",
                     factoryId, lineId, workstationId, reportTime);
             fail422(response, "PRODUCT_NOT_FOUND", null,
                     "产品未配置或已停用：" + productName,
-                    "请先维护产品，并确认 productName 字段与配置完全一致。");
+                    "请先维护产品（当前无界面入口，走 /api/v1/config/products 或数据库），并确认 productName 与配置完全一致。");
         }
         Long productId = longVal(product.get("product_id"));
         String normalizedProductName = str(product.get("product_name"));
@@ -159,11 +159,11 @@ public class InspectionUploadServiceImpl implements InspectionUploadService {
                 recordException(batchId, request.getRequestId(), cameraId, normalizedCameraCode, productId, normalizedProductName,
                         sourceCode, "UNMAPPED",
                         "上报编码未配置映射：" + sourceCode,
-                        "请在系统配置 > 相机缺陷映射中配置 产品 + 相机 + " + sourceCode + " 到标准缺陷类型的一对一映射。",
+                        "请在 cfg_camera_defect_mapping（当前无界面入口，走 /api/v1/config/camera-defect-mappings 或数据库）中配置 产品 + 相机 + " + sourceCode + " 到标准缺陷类型的一对一映射。",
                         factoryId, lineId, workstationId, reportTime);
                 fail422(response, "UNMAPPED", sourceCode,
                         "上报编码未配置映射：" + sourceCode,
-                        "请先维护相机缺陷映射，确保每个 sourceCode 均能一对一匹配。");
+                        "请先维护相机缺陷映射（cfg_camera_defect_mapping，当前无界面入口），确保每个 sourceCode 均能一对一匹配。");
             }
             mapping.put("_source_code", sourceCode);
             mapping.put("_count", count);

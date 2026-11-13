@@ -15,7 +15,13 @@
 | 前端 | Vue 3.5 + Vite 5 + Element Plus 2.7 + ECharts 5.6 | `frontend/` |
 | 部署 | Linux（systemd + bash） | `installer/linux/` |
 
-> Windows 版（`installer/scripts/*.ps1`、`installer/linux/camera-detection-system.iss`）已冻结不再维护，脚本保留仅为历史参考。
+> **仅维护 Linux 交付链**。Windows 安装链（`installer/scripts/*.ps1|*.bat`、`installer/service-wrapper/`、`installer/camera-detection-system.iss`，共 15 个文件）已于 2026-11-13 从工作树移除 —— 保留两套实现却只维护一套，会让新协作者误以为 Windows 链仍可用。
+> 需要历史版本时从 git 取出（数据未丢失）：
+>
+> ```bash
+> git log --oneline --all -- installer/scripts            # 找到移除前的提交
+> git show <commit>:installer/scripts/install-service.ps1 > /tmp/install-service.ps1
+> ```
 
 ## 目录结构
 
@@ -102,7 +108,7 @@ sql/deploy/05_camera_type_migration.sql
 bash installer/linux/build-release.sh     # 组装 stage + tar.gz
 # 解包后执行
 sudo ./scripts/install.sh                 # 口令从环境变量 / /etc/default 读取
-sudo bash scripts/verify.sh               # 自检（统一布局 41 项，未迁移老布局 35 项）
+sudo bash scripts/verify.sh               # 自检（统一布局 42 项，未迁移老布局 35 项）
 ```
 
 ## 文档索引

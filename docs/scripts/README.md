@@ -84,7 +84,7 @@ evaluate 内 value setter 会被 v-model 同步回去（用真实键盘事件）
 | `init-database.sh` | 手工 | 按序执行 `sql/deploy/01~04` 建库 |
 | `run.sh` | systemd `ExecStart` | 启动入口，`source /etc/default/camera-detection` 组装 JVM 参数 |
 | `service.sh` | 手工 | `start/stop/restart/status/logs/version/health/config-check/rollback/cleanup` |
-| `verify.sh` | 手工（**必须 root + 正确口令**） | 41 项自检（统一布局；未迁移老布局 35 项）：环境、配置、目录、保留期口径、cron 无明文口令、**cron 脚本路径（必须是 `${INSTALL_DIR}/scripts/`，防旧副本）**、备份新鲜度、图片副本无 TEST 相机、服务、鉴权、上报链路、授权可用性 |
+| `verify.sh` | 手工（**必须 root + 正确口令**） | 42 项自检（统一布局；未迁移老布局 35 项）：环境、配置、目录、保留期口径、cron 无明文口令、**cron 脚本路径（必须是 `${INSTALL_DIR}/scripts/`，防旧副本）**、备份新鲜度、**binlog 副本新鲜度**、图片副本无 TEST 相机、服务、鉴权、上报链路、授权可用性 |
 | `reset-password.sh` | 手工 | 重置管理员口令（前端无自助改密端点） |
 
 `verify.sh` 的口径检查会比对 **cron `KEEP_DAYS` vs `application.yml` `retain-days`**；

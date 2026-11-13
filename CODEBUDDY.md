@@ -163,7 +163,17 @@ com.wms
 | 无 token / 无效 / 过期 | 401 | `AUTHENTICATION_REQUIRED` |
 | 已登录但角色不足 | 403 | `ACCESS_DENIED` |
 
-`JwtRequestFilter` 只解析 token、不写 SecurityContext；401/403 由 `SecurityConfig` 显式配置的 entry point / denied handler 分派。白名单必须**精确到方法与路径**，禁止 `/**` 兜底（历史上匿名就能 `PUT /api/v1/system/settings` 改生产库）。只能匿名放行：3 个设备冻结端点（心跳 / 批量上报 / 图片上传，由 service 层用 `cfg_camera_token` 校验）+ 图片静态读取（`<img src>` 不带 Authorization）。新增管理端点必须同改三处：`SecurityConfig` 路径规则、Controller `@PreAuthorize`、`verify.sh` 回归项。
+`JwtRequestFilter` 只解析 token、不写 SecurityContext；401/403 由 `SecurityConfig` 显式配置的 entry point / denied handler 分派。白名单必须**精确到方法与路径**，禁止 `/**` 兜底（历史上匿名就能 `PUT /api/v1/system/settings` 改生产库）。只能匿名放行：3 个设备端点（心跳 / 批量上报 / 图片上传）+ 图片静态读取（`<img src>` 不带 Authorization）。
+
+**设备端点鉴权口径不统一，勿假设一致**（2026-11-13 评审实测）：
+
+| 端点 | 实际鉴权 |
+|---|---|
+| `POST /api/v1/camera/status/heartbeat` | 调 `CameraTokenVerifier`，按 `cfg_camera_token` 比对 |
+| `POST /api/v1/inspection/batch-upload` | 同上 |
+| `POST /api/v1/defect-images/upload` | **只校验 `Authorization` 以 `Bearer ` 开头，从不比对令牌** |
+
+第三行是**已知安全缺口**（现场 4.4 万张图走这条通道）：任何非空 Bearer 串 + 合法 `X-Device-Id` 即可写图片、写缺陷框、污染统计与良率口径。修法与回归见 `docs/相机设备接口协议.md` §8.3 缺口 1；修复前不得对外暴露 8091。另注意默认 `camera.token.strict=false`，未配令牌的相机会被放行并只记 WARN——「没报错」不等于「鉴权已生效」。新增管理端点必须同改三处：`SecurityConfig` 路径规则、Controller `@PreAuthorize`、`verify.sh` 回归项。
 
 ## 前端架构
 
