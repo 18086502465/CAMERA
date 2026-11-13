@@ -372,7 +372,14 @@ fi
 # 判据：目录非空 + 最新文件 mtime ≤ 26h（与全备同口径：01:00 + 5min 抖动 + 余量）。
 # ⚠️ 假红的唯一情形：产线长时间零写入 → binlog 不轮转、已封口文件不重拷 → mtime 不更新。
 #    此时看详情里的「共 N 个」即可判断机制本身是好的（N>1 说明历史增量都在）。
-BINLOG_DST="${BINLOG_DST:-/var/backups/camera-detection/binlog}"
+#
+# ⚠️ 路径必须是 `/var/backups/camera-detection/db/binlog`，**不能漏掉 `db` 段**。
+#    backup-database.sh 的 OFFSITE_DIR 默认是 `/var/backups/camera-detection/db`，
+#    binlog 跨盘副本因此落在 `${OFFSITE_DIR}/binlog/`。本检查项最初写成
+#    `/var/backups/camera-detection/binlog`（2026-11-13 上线首跑即恒红），
+#    而同脚本的 IMAGES_DST 恰恰不带 `db` 段（图片副本独立在 .../images）——
+#    两者不对称，抄路径时极易抄错。写死前先对 backup-database.sh 核实。
+BINLOG_DST="${BINLOG_DST:-/var/backups/camera-detection/db/binlog}"
 BINLOG_MAX_AGE_H="${BINLOG_MAX_AGE_H:-26}"
 if [[ "$LAYOUT_ENABLED" -eq 1 ]]; then
   if [[ ! -d "$BINLOG_DST" ]]; then
