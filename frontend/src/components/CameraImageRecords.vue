@@ -18,15 +18,23 @@
     <div v-if="!embedded" class="records-toolbar">
       <div class="toolbar-filters">
         <el-input v-model="searchKeyword" clearable class="image-search" placeholder="搜索相机名称、设备编号、工位、文件名" @keyup.enter="loadData" @clear="loadData" />
-        <el-select v-model="imageFilters.severity" clearable placeholder="严重度" style="width:120px" @change="loadData">
+        <el-select v-model="imageFilters.severity" clearable placeholder="严重度" style="width:110px" @change="loadData">
           <el-option label="HIGH" value="HIGH" />
           <el-option label="MEDIUM" value="MEDIUM" />
           <el-option label="LOW" value="LOW" />
         </el-select>
-        <el-input v-model="imageFilters.defectType" clearable placeholder="缺陷类型" style="width:160px" @keyup.enter="loadData" @clear="loadData" />
-        <el-date-picker v-model="imageTimeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" value-format="YYYY-MM-DD HH:mm:ss" style="width:360px" @change="loadData" />
-        <el-button type="primary" plain @click="loadData">查询</el-button>
-        <el-button @click="resetImageFilters">重置</el-button>
+        <el-select v-model="imageFilters.defectType" clearable filterable placeholder="缺陷类型" style="width:170px" @change="loadData">
+          <el-option v-for="t in defectTypeOptions" :key="t.defectType" :label="`${t.defectType}（${t.imageCount}）`" :value="t.defectType" />
+        </el-select>
+        <el-select v-model="imageFilters.resolution" clearable placeholder="分辨率" style="width:135px" @change="loadData">
+          <el-option v-for="r in resolutionOptions" :key="r.resolution" :label="`${r.resolution}（${r.imageCount}）`" :value="r.resolution" />
+        </el-select>
+        <el-date-picker v-model="imageTimeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" value-format="YYYY-MM-DD HH:mm:ss" style="width:320px" @change="loadData" />
+        <!-- 按钮包一层：窄屏整组换行，避免「查询」留在上一行、「重置」被挤到下一行 -->
+        <div class="toolbar-actions">
+          <el-button type="primary" plain @click="loadData">查询</el-button>
+          <el-button @click="resetImageFilters">重置</el-button>
+        </div>
       </div>
       <div class="toolbar-summary">
         <span>相机 {{ filteredCameras.length }} 台</span>
@@ -83,6 +91,14 @@
             <div class="history-divider" />
             <div class="history-title">历史记录 <span>共 {{ cam.historyTotal }} 条</span></div>
             <el-table :data="historyPageRows(cam)" size="small" stripe class="hist-table">
+              <!-- 相机级字段（整卡恒定）：放最前，便于截图/导出后仍能对应到具体设备 -->
+              <el-table-column label="相机编号" width="110" show-overflow-tooltip>
+                <template #default>{{ cam.cameraCode || '-' }}</template>
+              </el-table-column>
+              <!-- 当前检测产品 = 该相机心跳上报的当前值，属相机级快照；历史图片当时的产品未落库 -->
+              <el-table-column label="当前检测产品" width="150" show-overflow-tooltip>
+                <template #default>{{ cam.productName || '-' }}</template>
+              </el-table-column>
               <el-table-column label="图片" width="76">
                 <template #default="{ row }">
                   <div class="hist-thumb" @click="previewImage(cam, row)">
@@ -92,13 +108,34 @@
                 </template>
               </el-table-column>
               <el-table-column prop="fileName" label="文件名" min-width="170" show-overflow-tooltip />
+              <el-table-column label="缺陷类型" min-width="120" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span v-if="row.defectTypeText">{{ row.defectTypeText }}</span>
+                  <span v-else class="cell-empty">-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="分辨率" width="100">
+                <template #default="{ row }">
+                  <span v-if="row.resolutionText">{{ row.resolutionText }}</span>
+                  <span v-else class="cell-empty">-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="大小" width="90" align="right">
+                <template #default="{ row }">
+                  <span v-if="row.fileSizeText">{{ row.fileSizeText }}</span>
+                  <span v-else class="cell-empty">-</span>
+                </template>
+              </el-table-column>
               <el-table-column prop="captureTimeText" label="拍摄时间" width="160" />
-              <el-table-column label="缺陷数" width="76" align="right">
-                <template #default="{ row }">{{ row.defectCount || 0 }}</template>
+              <!-- 延迟 = 服务器接收时间 - 设备拍摄时间。跨两台机器的时钟，
+                   相机未做 NTP 时该值会失真；实测当前 0 条倒挂，可作补传/积压信号 -->
+              <el-table-column label="延迟" width="95" align="right">
+                <template #default="{ row }">
+                  <span v-if="row.delayText" :class="{ 'delay-slow': row.delaySeconds > 600 }" :title="row.delayTitle">{{ row.delayText }}</span>
+                  <span v-else class="cell-empty">-</span>
+                </template>
               </el-table-column>
-              <el-table-column label="严重度" width="110">
-                <template #default="{ row }"><el-tag :type="tagType(row.mainSeverity)" size="small">{{ severityText(row.mainSeverity) }}</el-tag></template>
-              </el-table-column>
+              <el-table-column prop="batchId" label="批次" width="80" align="right" />
               <el-table-column label="操作" width="80" fixed="right">
                 <template #default="{ row }"><el-button link type="primary" @click.stop="previewImage(cam, row)">查看</el-button></template>
               </el-table-column>
@@ -166,7 +203,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { getCameraList, getDefectImageCameraSummaries, getDefectImageHistory } from '@/api/camera'
+import { getCameraList, getDefectImageCameraSummaries, getDefectImageFilterOptions, getDefectImageHistory } from '@/api/camera'
 import EmptyState from '@/components/EmptyState.vue'
 import BasePagination from '@/components/common/BasePagination.vue'
 import ImageViewer from '@/components/common/ImageViewer.vue'
@@ -185,8 +222,15 @@ const loading = ref(false)
 const cameras = ref([])
 const summaries = ref([])
 const searchKeyword = ref('')
-const imageFilters = reactive({ severity: '', defectType: '' })
+const imageFilters = reactive({ severity: '', defectType: '', resolution: '' })
 const imageTimeRange = ref([])
+/**
+ * 筛选下拉选项：由后端从**实际上报数据**聚合而来。
+ * 不用静态清单 —— dim_defect_type 里配的 15 个标准类型与现场口径（接头/小污点/胶滴）
+ * 完全不相交，硬编码或不查数据都会让下拉选了等于 0 条。
+ */
+const defectTypeOptions = ref([])
+const resolutionOptions = ref([])
 
 /**
  * 历史查询提示（2026-11-05 月度归档）：
@@ -284,6 +328,55 @@ const imageFailureAdvice = img => {
   if (img.loadError) return '处理建议：确认上传文件未被清理、文件路径未变化，或联系后端排查文件读取权限。'
   return '处理建议：请设备端重新生成原始图片，避免上传空文件、占位图或已损坏图片。'
 }
+/**
+ * 缺陷类型展示文本。同一张图可能有多个缺陷框（当前现场恒为 1 个），
+ * 去重后显示第一个，其余折叠为 +N，避免列被撑开。
+ */
+const formatDefectTypes = defects => {
+  const names = [...new Set(defects.map(d => String(d && d.type ? d.type : '').trim()).filter(Boolean))]
+  if (!names.length) return ''
+  return names.length > 1 ? `${names[0]} +${names.length - 1}` : names[0]
+}
+/** 分辨率展示用 ×，筛选传参用 x（后端按 width/height 精确匹配）。 */
+const formatResolution = img => {
+  const w = Number(img && img.width)
+  const h = Number(img && img.height)
+  return w > 0 && h > 0 ? `${w}×${h}` : ''
+}
+const formatFileSize = size => {
+  const n = Number(size)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  if (n < 1024) return `${n}B`
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)}KB`
+  return `${(n / 1024 / 1024).toFixed(1)}MB`
+}
+/**
+ * 延迟 = 服务器接收时间 − 设备拍摄时间。
+ *
+ * ⚠️ 这个值跨两台机器的时钟：相机未做 NTP 对时、或时区配置不同，都会让延迟失真。
+ * 因此它只作「补传/积压」的信号（>10min 值得看一眼），不能当 SLA 判据。
+ * 实测当前 6426 张里 0 条倒挂，191 张 >10min。
+ */
+const computeDelay = img => {
+  const capture = parseTime(img && img.captureTime)
+  const receive = parseTime(img && (img.receiveTime || img.createTime))
+  if (!capture || !receive) return { delayText: '', delaySeconds: 0, delayTitle: '' }
+  const seconds = Math.round((receive - capture) / 1000)
+  if (seconds < 0) {
+    return { delayText: '时钟异常', delaySeconds: 0, delayTitle: `拍摄时间比接收时间晚 ${Math.abs(seconds)} 秒，请检查相机时钟是否与实际一致` }
+  }
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  let text
+  if (seconds < 60) text = `${seconds}s`
+  else if (seconds < 3600) text = `${minutes}m${seconds % 60 ? `${seconds % 60}s` : ''}`
+  else text = `${hours}h${minutes % 60}m`
+  return {
+    delayText: text,
+    delaySeconds: seconds,
+    delayTitle: `拍摄 ${toTimeText(img.captureTime)} → 接收 ${toTimeText(img.receiveTime || img.createTime)}，相差 ${seconds} 秒`
+  }
+}
 const normalizeImage = (img = {}) => {
   const defects = Array.isArray(img.defects) ? img.defects : []
   const mainSeverity = defects.find(d => severityKey(d.severity) === 'high')?.severity ||
@@ -299,6 +392,10 @@ const normalizeImage = (img = {}) => {
     sortTime: toTimeText(img.receiveTime || img.createTime || img.uploadTime || img.captureTime),
     mainSeverity,
     defectCount: img.defectCount ?? defects.length,
+    defectTypeText: formatDefectTypes(defects),
+    resolutionText: formatResolution(img),
+    fileSizeText: formatFileSize(img.fileSize),
+    ...computeDelay(img),
     defects
   }
 }
@@ -314,6 +411,7 @@ const buildImageQueryParams = (base = {}) => {
   if (keyword) params.keyword = keyword
   if (imageFilters.severity) params.severity = imageFilters.severity
   if (imageFilters.defectType && imageFilters.defectType.trim()) params.defectType = imageFilters.defectType.trim()
+  if (imageFilters.resolution) params.resolution = imageFilters.resolution
   if (imageTimeRange.value && imageTimeRange.value.length === 2) {
     params.startTime = imageTimeRange.value[0]
     params.endTime = imageTimeRange.value[1]
@@ -353,6 +451,7 @@ const resetImageFilters = () => {
   searchKeyword.value = ''
   imageFilters.severity = ''
   imageFilters.defectType = ''
+  imageFilters.resolution = ''
   imageTimeRange.value = []
   loadData()
 }
@@ -393,6 +492,10 @@ const allCards = computed(() => {
       historyCameraId: summary?.cameraId || cam.cameraCode || cam.cameraId,
       historyCameraName: summary?.cameraName || cam.cameraName,
       name,
+      // 相机编号 / 当前检测产品属于「相机级」字段（整卡恒定），来自 /cameras 的
+      // CameraStatus 实体；产品是心跳上报的**当前值**，没有历史，故只用于标识这台相机
+      cameraCode: cam.cameraCode || cam.deviceId || summary?.cameraCode || '',
+      productName: cam.productName || '',
       station: stationLabel(cam),
       stationId: cam.stationId || cam.workstationId,
       lineId: cam.lineId || cam.productionLineId,
@@ -421,6 +524,9 @@ const allCards = computed(() => {
         historyCameraId: summary.cameraId || key,
         historyCameraName: summary.cameraName,
         name: first.cameraName || key,
+        cameraCode: summary.cameraCode || key,
+        // 此分支是「只有图片汇总、dim_camera 里查不到」的相机，拿不到心跳产品名
+        productName: '',
         station: stationLabel(summary),
         stationId: summary.workstationId,
         lineId: summary.lineId,
@@ -572,7 +678,25 @@ const syncZoomIndex = index => {
   previewIndex.value = index
   setPreviewData(previewCamera.value, previewList.value[index])
 }
-onMounted(loadData)
+/**
+ * 拉取下拉选项。失败不影响主流程 —— 选项为空只是筛不了，页面仍可正常看记录。
+ * 选项按当前数据聚合，故不随筛选条件刷新（避免"选了类型后其余类型消失"）。
+ */
+const loadFilterOptions = async () => {
+  try {
+    const res = await getDefectImageFilterOptions()
+    const data = res?.data?.data ?? res?.data ?? {}
+    defectTypeOptions.value = Array.isArray(data.defectTypes) ? data.defectTypes : []
+    resolutionOptions.value = Array.isArray(data.resolutions) ? data.resolutions : []
+  } catch {
+    defectTypeOptions.value = []
+    resolutionOptions.value = []
+  }
+}
+onMounted(() => {
+  loadData()
+  loadFilterOptions()
+})
 watch(filterParams, loadData, { deep: true })
 watch(() => route.query, () => loadData(), { deep: true })
 watch(filteredCameras, cams => { cams.forEach(cam => setHistoryPage(cam, historyPageOf(cam))) })
@@ -588,5 +712,8 @@ defineExpose({ reload: loadData })
 </script>
 
 <style scoped>
-.image-records{display:flex;flex-direction:column;gap:16px}.page-header,.section-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.page-header h2,.section-header h3{margin:0 0 6px;color:#111827}.page-header h2{font-size:22px}.section-header h3{font-size:18px}.page-header p,.section-header p{margin:0;color:#6b7280;font-size:13px}.filter-hint,.more-link{font-size:13px;color:var(--color-primary);background:var(--color-primary-bg);padding:6px 12px;border-radius:999px;text-decoration:none;white-space:nowrap}.records-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:12px 14px;background:var(--color-bg-card);border:1px solid var(--color-border);border-radius:12px;box-shadow:0 1px 3px rgba(15,23,42,.04)}.toolbar-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}.image-search{width:320px;max-width:100%}.toolbar-summary{display:flex;align-items:center;gap:8px;color:var(--color-text-secondary);font-size:12px;white-space:nowrap}.toolbar-summary span,.image-total{padding:4px 10px;border-radius:999px;background:var(--color-bg-page);border:1px solid var(--color-border)}.cam-col{margin-bottom:16px}.cam-card{background:var(--color-bg-card);border-radius:12px;border:1px solid var(--color-border);box-shadow:0 1px 3px rgba(15,23,42,.05);overflow:hidden;transition:box-shadow .2s}.cam-card:hover{box-shadow:0 8px 20px rgba(15,23,42,.08)}.cam-hd{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 18px;cursor:pointer;border-bottom:1px solid var(--color-bg-subtle)}.cam-hd:hover{background:var(--color-bg-page)}.cam-hd-left,.cam-hd-right{display:flex;align-items:center;gap:10px;min-width:0}.cam-hd-left{flex:1}.cam-name{color:#111827;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.cam-station,.cam-expand-icon,.image-total{color:var(--color-text-secondary);font-size:12px;white-space:nowrap}.cam-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap}.st-dot{width:6px;height:6px;border-radius:50%}.st-running{color:#15803d;background:var(--color-success-bg)}.st-running .st-dot{background:var(--color-success-light)}.st-stopped{color:#475569;background:var(--color-bg-subtle)}.st-stopped .st-dot{background:var(--color-text-secondary)}.st-standby{color:#b45309;background:var(--color-warning-bg)}.st-standby .st-dot{background:var(--color-warning)}.st-fault{color:#b91c1c;background:var(--color-error-bg)}.st-fault .st-dot{background:var(--color-error-light)}.st-offline{color:var(--color-text-secondary);background:var(--color-bg-subtle)}.st-offline .st-dot{background:var(--color-text-placeholder)}.severity-pill{font-size:12px;padding:2px 8px;border-radius:999px;font-weight:700}.severity-pill.high{color:#b91c1c;background:var(--color-error-bg)}.severity-pill.medium{color:#b45309;background:var(--color-warning-bg)}.severity-pill.low{color:var(--color-primary-active);background:#dbeafe}.cam-body{padding:14px 18px}.thumb-label{color:var(--color-text-secondary);font-size:12px;margin-bottom:10px}.thumb-row{display:flex;gap:8px;flex-wrap:wrap}.thumb-item{cursor:pointer}.thumb-img-wrap{width:96px;height:72px;border-radius:8px;border:1px solid var(--color-border);background:var(--color-bg-page);position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#cbd5e1}.thumb-img-wrap img{width:100%;height:100%;object-fit:cover;transition:transform .2s}.thumb-img-wrap:hover img{transform:scale(1.08)}.thumb-placeholder{font-size:12px;color:var(--color-text-placeholder)}.thumb-placeholder.invalid{color:#b45309;background:#fffbeb;width:100%;height:100%;display:flex;align-items:center;justify-content:center}.thumb-severity{position:absolute;right:4px;bottom:4px;color:#fff;font-size:11px;line-height:1;padding:3px 6px;border-radius:4px}.thumb-severity.high{background:var(--color-error-light)}.thumb-severity.medium{background:var(--color-warning)}.thumb-severity.low{background:var(--color-primary-hover)}.empty-thumb{cursor:default;font-size:20px}.cam-history{padding:0 18px 16px}.history-divider{height:1px;background:var(--color-bg-subtle);margin-bottom:14px}.history-title{font-size:13px;font-weight:700;color:#374151;margin-bottom:10px}.history-title span{color:var(--color-text-placeholder);font-weight:400}.hist-thumb{width:42px;height:32px;border-radius:6px;overflow:hidden;border:1px solid var(--color-border);background:var(--color-bg-page);display:flex;align-items:center;justify-content:center;cursor:pointer}.hist-thumb img{width:100%;height:100%;object-fit:cover}.pager{margin-top:12px;justify-content:center}.preview-content{display:flex;flex-direction:column;gap:16px}.preview-img-wrap{position:relative;min-height:320px;max-height:520px;background:var(--color-text);border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center}.preview-img-wrap img{max-width:100%;max-height:520px;object-fit:contain}.preview-nav{position:absolute;top:50%;z-index:2;transform:translateY(-50%);width:40px;height:40px;border:none;background:rgba(255,255,255,.9);color:var(--color-text);font-size:24px;font-weight:800;box-shadow:0 6px 18px rgba(15,23,42,.22)}.preview-nav.prev{left:14px}.preview-nav.next{right:14px}.preview-zoom{position:absolute;right:14px;top:12px;z-index:3;background:rgba(255,255,255,.94);border-color:rgba(148,163,184,.6);color:var(--color-text);font-weight:600;box-shadow:0 4px 12px rgba(15,23,42,.2)}.preview-zoom:hover{background:var(--color-bg-card);color:var(--color-primary);border-color:var(--color-primary)}.preview-zoom-icon{font-size:14px;line-height:1;margin-right:2px}.preview-img-wrap img{cursor:zoom-in}.preview-counter{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:2;padding:4px 10px;border-radius:999px;background:rgba(15,23,42,.72);color:#fff;font-size:12px;font-weight:700}.preview-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:32px;color:var(--color-text-secondary);text-align:center;background:var(--color-bg-page);width:100%;min-height:320px}.preview-empty strong{color:var(--color-text-regular);font-size:15px}.preview-empty span{max-width:520px;font-size:13px;line-height:1.6}.preview-info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.info-item{display:flex;gap:8px;padding:9px 12px;background:var(--color-bg-page);border-radius:8px;min-width:0}.info-item span{color:var(--color-text-secondary);font-size:12px;flex:none}.info-item strong{color:#111827;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.defect-table{margin-top:2px}@media (max-width:1280px){.cam-hd{align-items:flex-start;flex-direction:column}.preview-info-grid{grid-template-columns:1fr}}@media (max-width:720px){.records-toolbar{align-items:stretch;flex-direction:column}.toolbar-filters{align-items:stretch;flex-direction:column}.image-search{width:100%}.toolbar-summary{justify-content:flex-start}}
+.image-records{display:flex;flex-direction:column;gap:16px}.page-header,.section-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.page-header h2,.section-header h3{margin:0 0 6px;color:#111827}.page-header h2{font-size:22px}.section-header h3{font-size:18px}.page-header p,.section-header p{margin:0;color:#6b7280;font-size:13px}.filter-hint,.more-link{font-size:13px;color:var(--color-primary);background:var(--color-primary-bg);padding:6px 12px;border-radius:999px;text-decoration:none;white-space:nowrap}.records-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:12px 14px;background:var(--color-bg-card);border:1px solid var(--color-border);border-radius:12px;box-shadow:0 1px 3px rgba(15,23,42,.04)}.toolbar-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}.toolbar-actions{display:flex;gap:10px;flex:none}.image-search{width:300px;max-width:100%}.toolbar-summary{display:flex;align-items:center;gap:8px;color:var(--color-text-secondary);font-size:12px;white-space:nowrap}.toolbar-summary span,.image-total{padding:4px 10px;border-radius:999px;background:var(--color-bg-page);border:1px solid var(--color-border)}.cam-col{margin-bottom:16px}.cam-card{background:var(--color-bg-card);border-radius:12px;border:1px solid var(--color-border);box-shadow:0 1px 3px rgba(15,23,42,.05);overflow:hidden;transition:box-shadow .2s}.cam-card:hover{box-shadow:0 8px 20px rgba(15,23,42,.08)}.cam-hd{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 18px;cursor:pointer;border-bottom:1px solid var(--color-bg-subtle)}.cam-hd:hover{background:var(--color-bg-page)}.cam-hd-left,.cam-hd-right{display:flex;align-items:center;gap:10px;min-width:0}.cam-hd-left{flex:1}.cam-name{color:#111827;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.cam-station,.cam-expand-icon,.image-total{color:var(--color-text-secondary);font-size:12px;white-space:nowrap}.cam-status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap}.st-dot{width:6px;height:6px;border-radius:50%}.st-running{color:#15803d;background:var(--color-success-bg)}.st-running .st-dot{background:var(--color-success-light)}.st-stopped{color:#475569;background:var(--color-bg-subtle)}.st-stopped .st-dot{background:var(--color-text-secondary)}.st-standby{color:#b45309;background:var(--color-warning-bg)}.st-standby .st-dot{background:var(--color-warning)}.st-fault{color:#b91c1c;background:var(--color-error-bg)}.st-fault .st-dot{background:var(--color-error-light)}.st-offline{color:var(--color-text-secondary);background:var(--color-bg-subtle)}.st-offline .st-dot{background:var(--color-text-placeholder)}.severity-pill{font-size:12px;padding:2px 8px;border-radius:999px;font-weight:700}.severity-pill.high{color:#b91c1c;background:var(--color-error-bg)}.severity-pill.medium{color:#b45309;background:var(--color-warning-bg)}.severity-pill.low{color:var(--color-primary-active);background:#dbeafe}.cam-body{padding:14px 18px}.thumb-label{color:var(--color-text-secondary);font-size:12px;margin-bottom:10px}.thumb-row{display:flex;gap:8px;flex-wrap:wrap}.thumb-item{cursor:pointer}.thumb-img-wrap{width:96px;height:72px;border-radius:8px;border:1px solid var(--color-border);background:var(--color-bg-page);position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#cbd5e1}.thumb-img-wrap img{width:100%;height:100%;object-fit:cover;transition:transform .2s}.thumb-img-wrap:hover img{transform:scale(1.08)}.thumb-placeholder{font-size:12px;color:var(--color-text-placeholder)}.thumb-placeholder.invalid{color:#b45309;background:#fffbeb;width:100%;height:100%;display:flex;align-items:center;justify-content:center}.thumb-severity{position:absolute;right:4px;bottom:4px;color:#fff;font-size:11px;line-height:1;padding:3px 6px;border-radius:4px}.thumb-severity.high{background:var(--color-error-light)}.thumb-severity.medium{background:var(--color-warning)}.thumb-severity.low{background:var(--color-primary-hover)}.empty-thumb{cursor:default;font-size:20px}.cam-history{padding:0 18px 16px}.history-divider{height:1px;background:var(--color-bg-subtle);margin-bottom:14px}.history-title{font-size:13px;font-weight:700;color:#374151;margin-bottom:10px}.history-title span{color:var(--color-text-placeholder);font-weight:400}.hist-thumb{width:42px;height:32px;border-radius:6px;overflow:hidden;border:1px solid var(--color-border);background:var(--color-bg-page);display:flex;align-items:center;justify-content:center;cursor:pointer}.hist-thumb img{width:100%;height:100%;object-fit:cover}.pager{margin-top:12px;justify-content:center}.preview-content{display:flex;flex-direction:column;gap:16px}.preview-img-wrap{position:relative;min-height:320px;max-height:520px;background:var(--color-text);border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center}.preview-img-wrap img{max-width:100%;max-height:520px;object-fit:contain}.preview-nav{position:absolute;top:50%;z-index:2;transform:translateY(-50%);width:40px;height:40px;border:none;background:rgba(255,255,255,.9);color:var(--color-text);font-size:24px;font-weight:800;box-shadow:0 6px 18px rgba(15,23,42,.22)}.preview-nav.prev{left:14px}.preview-nav.next{right:14px}.preview-zoom{position:absolute;right:14px;top:12px;z-index:3;background:rgba(255,255,255,.94);border-color:rgba(148,163,184,.6);color:var(--color-text);font-weight:600;box-shadow:0 4px 12px rgba(15,23,42,.2)}.preview-zoom:hover{background:var(--color-bg-card);color:var(--color-primary);border-color:var(--color-primary)}.preview-zoom-icon{font-size:14px;line-height:1;margin-right:2px}.preview-img-wrap img{cursor:zoom-in}.preview-counter{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:2;padding:4px 10px;border-radius:999px;background:rgba(15,23,42,.72);color:#fff;font-size:12px;font-weight:700}.preview-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:32px;color:var(--color-text-secondary);text-align:center;background:var(--color-bg-page);width:100%;min-height:320px}.preview-empty strong{color:var(--color-text-regular);font-size:15px}.preview-empty span{max-width:520px;font-size:13px;line-height:1.6}.preview-info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.info-item{display:flex;gap:8px;padding:9px 12px;background:var(--color-bg-page);border-radius:8px;min-width:0}.info-item span{color:var(--color-text-secondary);font-size:12px;flex:none}.info-item strong{color:#111827;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.defect-table{margin-top:2px}@media (max-width:1280px){.cam-hd{align-items:flex-start;flex-direction:column}.preview-info-grid{grid-template-columns:1fr}}@media (max-width:720px){.records-toolbar{align-items:stretch;flex-direction:column}.toolbar-filters{align-items:stretch;flex-direction:column}.image-search{width:100%}.toolbar-summary{justify-content:flex-start}}
+.cell-empty{color:var(--color-text-placeholder)}
+/* 延迟 >10min 标红：补传/积压信号。值跨两台机器时钟，仅作提示不作 SLA */
+.delay-slow{color:var(--color-error);font-weight:600}
 </style>

@@ -24,3 +24,8 @@ export const getDefectImageCameraSummaries = (params = {}) =>
 // 单台相机图像记录分页：用于展开相机后的历史记录分页
 export const getDefectImageHistory = (params = {}) =>
   request({ url: '/v1/defect-images/history', method: 'get', params })
+
+// 图像记录页筛选下拉选项（缺陷类型/分辨率）：取自设备实际上报数据，
+// 不是 /v1/config/defect-types（后者与现场叫法完全不相交，选了永远是 0 条）
+export const getDefectImageFilterOptions = () =>
+  request({ url: '/v1/defect-images/filter-options', method: 'get' })
