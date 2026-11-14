@@ -156,6 +156,7 @@ public class LineAnalyticsController {
         widgetTypes.add(item("PLANT_OVERVIEW", "工厂总览", "厂长视角：规模、风险等级、首要缺陷一页看清"));
         widgetTypes.add(item("PARETO", "帕累托图", "缺陷类型累计占比，定位主要矛盾"));
         widgetTypes.add(item("SEVERITY", "严重度构成", "高/中/低缺陷占比，判断质量风险等级"));
+        widgetTypes.add(item("HEATMAP", "时段热力图", "小时×缺陷类型，定位高发时段"));
         data.put("widgetTypes", widgetTypes);
 
         List<Map<String, Object>> dimensions = new ArrayList<>();
@@ -184,11 +185,12 @@ public class LineAnalyticsController {
                                                      @RequestParam(required = false) Long productId,
                                                      @RequestParam(required = false) Long shiftId,
                                                      @RequestParam(required = false) Long defectTypeId,
-                                                     @RequestParam(required = false) String severity) {
+                                                     @RequestParam(required = false) String severity,
+                                                     @RequestParam(required = false) String defectType) {
         LocalDateTime start = parseTime(startTime, LocalDateTime.of(LocalDate.now(), LocalTime.MIN));
         LocalDateTime end = parseTime(endTime, LocalDateTime.of(LocalDate.now(), LocalTime.MAX.withNano(0)));
         return ResultVO.success(buildSummaryCached(start, end, factoryId, lineId, workstationId, cameraId,
-                productId, shiftId, defectTypeId, severity));
+                productId, shiftId, defectTypeId, severity, defectType));
     }
 
     /**
@@ -199,34 +201,38 @@ public class LineAnalyticsController {
      */
     private Map<String, Object> buildSummaryCached(LocalDateTime start, LocalDateTime end,
                                                   Long factoryId, Long lineId, Long workstationId, Long cameraId,
-                                                  Long productId, Long shiftId, Long defectTypeId, String severity) {
+                                                  Long productId, Long shiftId, Long defectTypeId, String severity,
+                                                  String defectType) {
         String cacheKey = summaryCacheKey(start, end, factoryId, lineId, workstationId, cameraId,
-                productId, shiftId, defectTypeId, severity);
+                productId, shiftId, defectTypeId, severity, defectType);
         Map<String, Object> cached = summaryCache.get(cacheKey);
         if (cached != null) {
             return cached;
         }
         Map<String, Object> built = buildSummary(start, end, factoryId, lineId, workstationId, cameraId,
-                productId, shiftId, defectTypeId, severity);
+                productId, shiftId, defectTypeId, severity, defectType);
         summaryCache.put(cacheKey, built);
         return built;
     }
 
     private String summaryCacheKey(LocalDateTime start, LocalDateTime end,
                                    Long factoryId, Long lineId, Long workstationId, Long cameraId,
-                                   Long productId, Long shiftId, Long defectTypeId, String severity) {
+                                   Long productId, Long shiftId, Long defectTypeId, String severity,
+                                   String defectType) {
         StringBuilder key = new StringBuilder(96);
         key.append(start.format(DT)).append('~').append(end.format(DT));
         key.append('|').append(factoryId).append('|').append(lineId).append('|').append(workstationId)
                 .append('|').append(cameraId).append('|').append(productId).append('|').append(shiftId)
                 .append('|').append(defectTypeId)
-                .append('|').append(severity == null ? "" : severity.trim().toUpperCase(Locale.ROOT));
+                .append('|').append(severity == null ? "" : severity.trim().toUpperCase(Locale.ROOT))
+                .append('|').append(defectType == null ? "" : defectType.trim());
         return key.toString();
     }
 
     private Map<String, Object> buildSummary(LocalDateTime start, LocalDateTime end,
                                              Long factoryId, Long lineId, Long workstationId, Long cameraId,
-                                             Long productId, Long shiftId, Long defectTypeId, String severity) {
+                                             Long productId, Long shiftId, Long defectTypeId, String severity,
+                                             String defectType) {
         if (end.isBefore(start)) {
             throw new IllegalArgumentException("结束时间不能早于开始时间");
         }
@@ -262,7 +268,7 @@ public class LineAnalyticsController {
         //   → **子集比全集还大**，用户完全无法理解。
         //   改为：**图片事实表优先**（它是现场真正在用的通道），聚合表仅在图片表无数据时兜底。
         Map<String, Object> imageData = buildDefectImageSummary(
-                start, end, factoryId, lineId, workstationId, cameraId, severity);
+                start, end, factoryId, lineId, workstationId, cameraId, severity, defectType, shiftId);
         if (longVal(map(imageData.get("kpi")).get("totalCount")) > 0) {
             Map<String, Object> data = new LinkedHashMap<>(imageData);
             data.put("aggregationLevel", daily ? "DAY" : "30M");
@@ -454,6 +460,17 @@ public class LineAnalyticsController {
             overview.put("topDefectRate", 0.0);
         }
         overview.put("dataSource", data.get("dataSource"));
+        // ★ 2026-11-14 看板 D：等长前移窗口环比（较上一时段）。
+        //   仅图片通道计算（appendWindowCompare 塞进 kpi）；聚合表通道无此键 → 前端显示「—」。
+        Object prevWindow = kpi.get("prevWindowCount");
+        if (prevWindow != null) {
+            long prev = longVal(prevWindow);
+            overview.put("dayOverDayCurrent", detection);
+            overview.put("dayOverDayPrevious", prev);
+            overview.put("dayOverDayRate", prev > 0
+                    ? Math.round((detection - prev) * 10000.0 / prev) / 100.0 : null);
+            overview.put("dayOverDayLabel", kpi.get("dayOverDayLabel"));
+        }
         return overview;
     }
 
@@ -477,19 +494,15 @@ public class LineAnalyticsController {
      */
     private Map<String, Object> buildDefectImageSummary(LocalDateTime start, LocalDateTime end,
                                                         Long factoryId, Long lineId, Long workstationId,
-                                                        Long cameraId, String severity) {
+                                                        Long cameraId, String severity,
+                                                        String defectType, Long shiftId) {
         Map<String, Object> data = new LinkedHashMap<>();
 
         // 图片表的 camera_id 存的是相机编号（camera_code），需经 dim_camera 关联出维度
         String joinCam = " LEFT JOIN dim_camera c ON c.camera_code = f.camera_id ";
         List<Object> params = new ArrayList<>();
-        StringBuilder where = new StringBuilder(" WHERE f.capture_time BETWEEN ? AND ? ");
-        params.add(Timestamp.valueOf(start));
-        params.add(Timestamp.valueOf(end));
-        if (factoryId != null) { where.append(" AND c.factory_id = ? "); params.add(factoryId); }
-        if (lineId != null) { where.append(" AND c.line_id = ? "); params.add(lineId); }
-        if (workstationId != null) { where.append(" AND c.workstation_id = ? "); params.add(workstationId); }
-        if (cameraId != null) { where.append(" AND c.camera_id = ? "); params.add(cameraId); }
+        StringBuilder where = buildImageWhere(start, end, factoryId, lineId, workstationId, cameraId,
+                defectType, shiftId, params);
         String sevWhere = "";
         if (severity != null && !severity.trim().isEmpty()) {
             sevWhere = " AND b.severity = ? ";
@@ -512,6 +525,7 @@ public class LineAnalyticsController {
         kpi.put("yieldRate", null);   // 图片通道无良品样本，良率不可计算
         kpi.put("ngRate", null);
         kpi.put("yieldRateAvailable", false);
+        appendWindowCompare(kpi, start, end, joinCam, factoryId, lineId, workstationId, cameraId, defectType, shiftId);
         data.put("kpi", kpi);
 
         // 趋势：按小时聚合缺陷图与缺陷数
@@ -537,7 +551,142 @@ public class LineAnalyticsController {
         // 严重度分布
         data.put("severityDistribution", queryRepository.queryDefectImageSeverityDistribution(joinCam, where.toString(), sevWhere, rankParams));
 
+        // ★ 2026-11-14 看板 A / D 新增数据块（均受当前全部筛选约束）：
+        //   时段×类型热力图、班次×类型对比（含班次名，供前端图例）。
+        //   班次分桶窗口固定取班次定义（白班 08-20 / 夜班 20-08），
+        //   与「筛选了某个班次」无关 —— 筛选只收窄数据范围，不改变分桶。
+        List<Object> heatParams = new ArrayList<>(params);
+        data.put("hourlyHeatmap", queryRepository.queryDefectImageHourlyHeatmap(joinCam, where.toString(), heatParams));
+        Map<String, Object> shiftWindows = resolveShiftWindows();
+        List<Object> shiftParams = new ArrayList<>(params);
+        data.put("shiftCompare", queryRepository.queryDefectImageShiftCompare(joinCam, where.toString(),
+                shiftParams, (String) shiftWindows.get("dayStart"), (String) shiftWindows.get("dayEnd")));
+        data.put("shiftNames", shiftWindows);
+
         return data;
+    }
+
+    /**
+     * 图片通道公共 WHERE 片段（2026-11-14 提取，供环比前移窗口复用）。
+     *
+     * <p>defectType 为现场实际上报的类型文本（接头/小污点…），与 dim_defect_type 的
+     * 标准类型 ID 完全不相交，因此按文本对 defect_image_box 精确匹配（EXISTS）——
+     * 与 DefectImageRepository 的口径一致，绝不能用 LIKE（类型名互相包含会放大结果集）。
+     *
+     * <p>shiftId 按时间窗推导：dim_shift 里白班 08:00-20:00、夜班 20:00-08:00（跨天）。
+     * 事实表没有 shift_id 列，只能从 capture_time 的小钟点落在哪个班次窗口来判断。
+     */
+    private StringBuilder buildImageWhere(LocalDateTime start, LocalDateTime end,
+                                          Long factoryId, Long lineId, Long workstationId, Long cameraId,
+                                          String defectType, Long shiftId, List<Object> params) {
+        StringBuilder where = new StringBuilder(" WHERE f.capture_time BETWEEN ? AND ? ");
+        params.add(Timestamp.valueOf(start));
+        params.add(Timestamp.valueOf(end));
+        if (factoryId != null) { where.append(" AND c.factory_id = ? "); params.add(factoryId); }
+        if (lineId != null) { where.append(" AND c.line_id = ? "); params.add(lineId); }
+        if (workstationId != null) { where.append(" AND c.workstation_id = ? "); params.add(workstationId); }
+        if (cameraId != null) { where.append(" AND c.camera_id = ? "); params.add(cameraId); }
+        if (defectType != null && !defectType.trim().isEmpty()) {
+            where.append(" AND EXISTS (SELECT 1 FROM defect_image_box bt " +
+                    "WHERE bt.image_id = f.image_id AND bt.defect_type = ?) ");
+            params.add(defectType.trim());
+        }
+        if (shiftId != null) {
+            Map<String, Object> shift = resolveShift(shiftId);
+            if (!shift.isEmpty()) {
+                String s = hhmmss(shift.get("startTime"));
+                String e = hhmmss(shift.get("endTime"));
+                boolean crossDay = longVal(shift.get("crossDay")) == 1;
+                // 时间窗字面量来自 dim_shift 的 LocalTime，无注入面
+                if (crossDay) {
+                    where.append(" AND (TIME(f.capture_time) >= '").append(s)
+                            .append("' OR TIME(f.capture_time) < '").append(e).append("') ");
+                } else {
+                    // ★ 2026-11-14 线上验证抓到的拼接 bug：这里曾多写一个右括号
+                    //   （... < '08:00:00')）→ 白班筛选 SQL 语法错 → 500。
+                    //   mock 契约测试不执行真 SQL，这类拼接错误只能靠线上验证暴露。
+                    where.append(" AND TIME(f.capture_time) >= '").append(s)
+                            .append("' AND TIME(f.capture_time) < '").append(e).append("' ");
+                }
+            }
+        }
+        return where;
+    }
+
+    /** 等长前移窗口环比：本窗口 vs 紧邻的前一等长窗口（厂长日报「较上一时段」卡）。 */
+    private void appendWindowCompare(Map<String, Object> kpi, LocalDateTime start, LocalDateTime end,
+                                     String joinCam, Long factoryId, Long lineId, Long workstationId,
+                                     Long cameraId, String defectType, Long shiftId) {
+        kpi.put("prevWindowCount", null);
+        kpi.put("dayOverDayRate", null);
+        kpi.put("dayOverDayLabel", null);
+        try {
+            java.time.Duration span = java.time.Duration.between(start, end);
+            if (span.isZero() || span.isNegative()) {
+                return;
+            }
+            List<Object> prevParams = new ArrayList<>();
+            StringBuilder prevWhere = buildImageWhere(start.minus(span), start, factoryId, lineId,
+                    workstationId, cameraId, defectType, shiftId, prevParams);
+            long prevCount = queryRepository.countDefectImages(joinCam, prevWhere.toString(), prevParams);
+            long current = longVal(kpi.get("totalCount"));
+            kpi.put("prevWindowCount", prevCount);
+            if (prevCount > 0) {
+                kpi.put("dayOverDayRate", Math.round((current - prevCount) * 10000.0 / prevCount) / 100.0);
+            }
+            long days = span.toDays();
+            long hours = span.toHours();
+            kpi.put("dayOverDayLabel", days >= 1 ? "较前 " + days + " 天" : (hours >= 1 ? "较前 " + hours + " 小时" : "较前时段"));
+        } catch (Exception ex) {
+            // 环比是增强信息，任何失败都不能影响主 KPI
+            log.warn("计算前移窗口环比失败（不影响主统计）：{}", ex.getMessage());
+        }
+    }
+
+    /** 班次定义查询（带空值防御），dim_shift 主键查询 */
+    private Map<String, Object> resolveShift(Long shiftId) {
+        if (shiftId == null) {
+            return new LinkedHashMap<>();
+        }
+        try {
+            Map<String, Object> shift = queryRepository.findShiftById(shiftId);
+            return shift == null ? new LinkedHashMap<>() : shift;
+        } catch (Exception ex) {
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /** LocalTime/Time → 'HH:mm:ss' 字面量（时间窗拼接用） */
+    private String hhmmss(Object time) {
+        if (time == null) {
+            return "00:00:00";
+        }
+        String s = time.toString();
+        return s.length() == 5 ? s + ":00" : s;
+    }
+
+    /**
+     * 班次对比的分桶窗口：dim_shift 里不跨天且最早开始的为白班，跨天的为夜班。
+     * 取不到定义时退化为硬编码 08:00-20:00（与现场 dim_shift 实际配置一致）。
+     */
+    private Map<String, Object> resolveShiftWindows() {
+        Map<String, Object> windows = new LinkedHashMap<>();
+        windows.put("day", "白班");
+        windows.put("night", "夜班");
+        windows.put("dayStart", "08:00:00");
+        windows.put("dayEnd", "20:00:00");
+        try {
+            List<Map<String, Object>> shifts = queryRepository.listShiftsForCompare();
+            if (shifts.size() >= 2) {
+                windows.put("day", String.valueOf(shifts.get(0).getOrDefault("shiftName", "白班")));
+                windows.put("night", String.valueOf(shifts.get(1).getOrDefault("shiftName", "夜班")));
+                windows.put("dayStart", hhmmss(shifts.get(0).get("startTime")));
+                windows.put("dayEnd", hhmmss(shifts.get(0).get("endTime")));
+            }
+        } catch (Exception ex) {
+            log.warn("读取班次定义失败，班次对比退化为默认 08:00-20:00：{}", ex.getMessage());
+        }
+        return windows;
     }
 
     /**
@@ -550,7 +699,8 @@ public class LineAnalyticsController {
         return lineSummary(startTime, endTime,
                 longOrNull(body.get("factoryId")), longOrNull(body.get("lineId")), longOrNull(body.get("workstationId")),
                 longOrNull(body.get("cameraId")), longOrNull(body.get("productId")), longOrNull(body.get("shiftId")),
-                longOrNull(body.get("defectTypeId")), strOrNull(body.get("severity")));
+                longOrNull(body.get("defectTypeId")), strOrNull(body.get("severity")),
+                strOrNull(body.get("defectType")));
     }
 
     // ==================== P1 动态报表配置 ====================
@@ -698,14 +848,15 @@ public class LineAnalyticsController {
                                                @RequestParam(required = false) Long productId,
                                                @RequestParam(required = false) Long shiftId,
                                                @RequestParam(required = false) Long defectTypeId,
-                                               @RequestParam(required = false) String severity) throws Exception {
+                                               @RequestParam(required = false) String severity,
+                                               @RequestParam(required = false) String defectType) throws Exception {
         Map<String, Object> widget = findWidget(id);
         if (widget == null) {
             return ResponseEntity.notFound().build();
         }
         LocalDateTime start = parseTime(startTime, LocalDateTime.of(LocalDate.now(), LocalTime.MIN));
         LocalDateTime end = parseTime(endTime, LocalDateTime.of(LocalDate.now(), LocalTime.MAX.withNano(0)));
-        Map<String, Object> data = buildSummary(start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, defectTypeId, severity);
+        Map<String, Object> data = buildSummary(start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, defectTypeId, severity, defectType);
         ExportTable table = exportTable(widgetMetric(widget), data);
         String widgetName = String.valueOf(widget.getOrDefault("widgetName", "chart"));
         byte[] bytes = writeWorkbook(widgetName, table.headers, table.rows);

@@ -250,6 +250,85 @@ class P3Batch4ContractTest {
     }
 
     @Test
+    @DisplayName("line-summary: 看板A/D 新增块 —— 热力图/班次对比/环比随 DEFECT_IMAGE 返回，defectType+shiftId 筛选被接受")
+    void lineSummaryNewBlocksForBoardAandD() throws Exception {
+        // ★ 2026-11-14 看板 A（时段×类型热力图、班次对比）与看板 D（等长窗口环比）。
+        //   冻结点：新数据块必须挂在 DEFECT_IMAGE 分支；defectType（现场类型文本）
+        //   与 shiftId（班次时间窗推导）两个筛选参数必须被端点接受且不改变数据源语义。
+        when(queryRepository.queryOpenMappingExceptions()).thenReturn(Collections.emptyList());
+        Map<String, Object> imgKpi = new LinkedHashMap<>();
+        imgKpi.put("imageCount", 6426);
+        imgKpi.put("defectCount", 6426);
+        imgKpi.put("highCount", 6426);
+        imgKpi.put("mediumCount", 0);
+        imgKpi.put("lowCount", 0);
+        imgKpi.put("cameraCount", 2);
+        imgKpi.put("workstationCount", 2);
+        when(queryRepository.queryDefectImageKpi(anyString(), anyString(), any())).thenReturn(imgKpi);
+        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageRanking(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageStationRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageCameraRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImagePivot(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageSeverityDistribution(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        // 热力图 / 班次对比 / 环比前窗计数 / 班次定义
+        Map<String, Object> heat = new LinkedHashMap<>();
+        heat.put("hourOfDay", 15);
+        heat.put("defectType", "接头");
+        heat.put("defectCount", 812);
+        when(queryRepository.queryDefectImageHourlyHeatmap(anyString(), anyString(), any()))
+                .thenReturn(Collections.singletonList(heat));
+        Map<String, Object> shiftRow = new LinkedHashMap<>();
+        shiftRow.put("defectType", "接头");
+        shiftRow.put("dayCount", 9000);
+        shiftRow.put("nightCount", 3188);
+        shiftRow.put("totalCount", 12188);
+        when(queryRepository.queryDefectImageShiftCompare(anyString(), anyString(), any(), anyString(), anyString()))
+                .thenReturn(Collections.singletonList(shiftRow));
+        when(queryRepository.countDefectImages(anyString(), anyString(), any())).thenReturn(5000L);
+        Map<String, Object> dayShift = new LinkedHashMap<>();
+        dayShift.put("shiftName", "白班");
+        dayShift.put("startTime", "08:00:00");
+        dayShift.put("endTime", "20:00:00");
+        dayShift.put("crossDay", 0);
+        Map<String, Object> nightShift = new LinkedHashMap<>();
+        nightShift.put("shiftName", "夜班");
+        nightShift.put("startTime", "20:00:00");
+        nightShift.put("endTime", "08:00:00");
+        nightShift.put("crossDay", 1);
+        when(queryRepository.listShiftsForCompare())
+                .thenReturn(java.util.Arrays.asList(dayShift, nightShift));
+        Map<String, Object> shiftById = new LinkedHashMap<>();
+        shiftById.put("shiftName", "白班");
+        shiftById.put("startTime", "08:00:00");
+        shiftById.put("endTime", "20:00:00");
+        shiftById.put("crossDay", 0);
+        when(queryRepository.findShiftById(anyLong())).thenReturn(shiftById);
+
+        MockMvc mvc = mvc();
+        mvc.perform(get("/api/v1/analytics/line-summary")
+                        .param("defectType", "接头")
+                        .param("shiftId", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.dataSource").value("DEFECT_IMAGE"))
+                // 看板 A：热力图与班次对比
+                .andExpect(jsonPath("$.data.hourlyHeatmap").isArray())
+                .andExpect(jsonPath("$.data.hourlyHeatmap[0].defectType").value("接头"))
+                .andExpect(jsonPath("$.data.hourlyHeatmap[0].hourOfDay").value(15))
+                .andExpect(jsonPath("$.data.shiftCompare").isArray())
+                .andExpect(jsonPath("$.data.shiftCompare[0].nightCount").value(3188))
+                .andExpect(jsonPath("$.data.shiftNames.day").value("白班"))
+                .andExpect(jsonPath("$.data.shiftNames.night").value("夜班"))
+                // 看板 D：等长前移窗口环比（6426 vs 5000 = +28.52%）
+                .andExpect(jsonPath("$.data.kpi.prevWindowCount").value(5000))
+                .andExpect(jsonPath("$.data.plantOverview.dayOverDayCurrent").value(6426))
+                .andExpect(jsonPath("$.data.plantOverview.dayOverDayPrevious").value(5000))
+                .andExpect(jsonPath("$.data.plantOverview.dayOverDayRate").value(28.52))
+                .andExpect(jsonPath("$.data.plantOverview.dayOverDayLabel").exists());
+    }
+
+    @Test
     @DisplayName("line-summary: 结束时间早于开始时间 → 抛 IllegalArgumentException 且不查库")
     void lineSummaryInvalidRange() throws Exception {
         MockMvc mvc = mvc();

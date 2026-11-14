@@ -4,6 +4,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -189,6 +190,64 @@ public class LineAnalyticsQueryRepository {
                         " JOIN defect_image_file f ON f.image_id = b.image_id " + joinCam + where + sevWhere +
                         " GROUP BY UPPER(IFNULL(b.severity,'UNKNOWN')) ORDER BY defectCount DESC",
                 params.toArray());
+    }
+
+    /**
+     * 时段×缺陷类型热力图（图片通道，2026-11-14 看板 A）。
+     *
+     * <p>JOIN defect_image_box（非 LEFT JOIN）：无缺陷框的图片本就没有类型，不参与热力图；
+     * 同时天然排除「图片已删、框未删」的孤儿框。
+     */
+    public List<Map<String, Object>> queryDefectImageHourlyHeatmap(String joinCam, String where, List<Object> params) {
+        return jdbcTemplate.queryForList(
+                "SELECT HOUR(f.capture_time) AS hourOfDay, b.defect_type AS defectType, COUNT(1) AS defectCount " +
+                        "FROM defect_image_file f " + joinCam +
+                        " JOIN defect_image_box b ON b.image_id = f.image_id " + where +
+                        " GROUP BY HOUR(f.capture_time), b.defect_type " +
+                        " ORDER BY defectCount DESC, hourOfDay ASC LIMIT 360",
+                params.toArray());
+    }
+
+    /**
+     * 班次×缺陷类型对比（图片通道，2026-11-14 看板 A）。
+     *
+     * <p>dayWindow/nightWindow 是 'HH:mm:ss' 字面量，由调用方从 dim_shift 读出后格式化拼接
+     * （值来自数据库而非用户输入，无注入面）。CASE 放在 SELECT 里，占位符顺序先于 WHERE，
+     * 所以不参数化、直接拼接，避免参数顺序错位。
+     */
+    public List<Map<String, Object>> queryDefectImageShiftCompare(String joinCam, String where, List<Object> params,
+                                                                  String dayWindow, String nightWindow) {
+        return jdbcTemplate.queryForList(
+                "SELECT b.defect_type AS defectType, " +
+                        "SUM(CASE WHEN TIME(f.capture_time) >= '" + dayWindow + "' AND TIME(f.capture_time) < '" + nightWindow + "' THEN 1 ELSE 0 END) AS dayCount, " +
+                        "SUM(CASE WHEN TIME(f.capture_time) >= '" + nightWindow + "' OR TIME(f.capture_time) < '" + dayWindow + "' THEN 1 ELSE 0 END) AS nightCount, " +
+                        "COUNT(1) AS totalCount " +
+                        "FROM defect_image_file f " + joinCam +
+                        " JOIN defect_image_box b ON b.image_id = f.image_id " + where +
+                        " GROUP BY b.defect_type ORDER BY totalCount DESC LIMIT 12",
+                params.toArray());
+    }
+
+    /** 窗口图片计数（环比口径：当前时间窗 vs 等长前移窗口） */
+    public long countDefectImages(String joinCam, String where, List<Object> params) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM defect_image_file f " + joinCam + where, Long.class, params.toArray());
+        return count == null ? 0L : count;
+    }
+
+    /** 按主键取班次定义（时间窗推导用） */
+    public Map<String, Object> findShiftById(Long shiftId) {
+        return one("SELECT shift_id AS shiftId, shift_name AS shiftName, start_time AS startTime, " +
+                "end_time AS endTime, cross_day AS crossDay FROM dim_shift WHERE shift_id = ?",
+                Collections.singletonList(shiftId));
+    }
+
+    /** 班次对比分桶定义：不跨天且最早开始的为「白班」，跨天的为「夜班」 */
+    public List<Map<String, Object>> listShiftsForCompare() {
+        return jdbcTemplate.queryForList(
+                "SELECT shift_id AS shiftId, shift_name AS shiftName, start_time AS startTime, " +
+                        "end_time AS endTime, cross_day AS crossDay FROM dim_shift WHERE is_enabled = 1 " +
+                        "ORDER BY cross_day ASC, start_time ASC LIMIT 2");
     }
 
     // ==================== 通用 ====================
