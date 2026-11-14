@@ -172,7 +172,7 @@ class DddBaselineContractTest {
     @DisplayName("camera-summaries: code=200 且 data 为数组（图像记录页数据源）")
     void cameraSummariesStructure() throws Exception {
         when(defectImageService.listCameraSummaries(any(), any(), any(), any(), any(),
-                any(), any(), any(), any(), any(), any()))
+                any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(Collections.emptyList());
 
         MockMvc mvc = MockMvcBuilders.standaloneSetup(defectImageController).build();
@@ -180,5 +180,28 @@ class DddBaselineContractTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").isArray());
+    }
+
+    @Test
+    @DisplayName("filter-options: 必须返回 defectTypes/resolutions 两个数组（筛选下拉的数据源）")
+    void filterOptionsStructure() throws Exception {
+        // 这张契约锁两件事：
+        // 1) 前端下拉依赖的字段名（defectTypes / resolutions）不能改；
+        // 2) 类型选项必须来自实际上报数据 —— 不能用 /v1/config/defect-types 那张
+        //    维度表（实测其 15 个标准类型与现场口径完全不相交，命中 0 张图）。
+        Map<String, Object> options = new java.util.LinkedHashMap<>();
+        options.put("defectTypes", Collections.singletonList(
+                Collections.singletonMap("defectType", "小污点")));
+        options.put("resolutions", Collections.singletonList(
+                Collections.singletonMap("resolution", "1000x800")));
+        when(defectImageService.listFilterOptions()).thenReturn(options);
+
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(defectImageController).build();
+        mvc.perform(get("/api/v1/defect-images/filter-options"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.defectTypes").isArray())
+                .andExpect(jsonPath("$.data.defectTypes[0].defectType").value("小污点"))
+                .andExpect(jsonPath("$.data.resolutions[0].resolution").value("1000x800"));
     }
 }

@@ -130,7 +130,7 @@ class DefectImageRepositoryCameraSummariesTest {
             summaries.add(s);
         }
         return repository.listRecentForSummaries(summaries, 1, null, null, null,
-                keyword, severity, defectType, start, end, (code, name) -> name);
+                keyword, severity, defectType, null, start, end, (code, name) -> name);
     }
 
     @Test

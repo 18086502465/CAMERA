@@ -57,10 +57,10 @@ class P3Batch56ContractTest {
         page.put("page", 1);
         page.put("size", 10);
         when(defectImageRepository.listHistoryPage(any(), any(), any(), any(), any(), any(), any(),
-                any(), any(), any(), any(), any(), any())).thenReturn(page);
+                any(), any(), any(), any(), any(), any(), any())).thenReturn(page);
 
         Map<String, Object> result = defectImageService.listHistoryPage(1, 10,
-                null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null);
 
         org.junit.jupiter.api.Assertions.assertNotNull(result.get("records"));
         org.junit.jupiter.api.Assertions.assertEquals(0L, result.get("total"));
@@ -77,12 +77,12 @@ class P3Batch56ContractTest {
         summary.put("imageCount", 100L);
         summary.put("defectCount", 5L);
         when(defectImageRepository.listCameraSummaries(any(), any(), any(), any(), any(), any(), any(),
-                any(), any(), any(), any(), any())).thenReturn(Collections.singletonList(summary));
+                any(), any(), any(), any(), any(), any())).thenReturn(Collections.singletonList(summary));
         when(defectImageRepository.listRecentForSummaries(any(), anyInt(), any(), any(), any(), any(),
-                any(), any(), any(), any(), any())).thenReturn(Collections.emptyMap());
+                any(), any(), any(), any(), any(), any())).thenReturn(Collections.emptyMap());
 
         java.util.List<Map<String, Object>> result =
-                defectImageService.listCameraSummaries(5, null, null, null, null, null, null, null, null, null, null);
+                defectImageService.listCameraSummaries(5, null, null, null, null, null, null, null, null, null, null, null);
 
         org.junit.jupiter.api.Assertions.assertEquals(1, result.size());
         org.junit.jupiter.api.Assertions.assertEquals("DA9200622", result.get(0).get("cameraId"));
@@ -94,10 +94,10 @@ class P3Batch56ContractTest {
     @DisplayName("defect-images/recent: 返回数组")
     void recentStructure() {
         when(defectImageRepository.listRecentImages(any(), any(), any(), any(), any(), any(), any(),
-                any(), any(), any(), any(), any())).thenReturn(Collections.emptyList());
+                any(), any(), any(), any(), any(), any())).thenReturn(Collections.emptyList());
 
         java.util.List<Map<String, Object>> result =
-                defectImageService.listRecent(1000, null, null, null, null, null, null, null, null, null, null);
+                defectImageService.listRecent(1000, null, null, null, null, null, null, null, null, null, null, null);
 
         org.junit.jupiter.api.Assertions.assertNotNull(result);
         org.junit.jupiter.api.Assertions.assertTrue(result.isEmpty());

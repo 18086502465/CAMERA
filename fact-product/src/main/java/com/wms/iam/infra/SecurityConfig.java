@@ -291,6 +291,8 @@ public class SecurityConfig {
                     "/api/v1/defect-images/recent",
                     "/api/v1/defect-images/history",
                     "/api/v1/defect-images/camera-summaries",
+                    // 2026-11-14：图像记录页下拉选项（缺陷类型/分辨率），只读聚合查询
+                    "/api/v1/defect-images/filter-options",
                     "/api/v1/camera/images/**"
                 ).authenticated()
 

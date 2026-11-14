@@ -246,11 +246,11 @@ public class DefectImageServiceImpl implements IDefectImageService {
     public List<Map<String, Object>> listRecent(Integer limit, String cameraId, String cameraName,
                                                 Integer factoryId, Integer lineId, Integer stationId,
                                                 String keyword, String severity, String defectType,
-                                                LocalDateTime startTime, LocalDateTime endTime) {
+                                                String resolution, LocalDateTime startTime, LocalDateTime endTime) {
         ensureSchema();
         // DDD P3 批次⑤：SQL 与行映射已下沉到 DefectImageRepository
         return defectImageRepository.listRecentImages(limit, cameraId, cameraName,
-                factoryId, lineId, stationId, keyword, severity, defectType,
+                factoryId, lineId, stationId, keyword, severity, defectType, resolution,
                 startTime, endTime, this::formatStationLabel);
     }
 
@@ -258,19 +258,19 @@ public class DefectImageServiceImpl implements IDefectImageService {
     public List<Map<String, Object>> listCameraSummaries(Integer latestLimit, String cameraId, String cameraName,
                                                          Integer factoryId, Integer lineId, Integer stationId,
                                                          String keyword, String severity, String defectType,
-                                                         LocalDateTime startTime, LocalDateTime endTime) {
+                                                         String resolution, LocalDateTime startTime, LocalDateTime endTime) {
         ensureSchema();
         // DDD P3 批次⑤：两段式聚合 SQL 与行映射已下沉到 DefectImageRepository
         List<Map<String, Object>> summaries = defectImageRepository.listCameraSummaries(latestLimit,
                 cameraId, cameraName, factoryId, lineId, stationId, keyword, severity, defectType,
-                startTime, endTime, this::formatStationLabel);
+                resolution, startTime, endTime, this::formatStationLabel);
         // ★ 2026-11-04 性能修复：原实现在 RowMapper 里对**每一行**汇总都调用
         //   listRecent(...) —— 10 个相机就是 10 次额外查询，且每次都带
         //   那个 3 秒的相关子查询 JOIN（N+1 + 慢 JOIN 叠加 = 6.4 秒）。
         //   现在改为：先拿到全部汇总，再**一次性**批量查最近图片。
         Map<String, List<Map<String, Object>>> recentByCamera =
                 listRecentForSummaries(summaries, latestLimit == null ? 5 : Math.max(1, Math.min(latestLimit, 20)),
-                        factoryId, lineId, stationId, keyword, severity, defectType, startTime, endTime);
+                        factoryId, lineId, stationId, keyword, severity, defectType, resolution, startTime, endTime);
         for (Map<String, Object> item : summaries) {
             String summaryCameraId = item.get("cameraId") == null ? null : String.valueOf(item.get("cameraId"));
             String summaryCameraName = item.get("cameraName") == null ? null : String.valueOf(item.get("cameraName"));
@@ -294,10 +294,10 @@ public class DefectImageServiceImpl implements IDefectImageService {
             List<Map<String, Object>> summaries, int safeLatestLimit,
             Integer factoryId, Integer lineId, Integer stationId,
             String keyword, String severity, String defectType,
-            LocalDateTime startTime, LocalDateTime endTime) {
+            String resolution, LocalDateTime startTime, LocalDateTime endTime) {
         // DDD P3 批次⑤：窗口函数分组 SQL 与行映射已下沉到 DefectImageRepository
         return defectImageRepository.listRecentForSummaries(summaries, safeLatestLimit,
-                factoryId, lineId, stationId, keyword, severity, defectType,
+                factoryId, lineId, stationId, keyword, severity, defectType, resolution,
                 startTime, endTime, this::formatStationLabel);
     }
 
@@ -311,11 +311,11 @@ public class DefectImageServiceImpl implements IDefectImageService {
     public Map<String, Object> listHistoryPage(Integer page, Integer size, String cameraId, String cameraName,
                                                Integer factoryId, Integer lineId, Integer stationId,
                                                String keyword, String severity, String defectType,
-                                               LocalDateTime startTime, LocalDateTime endTime) {
+                                               String resolution, LocalDateTime startTime, LocalDateTime endTime) {
         ensureSchema();
         // DDD P3 批次⑤：分页 SQL 与行映射已下沉到 DefectImageRepository
         return defectImageRepository.listHistoryPage(page, size, cameraId, cameraName,
-                factoryId, lineId, stationId, keyword, severity, defectType,
+                factoryId, lineId, stationId, keyword, severity, defectType, resolution,
                 startTime, endTime, this::formatStationLabel);
     }
 
@@ -1102,5 +1102,13 @@ public class DefectImageServiceImpl implements IDefectImageService {
             this.reason = reason;
             this.advice = advice;
         }
+    }
+
+    @Override
+    public Map<String, Object> listFilterOptions() {
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("defectTypes", defectImageRepository.listDefectTypeOptions());
+        options.put("resolutions", defectImageRepository.listResolutionOptions());
+        return options;
     }
 }

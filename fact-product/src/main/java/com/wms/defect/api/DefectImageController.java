@@ -185,10 +185,11 @@ public class DefectImageController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String severity,
             @RequestParam(required = false) String defectType,
+            @RequestParam(required = false) String resolution,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
         return ResultVO.success(defectImageService.listRecent(limit, cameraId, cameraName, factoryId, lineId, stationId,
-                keyword, severity, defectType, startTime, endTime));
+                keyword, severity, defectType, resolution, startTime, endTime));
     }
 
     /**
@@ -206,10 +207,11 @@ public class DefectImageController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String severity,
             @RequestParam(required = false) String defectType,
+            @RequestParam(required = false) String resolution,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
         return ResultVO.success(defectImageService.listCameraSummaries(latestLimit, cameraId, cameraName, factoryId, lineId, stationId,
-                keyword, severity, defectType, startTime, endTime));
+                keyword, severity, defectType, resolution, startTime, endTime));
     }
 
     /**
@@ -228,10 +230,11 @@ public class DefectImageController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String severity,
             @RequestParam(required = false) String defectType,
+            @RequestParam(required = false) String resolution,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
         return ResultVO.success(defectImageService.listHistoryPage(page, size, cameraId, cameraName, factoryId, lineId, stationId,
-                keyword, severity, defectType, startTime, endTime));
+                keyword, severity, defectType, resolution, startTime, endTime));
     }
 
     /**
@@ -244,6 +247,19 @@ public class DefectImageController {
     @PostMapping("/archive/run")
     public ResultVO<Map<String, Object>> runArchive() {
         return ResultVO.success(defectImageArchiveTask.runOnce());
+    }
+
+    /**
+     * GET /api/v1/defect-images/filter-options
+     * 图像记录页筛选下拉选项（缺陷类型、分辨率），均取自实际上报数据。
+     *
+     * <p>★ 缺陷类型不能用 {@code /api/v1/config/defect-types}：那张维度表里是
+     * 「内装胶滴-小」这类标准类型，与设备实际上报的「接头/小污点/胶滴」完全不相交，
+     * 拿它做下拉永远是 0 条结果（2026-11-14 实测，15 个配置类型命中 0 张图）。
+     */
+    @GetMapping("/filter-options")
+    public ResultVO<Map<String, Object>> filterOptions() {
+        return ResultVO.success(defectImageService.listFilterOptions());
     }
 
     /**

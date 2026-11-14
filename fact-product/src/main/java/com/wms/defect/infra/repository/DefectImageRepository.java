@@ -138,7 +138,7 @@ public class DefectImageRepository {
                                     String cameraId, String cameraName,
                                     Integer factoryId, Integer lineId, Integer stationId,
                                     String keyword, String severity, String defectType,
-                                    LocalDateTime startTime, LocalDateTime endTime,
+                                    String resolution, LocalDateTime startTime, LocalDateTime endTime,
                                     String boxSource) {
         if (hasText(cameraId)) {
             sql.append("AND f.camera_id = ? ");
@@ -155,11 +155,8 @@ public class DefectImageRepository {
                     .append(" bs WHERE bs.image_id = f.image_id AND UPPER(bs.severity) = ?) ");
             params.add(severity.trim().toUpperCase(Locale.ROOT));
         }
-        if (hasText(defectType)) {
-            sql.append("AND EXISTS (SELECT 1 FROM ").append(boxSource)
-                    .append(" bt WHERE bt.image_id = f.image_id AND bt.defect_type LIKE ?) ");
-            params.add("%" + defectType.trim() + "%");
-        }
+        appendDefectTypeFilter(sql, params, boxSource, defectType);
+        appendResolutionFilter(sql, params, resolution);
         if (startTime != null) {
             sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) >= ? ");
             params.add(Timestamp.valueOf(startTime));
@@ -167,6 +164,61 @@ public class DefectImageRepository {
         if (endTime != null) {
             sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) <= ? ");
             params.add(Timestamp.valueOf(endTime));
+        }
+    }
+
+    /**
+     * 追加缺陷类型筛选 —— <b>精确匹配</b>，不再使用 {@code LIKE '%值%'}。
+     *
+     * <p><b>2026-11-14 修正原因</b>：原实现是模糊匹配，而现场 12 个类型名之间存在
+     * 包含关系（「污点」是「小污点」「接头大污点」的子串，「接头」是「接头大块脏污」
+     * 「接头大污点」的子串）。前端一旦改成下拉选具体值，模糊匹配就会返回错误的集合：
+     * <pre>
+     *   污点    精确 179 张 → 模糊 2323 张（多 2144，13 倍）
+     *   接头   精确 2385 张 → 模糊 3078 张（多 693）
+     * </pre>
+     * 下拉 + 错误结果比没有下拉更糟，因此这里必须精确。
+     *
+     * <p>模糊检索能力没有丢失：{@code keyword} 参数里的缺陷类型分支仍是
+     * {@code LIKE}（见 {@link #appendKeywordFilter}），需要"搜含某个字的类型"时用 keyword。
+     */
+    private void appendDefectTypeFilter(StringBuilder sql, List<Object> params,
+                                        String boxSource, String defectType) {
+        if (!hasText(defectType)) {
+            return;
+        }
+        sql.append("AND EXISTS (SELECT 1 FROM ").append(boxSource)
+                .append(" bt WHERE bt.image_id = f.image_id AND bt.defect_type = ?) ");
+        params.add(defectType.trim());
+    }
+
+    /**
+     * 追加分辨率筛选，入参形如 {@code 1000x800}。
+     *
+     * <p>用单个字符串而不是 {@code width}/{@code height} 两个参数：现场分辨率只有 3 种
+     * 取值（1000x800 / 2000x2500 / 2048x1980），前端下拉天然是组合值，多传一个参数
+     * 只会让 Controller→Service→Repository 三层各多一处改动，没有收益。
+     *
+     * <p>非法值（缺 x、非数字、空）直接忽略而不报错 —— 宁可放宽条件，
+     * 也不要因为一个拼错的查询参数让整页 500。
+     */
+    private void appendResolutionFilter(StringBuilder sql, List<Object> params, String resolution) {
+        if (!hasText(resolution)) {
+            return;
+        }
+        String value = resolution.trim().toLowerCase(Locale.ROOT);
+        int sep = value.indexOf('x');
+        if (sep <= 0 || sep == value.length() - 1) {
+            return;
+        }
+        try {
+            int width = Integer.parseInt(value.substring(0, sep).trim());
+            int height = Integer.parseInt(value.substring(sep + 1).trim());
+            sql.append("AND f.width = ? AND f.height = ? ");
+            params.add(width);
+            params.add(height);
+        } catch (NumberFormatException e) {
+            log.warn("忽略非法的分辨率筛选参数: {}", resolution);
         }
     }
 
@@ -242,7 +294,7 @@ public class DefectImageRepository {
     public List<Map<String, Object>> listRecentImages(Integer limit, String cameraId, String cameraName,
                                                       Integer factoryId, Integer lineId, Integer stationId,
                                                       String keyword, String severity, String defectType,
-                                                      LocalDateTime startTime, LocalDateTime endTime,
+                                                      String resolution, LocalDateTime startTime, LocalDateTime endTime,
                                                       java.util.function.BiFunction<String, String, String> stationLabel) {
         int safeLimit = limit == null ? 1000 : Math.max(1, Math.min(limit, 5000));
         List<Object> params = new ArrayList<>();
@@ -289,10 +341,8 @@ public class DefectImageRepository {
             sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bs WHERE bs.image_id = f.image_id AND UPPER(bs.severity) = ?) ");
             params.add(severity.trim().toUpperCase());
         }
-        if (hasText(defectType)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bt WHERE bt.image_id = f.image_id AND bt.defect_type LIKE ?) ");
-            params.add("%" + defectType.trim() + "%");
-        }
+        appendDefectTypeFilter(sql, params, "defect_image_box", defectType);
+        appendResolutionFilter(sql, params, resolution);
         if (startTime != null) {
             sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) >= ? ");
             params.add(Timestamp.valueOf(startTime));
@@ -370,7 +420,7 @@ public class DefectImageRepository {
     public List<Map<String, Object>> listCameraSummaries(Integer latestLimit, String cameraId, String cameraName,
                                                          Integer factoryId, Integer lineId, Integer stationId,
                                                          String keyword, String severity, String defectType,
-                                                         LocalDateTime startTime, LocalDateTime endTime,
+                                                         String resolution, LocalDateTime startTime, LocalDateTime endTime,
                                                          java.util.function.BiFunction<String, String, String> stationLabel) {
         int safeLatestLimit = latestLimit == null ? 5 : Math.max(1, Math.min(latestLimit, 20));
         List<Object> params = new ArrayList<>();
@@ -405,10 +455,8 @@ public class DefectImageRepository {
             sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bs WHERE bs.image_id = f.image_id AND UPPER(bs.severity) = ?) ");
             params.add(severity.trim().toUpperCase(Locale.ROOT));
         }
-        if (hasText(defectType)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bt WHERE bt.image_id = f.image_id AND bt.defect_type LIKE ?) ");
-            params.add("%" + defectType.trim() + "%");
-        }
+        appendDefectTypeFilter(sql, params, "defect_image_box", defectType);
+        appendResolutionFilter(sql, params, resolution);
         if (startTime != null) {
             sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) >= ? ");
             params.add(Timestamp.valueOf(startTime));
@@ -491,7 +539,7 @@ public class DefectImageRepository {
             List<Map<String, Object>> summaries, int safeLatestLimit,
             Integer factoryId, Integer lineId, Integer stationId,
             String keyword, String severity, String defectType,
-            LocalDateTime startTime, LocalDateTime endTime,
+            String resolution, LocalDateTime startTime, LocalDateTime endTime,
             java.util.function.BiFunction<String, String, String> stationLabel) {
         Map<String, List<Map<String, Object>>> result = new LinkedHashMap<>();
         if (summaries == null || summaries.isEmpty() || safeLatestLimit <= 0) {
@@ -562,10 +610,8 @@ public class DefectImageRepository {
             sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bs WHERE bs.image_id = f.image_id AND UPPER(bs.severity) = ?) ");
             params.add(severity.trim().toUpperCase(Locale.ROOT));
         }
-        if (hasText(defectType)) {
-            sql.append("AND EXISTS (SELECT 1 FROM defect_image_box bt WHERE bt.image_id = f.image_id AND bt.defect_type LIKE ?) ");
-            params.add("%" + defectType.trim() + "%");
-        }
+        appendDefectTypeFilter(sql, params, "defect_image_box", defectType);
+        appendResolutionFilter(sql, params, resolution);
         if (startTime != null) {
             sql.append("AND COALESCE(f.capture_time, f.upload_time, f.create_time) >= ? ");
             params.add(Timestamp.valueOf(startTime));
@@ -689,7 +735,7 @@ public class DefectImageRepository {
     public Map<String, Object> listHistoryPage(Integer page, Integer size, String cameraId, String cameraName,
                                                Integer factoryId, Integer lineId, Integer stationId,
                                                String keyword, String severity, String defectType,
-                                               LocalDateTime startTime, LocalDateTime endTime,
+                                               String resolution, LocalDateTime startTime, LocalDateTime endTime,
                                                java.util.function.BiFunction<String, String, String> stationLabel) {
         int safePage = page == null ? 1 : Math.max(1, page);
         int safeSize = size == null ? 10 : Math.max(1, Math.min(size, 100));
@@ -709,7 +755,7 @@ public class DefectImageRepository {
                 .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
                 .append("WHERE 1=1 ");
         appendImageFilters(countSql, countParams, cameraId, cameraName, factoryId, lineId, stationId,
-                keyword, severity, defectType, startTime, endTime, boxSource);
+                keyword, severity, defectType, resolution, startTime, endTime, boxSource);
         Long total = jdbcTemplate.queryForObject(countSql.toString(), countParams.toArray(), Long.class);
 
         List<Object> params = new ArrayList<>(srcParams);
@@ -721,7 +767,7 @@ public class DefectImageRepository {
                 .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
                 .append("WHERE 1=1 ");
         appendImageFilters(sql, params, cameraId, cameraName, factoryId, lineId, stationId,
-                keyword, severity, defectType, startTime, endTime, boxSource);
+                keyword, severity, defectType, resolution, startTime, endTime, boxSource);
         sql.append("ORDER BY f.create_time DESC, f.upload_time DESC, f.image_id DESC LIMIT ? OFFSET ?");
         params.add(safeSize);
         params.add(offset);
@@ -1104,5 +1150,58 @@ public class DefectImageRepository {
 
     private boolean hasText(String s) {
         return s != null && !s.trim().isEmpty();
+    }
+
+    /**
+     * 缺陷类型下拉选项 —— 取自**实际上报数据**，不是 {@code dim_defect_type} 配置表。
+     *
+     * <p><b>为什么不能用配置表</b>（2026-11-14 实测）：{@code dim_defect_type} 里配的是
+     * 「内装胶滴-小 / 前腰腹异物-大 / 边缘破损」这类 15 个标准类型，而设备实际写进
+     * {@code defect_image_box.defect_type} 的是「接头 / 小污点 / 胶滴」这套 12 个现场叫法，
+     * 两者**完全不相交，配置表的 15 个类型命中 0 张图**。用配置表做下拉，选了永远是 0 条。
+     *
+     * <p>只扫主表（31 天热数据）。类型属于稳定枚举，历史月表里的类型必然也在主表出现过；
+     * 若某类型恰好只在归档月出现，下拉会缺这一项，此时用 keyword 模糊搜仍可命中。
+     *
+     * @return 每项含 {@code defectType}（类型名）与 {@code imageCount}（图片张数），按张数倒序
+     */
+    public List<Map<String, Object>> listDefectTypeOptions() {
+        // ★ 必须 INNER JOIN defect_image_file：只统计「图片还在」的框。
+        //   实测存在孤儿框（图片已按保留策略删除、缺陷框行未清，2026-11-14 现场 124 条），
+        //   若只按 box 表 COUNT(DISTINCT image_id)，下拉会显示「接头（2495）」，
+        //   而实际筛选只出 2469 条 —— 下拉数字和结果对不上，用户会以为筛选坏了。
+        String sql = "SELECT b.defect_type AS defectType, COUNT(DISTINCT b.image_id) AS imageCount "
+                + "FROM defect_image_box b "
+                + "JOIN defect_image_file f ON f.image_id = b.image_id "
+                + "WHERE b.defect_type IS NOT NULL AND b.defect_type <> '' "
+                + "GROUP BY b.defect_type ORDER BY imageCount DESC, b.defect_type ASC";
+        return jdbcTemplate.query(sql, (rs, rowNum) -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("defectType", rs.getString("defectType"));
+            item.put("imageCount", rs.getLong("imageCount"));
+            return item;
+        });
+    }
+
+    /**
+     * 分辨率下拉选项 —— 同样取自实际数据（{@code width}x{@code height}）。
+     *
+     * <p>现场存在 3 种取值且**发生过变更**（2026-11-04 23:22 两台相机从
+     * 2000x2500 / 2048x1980 统一降到 1000x800），因此这里按图片张数倒序返回，
+     * 让运维一眼看出当前主力分辨率是哪一档。只扫主表（31 天热数据）。
+     *
+     * @return 每项含 {@code resolution}（形如 {@code 1000x800}）与 {@code imageCount}
+     */
+    public List<Map<String, Object>> listResolutionOptions() {
+        String sql = "SELECT CONCAT(width, 'x', height) AS resolution, COUNT(1) AS imageCount "
+                + "FROM defect_image_file "
+                + "WHERE width IS NOT NULL AND height IS NOT NULL AND width > 0 AND height > 0 "
+                + "GROUP BY width, height ORDER BY imageCount DESC, width ASC, height ASC";
+        return jdbcTemplate.query(sql, (rs, rowNum) -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("resolution", rs.getString("resolution"));
+            item.put("imageCount", rs.getLong("imageCount"));
+            return item;
+        });
     }
 }
