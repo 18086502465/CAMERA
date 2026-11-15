@@ -322,6 +322,23 @@ public class AnalyticsAggregationRepository {
         return deleted;
     }
 
+    /**
+     * 源表（{@code agg_quality_30m}）在区间内的行数 —— 日聚合是否值得跑的判据。
+     *
+     * <p>★ 2026-11-15 P0-2：现场设备走 {@code defect-images/upload} 通道，
+     * <b>只写 defect_image_*，不写 agg_*</b>，所以两张 30 分钟聚合表常年为 0 行。
+     * 旧实现照样 DELETE + INSERT 一遍，产出一条「SUCCESS + 0 行」的假成功任务；
+     * 近 3 天刷新任务还每 5 分钟空转一次重建（288 次/天，纯写放大）。
+     * 这里给调用方一个廉价判据（有 time_bucket 索引，空表 COUNT 走元数据级扫描）。
+     */
+    public long countQualitySourceBetween(java.time.LocalDateTime startInclusive, java.time.LocalDateTime endExclusive) {
+        Long rows = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM agg_quality_30m WHERE time_bucket >= ? AND time_bucket < ?",
+                Long.class,
+                java.sql.Timestamp.valueOf(startInclusive), java.sql.Timestamp.valueOf(endExclusive));
+        return rows == null ? 0L : rows;
+    }
+
     public int rebuildQualityDaily(String deleteWhere, List<Object> deleteParams,
                                    String sourceWhere, List<Object> insertParams) {
         jdbcTemplate.update("DELETE FROM agg_quality_day " + deleteWhere, deleteParams.toArray());

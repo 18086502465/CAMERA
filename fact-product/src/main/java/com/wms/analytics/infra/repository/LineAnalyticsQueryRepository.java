@@ -119,17 +119,24 @@ public class LineAnalyticsQueryRepository {
                 params);
     }
 
-    /** 兜底趋势（按小时聚合缺陷图与缺陷数） */
-    public List<Map<String, Object>> queryDefectImageTrend(String joinCam, String where, List<Object> params) {
+    /**
+     * 兜底趋势（按 {@code bucketExpr} 分桶：小时或整天）。
+     *
+     * <p>★ 2026-11-15 自适应粒度：原先固定按小时分桶，查询 30 天就会返回 720 个点 ——
+     * 折线糊成一团、ECharts 渲染与 SQL 分组都白烧。改由调用方按时间跨度选择分桶表达式
+     * （≤3 天按小时，>3 天按天）。bucketExpr 来自常量白名单，不含用户输入。
+     */
+    public List<Map<String, Object>> queryDefectImageTrend(String joinCam, String where, List<Object> params,
+                                                           String bucketExpr) {
         return jdbcTemplate.queryForList(
-                "SELECT DATE_FORMAT(f.capture_time,'%Y-%m-%d %H:00:00') AS timeBucket, " +
+                "SELECT " + bucketExpr + " AS timeBucket, " +
                         "COUNT(1) AS totalCount, 0 AS okCount, COUNT(1) AS ngCount, " +
                         // ★ 2026-11-05：图片通道只上报缺陷图，**没有良品样本** → 良率不可计算。
                         //   原先写死 `0 AS yieldRate`，前端会照着画一条 0% 的假良率曲线，
                         //   误导现场以为"良率为 0"。改为 NULL，由前端按「不可计算」处理。
                         "COALESCE(SUM(f.defect_count),0) AS defectCount, NULL AS yieldRate " +
                         "FROM defect_image_file f " + joinCam + where +
-                        " GROUP BY DATE_FORMAT(f.capture_time,'%Y-%m-%d %H:00:00') ORDER BY timeBucket",
+                        " GROUP BY timeBucket ORDER BY timeBucket",
                 params.toArray());
     }
 
@@ -205,6 +212,51 @@ public class LineAnalyticsQueryRepository {
                         " JOIN defect_image_box b ON b.image_id = f.image_id " + where +
                         " GROUP BY HOUR(f.capture_time), b.defect_type " +
                         " ORDER BY defectCount DESC, hourOfDay ASC LIMIT 360",
+                params.toArray());
+    }
+
+    /**
+     * ★ 2026-11-14 维度生效：按指定维度表达式拆分的趋势行（带 seriesKey，前端画多序列）。
+     * dimExpr 由 Controller 的 resolveDimSplit 提供（含必要的 LEFT JOIN 已拼进 joinCam）。
+     */
+    public List<Map<String, Object>> queryDefectImageTrendGrouped(String joinCam, String where,
+                                                                  List<Object> params, String dimExpr,
+                                                                  String bucketExpr) {
+        return jdbcTemplate.queryForList(
+                "SELECT " + bucketExpr + " AS timeBucket, " +
+                        dimExpr + " AS seriesKey, " +
+                        "COUNT(1) AS totalCount, 0 AS okCount, COUNT(1) AS ngCount, " +
+                        "COALESCE(SUM(f.defect_count),0) AS defectCount, NULL AS yieldRate " +
+                        "FROM defect_image_file f " + joinCam + where +
+                        " GROUP BY timeBucket, seriesKey ORDER BY timeBucket, seriesKey",
+                params.toArray());
+    }
+
+    /**
+     * 日×缺陷数日历（图片通道，2026-11-15 P2 日历图）。
+     *
+     * <p>按自然日汇总缺陷图片数与缺陷框数，供前端日历热力图渲染
+     * （ECharts calendar + heatmap）。跨月/跨年由前端按 year 切片。
+     */
+    public List<Map<String, Object>> queryDefectImageDailyCalendar(String joinCam, String where, List<Object> params) {
+        return jdbcTemplate.queryForList(
+                "SELECT DATE_FORMAT(f.capture_time,'%Y-%m-%d') AS dayKey, " +
+                        "COUNT(1) AS imageCount, COALESCE(SUM(f.defect_count),0) AS defectCount, " +
+                        "COUNT(DISTINCT c.camera_id) AS cameraCount " +
+                        "FROM defect_image_file f " + joinCam + where +
+                        " GROUP BY dayKey ORDER BY dayKey",
+                params.toArray());
+    }
+
+    /** ★ 2026-11-14 维度生效：按指定维度表达式分组的缺陷排行（代替固定 defect_type 分组） */
+    public List<Map<String, Object>> queryDefectImageRankingGrouped(String joinCam, String where, String sevWhere,
+                                                                    List<Object> params, String dimExpr) {
+        return jdbcTemplate.queryForList(
+                "SELECT " + dimExpr + " AS defectName, " + dimExpr + " AS defectCode, 0 AS defectTypeId, " +
+                        "NULL AS severity, COUNT(1) AS defectCount " +
+                        "FROM defect_image_box b " +
+                        " JOIN defect_image_file f ON f.image_id = b.image_id " + joinCam + where + sevWhere +
+                        " GROUP BY defectName ORDER BY defectCount DESC LIMIT 20",
                 params.toArray());
     }
 

@@ -143,7 +143,15 @@ class LicenseServiceTest {
         writeLicense(LocalDate.now().plusDays(365), -1, "*");
         File f = new File(licensePath);
         String text = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim();
-        Files.write(f.toPath(), (text.substring(0, text.length() - 1) + "A")
+        // ★ 2026-11-15 修一个真实的假绿/假红源：原实现把**最后一个字符**替换成 'A'，
+        //   ① 末位本来就是 'A' 时文件根本没变 → 签名仍然合法 → 断言 VALID != INVALID 假红；
+        //   ② 即便变了，base64 末位只有 4 位有效信息（32 字节摘要 = 43 字符），
+        //      同高 4 位、只差低 2 个填充位的字符会解码出**同一份字节**，签名照样合法。
+        //   改为改中间字符：一定落在有效位上，且保证字符真的发生变化。
+        int pos = text.length() / 2;
+        char current = text.charAt(pos);
+        char replacement = current == 'Z' ? 'Y' : 'Z';
+        Files.write(f.toPath(), (text.substring(0, pos) + replacement + text.substring(pos + 1))
                 .getBytes(StandardCharsets.UTF_8));
         service.reload();
         LicenseState s = service.getState();

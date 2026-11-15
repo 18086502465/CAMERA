@@ -86,6 +86,13 @@ public class LineAnalyticsController {
     private static final long SUMMARY_CACHE_TTL_MS = 60 * 1000L;
     private static final int SUMMARY_CACHE_MAX_ENTRIES = 64;
     private static final String XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    /**
+     * 趋势分桶表达式（常量白名单，绝不拼接用户输入）。
+     * 跨度 ≤ 阈值按小时（现场看小时分布），超过则按天（30 天 = 720 点 → 31 点）。
+     */
+    private static final String TREND_HOUR_BUCKET = "DATE_FORMAT(f.capture_time,'%Y-%m-%d %H:00:00')";
+    private static final String TREND_DAY_BUCKET = "DATE_FORMAT(f.capture_time,'%Y-%m-%d')";
+    private static final int TREND_DAILY_BUCKET_THRESHOLD_DAYS = 3;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ExecutorService aggregationExecutor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "analytics-daily-aggregation");
@@ -117,6 +124,8 @@ public class LineAnalyticsController {
     private final AtomicLong lastScheduledSubmitAt = new AtomicLong(0L);
     /** 上次近期窗口刷新完成时间（供 /aggregation/schedule 暴露给运维） */
     private volatile long lastRecentRefreshAt = 0L;
+    /** 「源表为空 → 跳过日聚合」只在本次进程内提示一次，避免 5 分钟一条刷屏 */
+    private final AtomicBoolean emptySourceNoticeLogged = new AtomicBoolean(false);
 
     @Autowired
     private PlatformTransactionManager transactionManager;
@@ -157,6 +166,8 @@ public class LineAnalyticsController {
         widgetTypes.add(item("PARETO", "帕累托图", "缺陷类型累计占比，定位主要矛盾"));
         widgetTypes.add(item("SEVERITY", "严重度构成", "高/中/低缺陷占比，判断质量风险等级"));
         widgetTypes.add(item("HEATMAP", "时段热力图", "小时×缺陷类型，定位高发时段"));
+        widgetTypes.add(item("PIE", "占比饼图", "缺陷类型/严重度占比构成（环形图）"));
+        widgetTypes.add(item("CALENDAR", "日历热力图", "按自然日看缺陷量的节律与空档"));
         data.put("widgetTypes", widgetTypes);
 
         List<Map<String, Object>> dimensions = new ArrayList<>();
@@ -186,11 +197,12 @@ public class LineAnalyticsController {
                                                      @RequestParam(required = false) Long shiftId,
                                                      @RequestParam(required = false) Long defectTypeId,
                                                      @RequestParam(required = false) String severity,
-                                                     @RequestParam(required = false) String defectType) {
+                                                     @RequestParam(required = false) String defectType,
+                                                     @RequestParam(required = false) String dim) {
         LocalDateTime start = parseTime(startTime, LocalDateTime.of(LocalDate.now(), LocalTime.MIN));
         LocalDateTime end = parseTime(endTime, LocalDateTime.of(LocalDate.now(), LocalTime.MAX.withNano(0)));
         return ResultVO.success(buildSummaryCached(start, end, factoryId, lineId, workstationId, cameraId,
-                productId, shiftId, defectTypeId, severity, defectType));
+                productId, shiftId, defectTypeId, severity, defectType, dim));
     }
 
     /**
@@ -202,15 +214,15 @@ public class LineAnalyticsController {
     private Map<String, Object> buildSummaryCached(LocalDateTime start, LocalDateTime end,
                                                   Long factoryId, Long lineId, Long workstationId, Long cameraId,
                                                   Long productId, Long shiftId, Long defectTypeId, String severity,
-                                                  String defectType) {
+                                                  String defectType, String dim) {
         String cacheKey = summaryCacheKey(start, end, factoryId, lineId, workstationId, cameraId,
-                productId, shiftId, defectTypeId, severity, defectType);
+                productId, shiftId, defectTypeId, severity, defectType, dim);
         Map<String, Object> cached = summaryCache.get(cacheKey);
         if (cached != null) {
             return cached;
         }
         Map<String, Object> built = buildSummary(start, end, factoryId, lineId, workstationId, cameraId,
-                productId, shiftId, defectTypeId, severity, defectType);
+                productId, shiftId, defectTypeId, severity, defectType, dim);
         summaryCache.put(cacheKey, built);
         return built;
     }
@@ -218,21 +230,22 @@ public class LineAnalyticsController {
     private String summaryCacheKey(LocalDateTime start, LocalDateTime end,
                                    Long factoryId, Long lineId, Long workstationId, Long cameraId,
                                    Long productId, Long shiftId, Long defectTypeId, String severity,
-                                   String defectType) {
+                                   String defectType, String dim) {
         StringBuilder key = new StringBuilder(96);
         key.append(start.format(DT)).append('~').append(end.format(DT));
         key.append('|').append(factoryId).append('|').append(lineId).append('|').append(workstationId)
                 .append('|').append(cameraId).append('|').append(productId).append('|').append(shiftId)
                 .append('|').append(defectTypeId)
                 .append('|').append(severity == null ? "" : severity.trim().toUpperCase(Locale.ROOT))
-                .append('|').append(defectType == null ? "" : defectType.trim());
+                .append('|').append(defectType == null ? "" : defectType.trim())
+                .append('|').append(dim == null ? "" : dim.trim());
         return key.toString();
     }
 
     private Map<String, Object> buildSummary(LocalDateTime start, LocalDateTime end,
                                              Long factoryId, Long lineId, Long workstationId, Long cameraId,
                                              Long productId, Long shiftId, Long defectTypeId, String severity,
-                                             String defectType) {
+                                             String defectType, String dim) {
         if (end.isBefore(start)) {
             throw new IllegalArgumentException("结束时间不能早于开始时间");
         }
@@ -268,7 +281,7 @@ public class LineAnalyticsController {
         //   → **子集比全集还大**，用户完全无法理解。
         //   改为：**图片事实表优先**（它是现场真正在用的通道），聚合表仅在图片表无数据时兜底。
         Map<String, Object> imageData = buildDefectImageSummary(
-                start, end, factoryId, lineId, workstationId, cameraId, severity, defectType, shiftId);
+                start, end, factoryId, lineId, workstationId, cameraId, productId, severity, defectType, shiftId, dim);
         if (longVal(map(imageData.get("kpi")).get("totalCount")) > 0) {
             Map<String, Object> data = new LinkedHashMap<>(imageData);
             data.put("aggregationLevel", daily ? "DAY" : "30M");
@@ -331,6 +344,12 @@ public class LineAnalyticsController {
         //   （可能查的是图片保留期之外的历史区间）。此时用质量聚合表兜底。
         data.put("dataSource", "AGGREGATION");
         data.put("dataSourceMessage", "当前范围缺陷图片事实表无数据，已切换到质量聚合表统计。");
+        // P0-1 结构一致性：两条数据源分支必须返回同一套键，否则前端判断会静默失效
+        //   （历史教训：aggregationStale 只挂在聚合分支，前端读到 undefined）。
+        //   聚合表本身带产品维（product_id），所以这里没有任何被丢弃的筛选。
+        data.put("ignoredFilters", new ArrayList<String>());
+        data.put("trendGranularity", daily ? "DAY" : "HOUR");
+        data.put("dailyCalendar", new ArrayList<Map<String, Object>>());
         // NEW-06：与 DEFECT_IMAGE 分支保持同一套键（前端只需判断 dataFreshness）
         data.put("dataFreshness", "MATERIALIZED");
 
@@ -494,8 +513,8 @@ public class LineAnalyticsController {
      */
     private Map<String, Object> buildDefectImageSummary(LocalDateTime start, LocalDateTime end,
                                                         Long factoryId, Long lineId, Long workstationId,
-                                                        Long cameraId, String severity,
-                                                        String defectType, Long shiftId) {
+                                                        Long cameraId, Long productId, String severity,
+                                                        String defectType, Long shiftId, String dim) {
         Map<String, Object> data = new LinkedHashMap<>();
 
         // 图片表的 camera_id 存的是相机编号（camera_code），需经 dim_camera 关联出维度
@@ -506,6 +525,26 @@ public class LineAnalyticsController {
         String sevWhere = "";
         if (severity != null && !severity.trim().isEmpty()) {
             sevWhere = " AND b.severity = ? ";
+        }
+
+        // ================================================================
+        // ★ 2026-11-15 P0-1（缺口 #2 收尾）：被丢弃的筛选必须**显式上报**
+        // ================================================================
+        // defectType / shiftId 已经真正落进 SQL（EXISTS + 时间窗）。
+        // 但 productId 在图片通道**没有任何数据源**：defect_image_file/_box/_batch
+        // 三张表都没有产品列，批次 metadata_json 里也不保证有。
+        // camera_status.product_name 只是「心跳当前快照」，把它贴到历史行上是时间错配
+        // （见 DefectImageRepository 的同类注释），所以不能拿来兜底。
+        // 旧行为是静默忽略 —— 用户选了「产品 A」却看到全部数据，只会怀疑系统坏了。
+        // 现在改为：如实回传 ignoredFilters，前端在筛选区给出「该筛选不生效」提示。
+        List<String> ignoredFilters = new ArrayList<>();
+        if (productId != null) {
+            ignoredFilters.add("productId");
+        }
+        data.put("ignoredFilters", ignoredFilters);
+        if (!ignoredFilters.isEmpty()) {
+            data.put("ignoredFilterMessage",
+                    "产品筛选对缺陷图片通道不生效：图片事实表不记录产品（camera_status.product_name 只是当前心跳快照，无历史）。");
         }
 
         Map<String, Object> kpi = new LinkedHashMap<>();
@@ -528,14 +567,44 @@ public class LineAnalyticsController {
         appendWindowCompare(kpi, start, end, joinCam, factoryId, lineId, workstationId, cameraId, defectType, shiftId);
         data.put("kpi", kpi);
 
-        // 趋势：按小时聚合缺陷图与缺陷数
+        // 趋势：按小时/整天聚合缺陷图与缺陷数。
+        // ★ 2026-11-14 维度生效：dim 指定拆分维度时，趋势行带 seriesKey（多序列），
+        //   缺陷排行按该维度分组（代替固定 defect_type）。其余数据块不受 dim 影响。
+        // ★ 2026-11-15 P0-2：分桶粒度随跨度自适应 —— 30 天仍按小时分桶会返回 720 个点，
+        //   折线糊成一片且分组本身是纯开销；跨度超过 3 天改按天分桶。
+        String bucketExpr = TREND_HOUR_BUCKET;
+        String granularity = "HOUR";
+        if (java.time.Duration.between(start, end).toDays() >= TREND_DAILY_BUCKET_THRESHOLD_DAYS) {
+            bucketExpr = TREND_DAY_BUCKET;
+            granularity = "DAY";
+        }
+        data.put("trendGranularity", granularity);
+        DimSplit split = resolveDimSplit(dim);
         List<Object> trendParams = new ArrayList<>(params);
-        data.put("trend", queryRepository.queryDefectImageTrend(joinCam, where.toString(), trendParams));
+        if (split == null) {
+            data.put("trend", queryRepository.queryDefectImageTrend(joinCam, where.toString(), trendParams, bucketExpr));
+        } else {
+            String trendJoin = joinCam + split.join
+                    + (split.needBoxJoin ? " LEFT JOIN defect_image_box b ON b.image_id = f.image_id " : "");
+            data.put("trend", queryRepository.queryDefectImageTrendGrouped(
+                    trendJoin, where.toString(), trendParams, split.expr, bucketExpr));
+        }
+
+        // 日×缺陷数日历（P2 日历热力图；与趋势同源，仅粒度固定为自然日）
+        List<Object> calendarParams = new ArrayList<>(params);
+        data.put("dailyCalendar", queryRepository.queryDefectImageDailyCalendar(
+                joinCam, where.toString(), calendarParams));
 
         // 缺陷类型排行：按 defect_image_box 的 defect_type（现场口径为中文缺陷名）
         List<Object> rankParams = new ArrayList<>(params);
         if (!sevWhere.isEmpty()) { rankParams.add(severity.trim().toUpperCase(Locale.ROOT)); }
-        data.put("defectRanking", queryRepository.queryDefectImageRanking(joinCam, where.toString(), sevWhere, rankParams));
+        if (split == null) {
+            data.put("defectRanking", queryRepository.queryDefectImageRanking(joinCam, where.toString(), sevWhere, rankParams));
+        } else {
+            // 排行 SQL 自带 defect_image_box b，split.join 只能拼非 box 的额外 JOIN
+            data.put("defectRanking", queryRepository.queryDefectImageRankingGrouped(
+                    joinCam + split.join, where.toString(), sevWhere, rankParams, split.expr));
+        }
 
         // 工位排行
         List<Object> stationParams = new ArrayList<>(params);
@@ -576,6 +645,56 @@ public class LineAnalyticsController {
      * <p>shiftId 按时间窗推导：dim_shift 里白班 08:00-20:00、夜班 20:00-08:00（跨天）。
      * 事实表没有 shift_id 列，只能从 capture_time 的小钟点落在哪个班次窗口来判断。
      */
+    /**
+     * 维度拆分解析（2026-11-14 看板维度生效）。
+     *
+     * <p>返回 null 表示不拆分（dim 缺省或不可识别，行为与旧版完全一致）。
+     * expr 是 GROUP BY 的维度表达式；join 是该表达式需要的额外 JOIN 片段。
+     * 相机维度按 code-first 取编号（camera_name 跨产线重名，两个 Cam1 会并成一根柱）。
+     */
+    private DimSplit resolveDimSplit(String dim) {
+        if (dim == null || dim.trim().isEmpty()) {
+            return null;
+        }
+        // ★ 不能 toLowerCase：维度 token 是 camelCase（defectType），小写后永远匹配不上
+        String token = dim.trim();
+        switch (token) {
+            case "camera":
+                return new DimSplit("COALESCE(NULLIF(c.camera_code,''), c.camera_name, f.camera_id)", "", false);
+            case "workstation":
+                return new DimSplit("COALESCE(NULLIF(w.station_name,''), CONCAT('工位#', IFNULL(c.workstation_id, 0)))",
+                        " LEFT JOIN dim_workstation w ON w.workstation_id = c.workstation_id ", false);
+            case "defectType":
+                // 趋势块本不带 box 表，由 needBoxJoin 标记在趋势处补 LEFT JOIN
+                // （有 40 张图无缺陷框，不能 INNER JOIN 丢图）；join 只放非 box 的额外 JOIN，
+                // 因为排行块 SQL 自带 defect_image_box b，再拼一次会别名冲突。
+                return new DimSplit("COALESCE(b.defect_type, '未知')", "", true);
+            case "severity":
+                return new DimSplit("COALESCE(b.severity, 'UNKNOWN')", "", true);
+            case "shift":
+                Map<String, Object> windows = resolveShiftWindows();
+                String dayStart = String.valueOf(windows.get("dayStart"));
+                String dayEnd = String.valueOf(windows.get("dayEnd"));
+                return new DimSplit("CASE WHEN TIME(f.capture_time) >= '" + dayStart
+                        + "' AND TIME(f.capture_time) < '" + dayEnd + "' THEN '白班' ELSE '夜班' END", "", false);
+            default:
+                return null;
+        }
+    }
+
+    /** 维度拆分的表达式 + 额外 JOIN（不可变小对象）。needBoxJoin：趋势块是否要补 box 表 JOIN。 */
+    private static final class DimSplit {
+        final String expr;
+        final String join;
+        final boolean needBoxJoin;
+
+        DimSplit(String expr, String join, boolean needBoxJoin) {
+            this.expr = expr;
+            this.join = join;
+            this.needBoxJoin = needBoxJoin;
+        }
+    }
+
     private StringBuilder buildImageWhere(LocalDateTime start, LocalDateTime end,
                                           Long factoryId, Long lineId, Long workstationId, Long cameraId,
                                           String defectType, Long shiftId, List<Object> params) {
@@ -700,7 +819,7 @@ public class LineAnalyticsController {
                 longOrNull(body.get("factoryId")), longOrNull(body.get("lineId")), longOrNull(body.get("workstationId")),
                 longOrNull(body.get("cameraId")), longOrNull(body.get("productId")), longOrNull(body.get("shiftId")),
                 longOrNull(body.get("defectTypeId")), strOrNull(body.get("severity")),
-                strOrNull(body.get("defectType")));
+                strOrNull(body.get("defectType")), strOrNull(body.get("dim")));
     }
 
     // ==================== P1 动态报表配置 ====================
@@ -856,7 +975,7 @@ public class LineAnalyticsController {
         }
         LocalDateTime start = parseTime(startTime, LocalDateTime.of(LocalDate.now(), LocalTime.MIN));
         LocalDateTime end = parseTime(endTime, LocalDateTime.of(LocalDate.now(), LocalTime.MAX.withNano(0)));
-        Map<String, Object> data = buildSummary(start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, defectTypeId, severity, defectType);
+        Map<String, Object> data = buildSummary(start, end, factoryId, lineId, workstationId, cameraId, productId, shiftId, defectTypeId, severity, defectType, null);
         ExportTable table = exportTable(widgetMetric(widget), data);
         String widgetName = String.valueOf(widget.getOrDefault("widgetName", "chart"));
         byte[] bytes = writeWorkbook(widgetName, table.headers, table.rows);
@@ -1035,6 +1154,18 @@ public class LineAnalyticsController {
         aggregationExecutor.submit(() -> {
             long begin = System.currentTimeMillis();
             try {
+                // ★ 2026-11-15 P0-2：源表常空时不要每 5 分钟空转一次重建。
+                //   空表上的 DELETE+INSERT 一行不写，但仍是写事务（binlog / 行锁 / redo 全都有），
+                //   288 次/天纯属自伤。源表空 → 直接跳过，只更新「最近刷新时间」。
+                if (aggregationRepository.countQualitySourceBetween(
+                        startDate.atStartOfDay(), today.plusDays(1).atStartOfDay()) == 0) {
+                    lastRecentRefreshAt = System.currentTimeMillis();
+                    if (emptySourceNoticeLogged.compareAndSet(false, true)) {
+                        log.info("日聚合近期刷新跳过：agg_quality_30m 在 {} ~ {} 无数据（现场走缺陷图片通道），后续不再重复告警",
+                                startDate, today);
+                    }
+                    return;
+                }
                 int rows = rebuildDailyAtomically(startDate, today, null, null);
                 purgeOrphanAggregationRowsIfDue();
                 lastRecentRefreshAt = System.currentTimeMillis();
@@ -1130,6 +1261,27 @@ public class LineAnalyticsController {
         Map<String, Object> job = findAggregationJob(jobId);
         aggregationExecutor.submit(() -> {
             try {
+                // ★ 2026-11-15 P0-2：源表为空就没有「物化」可言 —— 记 SKIPPED，不记 SUCCESS。
+                //   缺口 #4 的真相：现场只写 defect_image_*，agg_quality_30m 恒空，
+                //   旧实现每次 DELETE+INSERT 产出 0 行却记 SUCCESS，运维在任务列表里
+                //   看到一串绿色成功，误以为「加速已生效」。
+                long sourceRows = aggregationRepository.countQualitySourceBetween(
+                        startDate.atStartOfDay(), endDate.plusDays(1).atStartOfDay());
+                if (sourceRows == 0) {
+                    String msg = "源表 agg_quality_30m 在 " + startDate + " ~ " + endDate
+                            + " 无数据（现场设备走缺陷图片通道，不写 30 分钟聚合表）→ 本次跳过，未物化任何行";
+                    updateAggregationJob(jobId, "SKIPPED", 0, 0, msg, null);
+                    log.info("日聚合跳过: jobId={}, {} ~ {}, trigger={}（源表空）", jobId, startDate, endDate, triggerSource);
+                    if ("SCHEDULE".equals(triggerSource)) {
+                        // 跳过也要回写 lastRunDate：否则每分钟都会重新提交一次注定空跑的任务
+                        try {
+                            aggregationRepository.updateLastRun(endDate, jobId);
+                        } catch (Exception e) {
+                            log.warn("回写日聚合 lastRunDate 失败: jobId={}, {}", jobId, e.getMessage());
+                        }
+                    }
+                    return;
+                }
                 int qualityRows = rebuildQualityDaily(startDate, endDate, factoryId, lineId);
                 int defectRows = rebuildDefectDaily(startDate, endDate, factoryId, lineId);
                 updateAggregationJob(jobId, "SUCCESS", qualityRows, defectRows, "日聚合完成", null);
@@ -1524,6 +1676,29 @@ public class LineAnalyticsController {
             table.headers = list("时间", "缺陷数", "异常数");
             for (Map<String, Object> r : listMap(summary.get("defectTrend"))) {
                 table.rows.add(row(r.get("timeBucket"), r.get("defectCount"), r.get("ngCount")));
+            }
+        } else if ("defectTypeShare".equals(metric)) {
+            table.headers = list("缺陷类型", "缺陷数");
+            for (Map<String, Object> r : listMap(summary.get("defectRanking"))) {
+                table.rows.add(row(r.get("defectName"), r.get("defectCount")));
+            }
+        } else if ("defectCalendar".equals(metric)) {
+            table.headers = list("日期", "缺陷图片数", "缺陷数", "涉及相机数");
+            for (Map<String, Object> r : listMap(summary.get("dailyCalendar"))) {
+                table.rows.add(row(r.get("dayKey"), r.get("imageCount"), r.get("defectCount"), r.get("cameraCount")));
+            }
+        } else if ("defectHeatmap".equals(metric)) {
+            table.headers = list("小时", "缺陷类型", "缺陷数");
+            for (Map<String, Object> r : listMap(summary.get("hourlyHeatmap"))) {
+                table.rows.add(row(r.get("hourOfDay"), r.get("defectType"), r.get("defectCount")));
+            }
+        } else if ("shiftCompare".equals(metric)) {
+            Object names = summary.get("shiftNames");
+            Map<String, Object> nm = map(names);
+            table.headers = list("缺陷类型", String.valueOf(nm.getOrDefault("day", "白班")),
+                    String.valueOf(nm.getOrDefault("night", "夜班")), "合计");
+            for (Map<String, Object> r : listMap(summary.get("shiftCompare"))) {
+                table.rows.add(row(r.get("defectType"), r.get("dayCount"), r.get("nightCount"), r.get("totalCount")));
             }
         } else {
             table.headers = list("缺陷ID", "缺陷编码", "缺陷名称", "严重度", "缺陷数");

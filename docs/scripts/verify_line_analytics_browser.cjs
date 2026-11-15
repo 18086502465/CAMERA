@@ -60,6 +60,21 @@ async function readKpis(page) {
     await page.goto(`${BASE}/line-analytics`, { waitUntil: 'networkidle2', timeout: 60000 })
     await new Promise((r) => setTimeout(r, 4000))
 
+    // ★ 2026-11-15：默认时间范围是「今天 00:00 起」，产线一旦停线（实测 11-13 之后无上传）
+    //   当天就没有图片数据 → 页面自动落到聚合表兜底分支（6 张卡含良率），
+    //   本脚本关于「图片通道 4 卡 + 良品样本」的断言会全红。
+    //   先切「近7天」让断言落在图片通道上，避免把「今天没生产」误判成功能回归。
+    const switched = await page.evaluate(() => {
+      const b = [...document.querySelectorAll('.range-shortcuts button')]
+        .find(x => (x.textContent || '').trim() === '近7天')
+      if (b) { b.click(); return true }
+      return false
+    })
+    if (switched) {
+      console.log('   已切到「近7天」')
+      await new Promise((r) => setTimeout(r, 5000))
+    }
+
     // ---- ① 不筛选产线 ----
     const kpiAll = await readKpis(page)
     const srcAll = await page.evaluate(() => {

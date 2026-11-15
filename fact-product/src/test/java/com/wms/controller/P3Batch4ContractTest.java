@@ -16,9 +16,11 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -126,7 +128,7 @@ class P3Batch4ContractTest {
         // ★ 2026-11-05 起「缺陷图片事实表」优先，聚合表是兜底。
         //   本用例覆盖「图片表无数据」的场景 → 落到聚合表。
         when(queryRepository.queryDefectImageKpi(anyString(), anyString(), any())).thenReturn(emptyImageKpi());
-        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any(), anyString())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageRanking(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageStationRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageCameraRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
@@ -176,7 +178,7 @@ class P3Batch4ContractTest {
         imgKpi.put("cameraCount", 2);
         imgKpi.put("workstationCount", 2);
         when(queryRepository.queryDefectImageKpi(anyString(), anyString(), any())).thenReturn(imgKpi);
-        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any(), anyString())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageRanking(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageStationRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageCameraRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
@@ -229,7 +231,7 @@ class P3Batch4ContractTest {
         imgKpi.put("cameraCount", 2);
         imgKpi.put("workstationCount", 1);
         when(queryRepository.queryDefectImageKpi(anyString(), anyString(), any())).thenReturn(imgKpi);
-        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any(), anyString())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageRanking(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageStationRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageCameraRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
@@ -250,6 +252,116 @@ class P3Batch4ContractTest {
     }
 
     @Test
+    void lineSummaryDimSplit() throws Exception {
+        // ★ 2026-11-14 维度生效：dim 参数把趋势行拆成多序列（seriesKey）、排行按维度分组。
+        //   之前向导勾维度是纯装饰，勾了不改数据。
+        when(queryRepository.queryOpenMappingExceptions()).thenReturn(Collections.emptyList());
+        Map<String, Object> imgKpi = new LinkedHashMap<>();
+        imgKpi.put("imageCount", 10);
+        imgKpi.put("defectCount", 2);
+        imgKpi.put("highCount", 1);
+        imgKpi.put("mediumCount", 1);
+        imgKpi.put("lowCount", 0);
+        imgKpi.put("cameraCount", 2);
+        imgKpi.put("workstationCount", 1);
+        when(queryRepository.queryDefectImageKpi(anyString(), anyString(), any())).thenReturn(imgKpi);
+
+        List<Map<String, Object>> groupedTrend = new ArrayList<>();
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("timeBucket", "2026-11-14 08:00:00");
+        row.put("seriesKey", "DA8119489");
+        row.put("totalCount", 6);
+        row.put("defectCount", 6);
+        groupedTrend.add(row);
+        when(queryRepository.queryDefectImageTrendGrouped(anyString(), anyString(), any(), anyString(), anyString()))
+                .thenReturn(groupedTrend);
+
+        List<Map<String, Object>> groupedRanking = new ArrayList<>();
+        Map<String, Object> rankRow = new LinkedHashMap<>();
+        rankRow.put("defectName", "DA8119489");
+        rankRow.put("defectCount", 6);
+        groupedRanking.add(rankRow);
+        when(queryRepository.queryDefectImageRankingGrouped(anyString(), anyString(), anyString(), any(), anyString()))
+                .thenReturn(groupedRanking);
+
+        MockMvc mvc = mvc();
+        mvc.perform(get("/api/v1/analytics/line-summary").param("dim", "camera"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.dataSource").value("DEFECT_IMAGE"))
+                // 趋势行带 seriesKey（多序列），排行按相机分组
+                .andExpect(jsonPath("$.data.trend[0].seriesKey").value("DA8119489"))
+                .andExpect(jsonPath("$.data.trend[0].totalCount").value(6))
+                .andExpect(jsonPath("$.data.defectRanking[0].defectName").value("DA8119489"));
+    }
+
+    @Test
+    @DisplayName("line-summary: P0-1 筛选诚实化 —— productId 在图片通道被丢弃时必须显式上报；P2 日历块与趋势粒度随跨度返回")
+    void lineSummaryFilterHonestyAndCalendar() throws Exception {
+        // ★ 2026-11-15 P0-1：defect_image_* 三张表都没有产品列，productId 在图片通道
+        //   物理上无法落 SQL。旧行为静默忽略 → 用户选了产品却看到全量数据。
+        //   冻结点：必须回传 ignoredFilters 命中 productId，且不改变 dataSource。
+        when(queryRepository.queryOpenMappingExceptions()).thenReturn(Collections.emptyList());
+        Map<String, Object> imgKpi = new LinkedHashMap<>();
+        imgKpi.put("imageCount", 120);
+        imgKpi.put("defectCount", 120);
+        imgKpi.put("highCount", 120);
+        imgKpi.put("mediumCount", 0);
+        imgKpi.put("lowCount", 0);
+        imgKpi.put("cameraCount", 3);
+        imgKpi.put("workstationCount", 2);
+        when(queryRepository.queryDefectImageKpi(anyString(), anyString(), any())).thenReturn(imgKpi);
+        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any(), anyString()))
+                .thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageRanking(anyString(), anyString(), anyString(), any()))
+                .thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageStationRanking(anyString(), anyString(), any()))
+                .thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageCameraRanking(anyString(), anyString(), any()))
+                .thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImagePivot(anyString(), anyString(), anyString(), any()))
+                .thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageSeverityDistribution(anyString(), anyString(), anyString(), any()))
+                .thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageHourlyHeatmap(anyString(), anyString(), any()))
+                .thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageShiftCompare(anyString(), anyString(), any(), anyString(), anyString()))
+                .thenReturn(Collections.emptyList());
+        when(queryRepository.countDefectImages(anyString(), anyString(), any())).thenReturn(10L);
+
+        Map<String, Object> calendarRow = new LinkedHashMap<>();
+        calendarRow.put("dayKey", "2026-11-14");
+        calendarRow.put("imageCount", 120);
+        calendarRow.put("defectCount", 120);
+        calendarRow.put("cameraCount", 3);
+        when(queryRepository.queryDefectImageDailyCalendar(anyString(), anyString(), any()))
+                .thenReturn(Collections.singletonList(calendarRow));
+
+        MockMvc mvc = mvc();
+        // 当天范围（跨度 < 3 天）→ 按小时分桶
+        mvc.perform(get("/api/v1/analytics/line-summary")
+                        .param("startTime", "2026-11-14 00:00:00")
+                        .param("endTime", "2026-11-14 23:59:59")
+                        .param("productId", "9"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.dataSource").value("DEFECT_IMAGE"))
+                .andExpect(jsonPath("$.data.ignoredFilters[0]").value("productId"))
+                .andExpect(jsonPath("$.data.ignoredFilterMessage").isNotEmpty())
+                .andExpect(jsonPath("$.data.trendGranularity").value("HOUR"))
+                .andExpect(jsonPath("$.data.dailyCalendar[0].dayKey").value("2026-11-14"))
+                .andExpect(jsonPath("$.data.dailyCalendar[0].imageCount").value(120));
+
+        // 十天范围（跨度 ≥ 3 天）→ 按天分桶，日历块同样返回
+        mvc.perform(get("/api/v1/analytics/line-summary")
+                        .param("startTime", "2026-11-05 00:00:00")
+                        .param("endTime", "2026-11-14 23:59:59"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.trendGranularity").value("DAY"))
+                // 没传 productId 时 ignoredFilters 必须是空数组（不是缺键）——前端据此判断
+                .andExpect(jsonPath("$.data.ignoredFilters").isEmpty());
+    }
+
+    @Test
     @DisplayName("line-summary: 看板A/D 新增块 —— 热力图/班次对比/环比随 DEFECT_IMAGE 返回，defectType+shiftId 筛选被接受")
     void lineSummaryNewBlocksForBoardAandD() throws Exception {
         // ★ 2026-11-14 看板 A（时段×类型热力图、班次对比）与看板 D（等长窗口环比）。
@@ -265,7 +377,7 @@ class P3Batch4ContractTest {
         imgKpi.put("cameraCount", 2);
         imgKpi.put("workstationCount", 2);
         when(queryRepository.queryDefectImageKpi(anyString(), anyString(), any())).thenReturn(imgKpi);
-        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
+        when(queryRepository.queryDefectImageTrend(anyString(), anyString(), any(), anyString())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageRanking(anyString(), anyString(), anyString(), any())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageStationRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());
         when(queryRepository.queryDefectImageCameraRanking(anyString(), anyString(), any())).thenReturn(Collections.emptyList());

@@ -30,9 +30,18 @@
         <el-button v-for="r in rangePresets" :key="r.key" size="small" :plain="activeRangeKey !== r.key" :type="activeRangeKey === r.key ? 'primary' : undefined" @click="applyRangePreset(r)">{{ r.label }}</el-button>
       </el-button-group>
       <el-date-picker v-model="timeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" value-format="YYYY-MM-DD HH:mm:ss" class="range-picker" @change="onTimeRangeChange" />
-      <el-select v-model="filters.productId" clearable filterable placeholder="全部产品" class="filter-ctrl" @change="loadData">
-        <el-option v-for="p in metadata.products" :key="p.productId" :label="p.productName" :value="p.productId" />
-      </el-select>
+      <!--
+        ★ 2026-11-15 P0-1：产品筛选在图片通道「物理上不生效」——
+        defect_image_file/_box/_batch 都没有产品列，camera_status.product_name 只是
+        当前心跳快照（贴到历史行是时间错配）。与其静默吞掉这个筛选，
+        不如在下拉后面直接标出「不生效」，后端同时回传 ignoredFilters 供对账。
+      -->
+      <span class="filter-with-hint">
+        <el-select v-model="filters.productId" clearable filterable placeholder="全部产品" class="filter-ctrl" @change="loadData">
+          <el-option v-for="p in metadata.products" :key="p.productId" :label="p.productName" :value="p.productId" />
+        </el-select>
+        <small v-if="isDefectImageSource" class="filter-unsupported" title="缺陷图片事实表不记录产品（camera_status.product_name 只是当前快照，无历史），该筛选不会改变统计结果">不生效</small>
+      </span>
       <el-select v-model="filters.shiftId" clearable placeholder="全部班次" class="filter-ctrl narrow" @change="loadData">
         <el-option v-for="s in metadata.shifts" :key="s.shiftId" :label="s.shiftName" :value="s.shiftId" />
       </el-select>
@@ -104,6 +113,11 @@
     <div v-if="summary.dataSourceMessage" class="source-hint" :class="'src-' + String(summary.dataSource || '').toLowerCase()">
       <b>数据源：{{ summary.dataSource === 'DEFECT_IMAGE' ? '缺陷图片事实表' : '质量聚合表' }}</b>
       <span>{{ summary.dataSourceMessage }}</span>
+      <em v-if="summary.trendGranularity === 'DAY'">趋势按天聚合（跨度 ≥ 3 天，避免上千个点糊成一团）</em>
+    </div>
+    <div v-if="summary.ignoredFilterMessage" class="source-hint src-warning">
+      <b>筛选未生效</b>
+      <span>{{ summary.ignoredFilterMessage }}</span>
     </div>
 
     <section class="ops-card aggregation-card">
@@ -115,8 +129,11 @@
           </el-tag>
         </div>
         <p>
-          日聚合会把检测明细按天预汇总，大时间范围报表可直接读取汇总表，避免现场看板查询变慢。
-          建议夜间自动执行；如补算历史数据，可手动执行当前筛选时间范围。
+          日聚合把 <b>30 分钟聚合表（agg_quality_30m / agg_defect_type_30m）</b> 按天预汇总。
+          注意：现场设备走缺陷图片上报通道，<b>不写这两张 30 分钟表</b>，
+          因此对当前通道日聚合没有加速收益 —— 任务会如实记为
+          <b>SKIPPED</b>（而不是「成功 0 行」）。图片通道的真实加速来自
+          <code>capture_time</code> 索引 + 大跨度趋势按天分桶。
         </p>
         <div v-if="aggregationJobs.length" class="job-list">
           <span v-for="job in aggregationJobs.slice(0,3)" :key="job.jobId" class="job-chip">
@@ -196,7 +213,13 @@
               </div>
             </div>
 
-            <div v-if="widgetMetric(w)==='plantOverview'" class="quality-mini-grid plant-overview-grid">
+            <!--
+              ★ 2026-11-15 P1：老图表配置在「当前数据源下无意义」时给出原因，
+              不要留一块看起来像故障的空白（比空白更伤信任的是「图在、数是假的」）。
+            -->
+            <EmptyState v-if="metricUnavailableReason(widgetMetric(w))" title="该指标在当前数据源下无意义"
+              :text="metricUnavailableReason(widgetMetric(w)) + '。可编辑图表改用缺陷/趋势类指标，或静默保留历史配置。'" />
+            <div v-else-if="widgetMetric(w)==='plantOverview'" class="quality-mini-grid plant-overview-grid">
               <div><span>检测总量</span><b>{{ number(plantOverviewFor(w).detectionTotal) }}</b></div>
               <div><span>缺陷总数</span><b class="ng">{{ number(plantOverviewFor(w).defectTotal) }}</b></div>
               <div><span>高危缺陷</span><b class="high">{{ number(plantOverviewFor(w).highDefect) }}</b><small>占比 {{ percent(plantOverviewFor(w).highRate) }}</small></div>
@@ -294,19 +317,22 @@
         <el-form-item label="图表名称" required><el-input v-model="widgetForm.widgetName" placeholder="请输入图表名称" /></el-form-item>
         <div class="form-row">
           <el-form-item label="图表类型" class="row-item"><el-select v-model="widgetForm.widgetType" style="width:100%" @change="onWidgetTypeChange"><el-option v-for="w in widgetTypes" :key="w.code" :label="w.name" :value="w.code" /></el-select></el-form-item>
-          <el-form-item label="统计指标" class="row-item"><el-select v-model="widgetForm.metric" style="width:100%" @change="onMetricChange"><el-option v-for="m in metricOptions" :key="m.value" :label="m.label" :value="m.value" /></el-select></el-form-item>
+          <el-form-item label="统计指标" class="row-item"><el-select v-model="widgetForm.metric" style="width:100%" @change="onMetricChange"><el-option v-for="m in visibleMetricOptions" :key="m.value" :label="m.label" :value="m.value" /></el-select></el-form-item>
         </div>
         <div class="metric-hint">
           <strong>{{ metricLabel(widgetForm.metric) }}</strong>
           <span>{{ metricDescription(widgetForm.metric) }}</span>
         </div>
+        <p v-if="hiddenMetricNotice" class="form-help metric-hidden-hint">
+          当前数据源下已隐藏 5 个无意义指标：{{ hiddenMetricNotice }}
+        </p>
         <el-form-item label="分析维度">
           <el-checkbox-group v-model="widgetForm.dimensions" class="dimension-checks">
-            <el-checkbox-button v-for="d in dimensions" :key="d.code" :label="d.code">
+            <el-checkbox-button v-for="d in wizardDimOptions" :key="d.code" :label="d.code">
               {{ d.name }}
             </el-checkbox-button>
           </el-checkbox-group>
-          <p class="form-help">维度用于说明图表统计的拆分方式；例如按“产品 + 缺陷类型”生成透视表，按“时间”生成趋势。</p>
+          <p class="form-help">{{ wizardDimHint }}</p>
         </el-form-item>
         <div class="form-row">
           <el-form-item label="宽度" class="row-item"><el-select v-model="widgetForm.width"><el-option label="半屏（6栅格）" :value="6" /><el-option label="整行（12栅格）" :value="12" /></el-select></el-form-item>
@@ -442,6 +468,7 @@
               <el-option label="RUNNING" value="RUNNING" />
               <el-option label="SUCCESS" value="SUCCESS" />
               <el-option label="FAILED" value="FAILED" />
+              <el-option label="SKIPPED（源表空）" value="SKIPPED" />
             </el-select>
             <el-button plain :loading="aggregationJobLoading" @click="loadAggregationJobPage">刷新</el-button>
           </div>
@@ -489,7 +516,8 @@
         <section v-if="presentationWidgets.length" class="presentation-grid" :class="{ single: presentationWidgets.length === 1 }">
           <article v-for="w in presentationWidgets" :key="'p-'+w.widgetId" class="presentation-card" :class="widgetCardClass(w)" :style="widgetCardStyle(w)">
             <div class="presentation-card-head"><div><h3>{{ w.widgetName }}</h3><p>{{ widgetSubtitle(w) }}</p></div><el-button v-if="!presentationWidget" size="small" text type="warning" @click="presentationWidget=w; renderPresentationCharts()">单图放大</el-button></div>
-            <div v-if="widgetMetric(w)==='plantOverview'" class="presentation-quality-grid plant-overview-grid"><div><span>检测总量</span><b>{{ number(plantOverviewFor(w).detectionTotal) }}</b></div><div><span>缺陷总数</span><b class="ng">{{ number(plantOverviewFor(w).defectTotal) }}</b></div><div><span>高危缺陷</span><b class="high">{{ number(plantOverviewFor(w).highDefect) }}</b><small>占比 {{ percent(plantOverviewFor(w).highRate) }}</small></div><div><span>首要缺陷</span><b class="top">{{ plantOverviewFor(w).topDefectName || '—' }}</b><small>占比 {{ percent(plantOverviewFor(w).topDefectRate) }}</small></div><div><span>受影响工位</span><b>{{ number(plantOverviewFor(w).affectedWorkstation) }}</b></div><div><span>涉及相机</span><b>{{ number(plantOverviewFor(w).affectedCamera) }}</b></div><div><span>良率</span><b class="yield">{{ plantOverviewFor(w).yieldRateAvailable === false ? '—' : percent(plantOverviewFor(w).yieldRate) }}</b><small>{{ plantOverviewFor(w).yieldRateAvailable === false ? '无良品样本' : '' }}</small></div><div><span>较上一时段</span><b :class="plantCompareFor(w).cls">{{ plantCompareFor(w).text }}</b><small>{{ plantOverviewFor(w).dayOverDayLabel || '等长窗口环比' }}</small></div></div>
+            <EmptyState v-if="metricUnavailableReason(widgetMetric(w))" title="该指标在当前数据源下无意义" :text="metricUnavailableReason(widgetMetric(w))" />
+            <div v-else-if="widgetMetric(w)==='plantOverview'" class="presentation-quality-grid plant-overview-grid"><div><span>检测总量</span><b>{{ number(plantOverviewFor(w).detectionTotal) }}</b></div><div><span>缺陷总数</span><b class="ng">{{ number(plantOverviewFor(w).defectTotal) }}</b></div><div><span>高危缺陷</span><b class="high">{{ number(plantOverviewFor(w).highDefect) }}</b><small>占比 {{ percent(plantOverviewFor(w).highRate) }}</small></div><div><span>首要缺陷</span><b class="top">{{ plantOverviewFor(w).topDefectName || '—' }}</b><small>占比 {{ percent(plantOverviewFor(w).topDefectRate) }}</small></div><div><span>受影响工位</span><b>{{ number(plantOverviewFor(w).affectedWorkstation) }}</b></div><div><span>涉及相机</span><b>{{ number(plantOverviewFor(w).affectedCamera) }}</b></div><div><span>良率</span><b class="yield">{{ plantOverviewFor(w).yieldRateAvailable === false ? '—' : percent(plantOverviewFor(w).yieldRate) }}</b><small>{{ plantOverviewFor(w).yieldRateAvailable === false ? '无良品样本' : '' }}</small></div><div><span>较上一时段</span><b :class="plantCompareFor(w).cls">{{ plantCompareFor(w).text }}</b><small>{{ plantOverviewFor(w).dayOverDayLabel || '等长窗口环比' }}</small></div></div>
             <div v-else-if="widgetMetric(w)==='quality'" class="presentation-quality-grid"><div><span>检测总数</span><b>{{ number(summaryFor(w).kpi.totalCount) }}</b></div><div><span>OK数</span><b class="ok">{{ number(summaryFor(w).kpi.okCount) }}</b></div><div><span>NG数</span><b class="ng">{{ number(summaryFor(w).kpi.ngCount) }}</b></div><div><span>良率</span><b class="yield">{{ percent(summaryFor(w).kpi.yieldRate) }}</b></div></div>
             <div v-else-if="isChartWidget(w)" class="presentation-chart-wrap"><div v-if="hasChartData(w)" :ref="el=>setPresentationChartRef(w.widgetId,el)" class="presentation-echart"></div><EmptyState v-else title="暂无图表数据" text="当前筛选条件下没有可绘制的数据。" /></div>
             <div v-else-if="widgetMetric(w)==='defectPivot'" class="presentation-table-wrap"><el-table :data="pivotRowsFor(w)" size="small" border height="100%"><el-table-column prop="productName" label="产品" min-width="120" fixed="left" /><el-table-column v-for="c in pivotColumnsFor(w)" :key="c.defectTypeId" :prop="String(c.defectTypeId)" :label="c.defectName" min-width="130" align="center"><template #default="{ row }">{{ number(row[c.defectTypeId] || 0) }}</template></el-table-column></el-table></div>
@@ -569,7 +597,9 @@ const fallbackWidgetTypes = [
   { code: 'STACK_BAR', name: '堆叠柱状图', description: '按缺陷类型堆叠展示' },
   { code: 'RANK', name: '排行', description: '展示 Top 缺陷/工位/相机' },
   { code: 'PIVOT', name: '透视表', description: '动态生成产品缺陷列' },
-  { code: 'HEATMAP', name: '时段热力图', description: '小时×缺陷类型，定位高发时段' }
+  { code: 'HEATMAP', name: '时段热力图', description: '小时×缺陷类型，定位高发时段' },
+  { code: 'PIE', name: '占比饼图', description: '缺陷类型/严重度占比构成（环形图）' },
+  { code: 'CALENDAR', name: '日历热力图', description: '按自然日看缺陷量的节律与空档' }
 ]
 const fallbackDimensions = [
   { code: 'time', name: '时间' }, { code: 'line', name: '产线' }, { code: 'workstation', name: '工位' }, { code: 'camera', name: '相机' }, { code: 'product', name: '产品' }, { code: 'defectType', name: '缺陷类型' }, { code: 'shift', name: '班次' }
@@ -604,8 +634,39 @@ const metricOptions = [
   { label: '产品缺陷透视表', value: 'defectPivot' },
   { label: '映射异常明细', value: 'mappingExceptions' },
   { label: '时段×类型热力图', value: 'defectHeatmap' },
-  { label: '班次缺陷对比', value: 'shiftCompare' }
+  { label: '班次缺陷对比', value: 'shiftCompare' },
+  { label: '缺陷类型占比', value: 'defectTypeShare' },
+  { label: '日缺陷日历', value: 'defectCalendar' }
 ]
+/**
+ * ★ 2026-11-15 P1：按数据源隐藏「物理上无意义」的指标入口。
+ *
+ * 缺陷图片通道只上报缺陷图、不记录产品与良品样本，所以：
+ *   · quality        → OK/良率恒不可算（显示「—」或 0%，误导现场）；
+ *   · defectPivot    → 产品维是假数据（图片表无产品列）；
+ *   · severityDistribution / stackDefectBySeverity → 设备端 severity 恒 HIGH，
+ *                      构成图永远 100% 一根，没有任何信息量；
+ *   · mappingExceptions → 映射异常来自 fact_inspection_mapping_exception（批量上报通道），现场恒空。
+ * 「不让勾」比「勾了没用」更诚实：入口直接不出现，已配置的老图表原位给出一条原因说明。
+ */
+const IMAGE_UNSUPPORTED_METRICS = {
+  quality: '图片通道无良品样本，OK/良率不可计算',
+  defectPivot: '图片事实表不记录产品，产品透视无数据源',
+  severityDistribution: '设备端 severity 恒为 HIGH，构成图无区分度',
+  stackDefectBySeverity: '设备端 severity 恒为 HIGH，堆叠无区分度',
+  mappingExceptions: '映射异常属于批量上报通道，现场恒为空'
+}
+const visibleMetricOptions = computed(() => isDefectImageSource.value
+  ? metricOptions.filter(m => !IMAGE_UNSUPPORTED_METRICS[m.value])
+  : metricOptions)
+const hiddenMetricNotice = computed(() => isDefectImageSource.value
+  ? Object.entries(IMAGE_UNSUPPORTED_METRICS).map(([, reason]) => reason).join('；')
+  : '')
+/** 某指标在当前数据源下不可用的原因（可用返回空串）——已配置的老图表据此显示说明而不是空白图 */
+function metricUnavailableReason(m) {
+  if (!isDefectImageSource.value) return ''
+  return IMAGE_UNSUPPORTED_METRICS[m] || ''
+}
 const widgetPresets = [
   { key: 'plantOverview', name: '工厂总览', description: '厂长视角：规模、风险等级、首要缺陷', widgetType: 'KPI', metric: 'plantOverview', dimensions: ['time'], width: 12, height: 1 },
   { key: 'defectPareto', name: '缺陷帕累托', description: '累计占比定位主要矛盾（80/20）', widgetType: 'BAR', metric: 'defectPareto', dimensions: ['defectType'], width: 8, height: 3 },
@@ -616,11 +677,50 @@ const widgetPresets = [
   { key: 'stationTop', name: '工位异常', description: '定位 NG 最高的工位', widgetType: 'BAR', metric: 'stationRanking', dimensions: ['workstation'], width: 6, height: 3 },
   { key: 'productPivot', name: '产品缺陷矩阵', description: '按产品动态展开缺陷列', widgetType: 'PIVOT', metric: 'defectPivot', dimensions: ['product', 'defectType'], width: 12, height: 4 },
   { key: 'defectHeatmap', name: '时段热力图', description: '小时×缺陷类型，定位高发时段', widgetType: 'HEATMAP', metric: 'defectHeatmap', dimensions: ['time', 'defectType'], width: 12, height: 4 },
-  { key: 'shiftCompare', name: '班次对比', description: '白班/夜班各类型缺陷对比', widgetType: 'BAR', metric: 'shiftCompare', dimensions: ['shift', 'defectType'], width: 6, height: 3 }
+  { key: 'shiftCompare', name: '班次对比', description: '白班/夜班各类型缺陷对比', widgetType: 'BAR', metric: 'shiftCompare', dimensions: ['shift', 'defectType'], width: 6, height: 3 },
+  { key: 'defectTypeShare', name: '类型占比', description: '缺陷类型构成（环形占比）', widgetType: 'PIE', metric: 'defectTypeShare', dimensions: ['defectType'], width: 6, height: 3 },
+  { key: 'defectCalendar', name: '日缺陷日历', description: '按天看缺陷量的节律与空档', widgetType: 'CALENDAR', metric: 'defectCalendar', dimensions: ['time'], width: 12, height: 3 }
 ]
 
 const widgetTypes = computed(() => metadata.widgetTypes.length ? metadata.widgetTypes : fallbackWidgetTypes)
 const dimensions = computed(() => metadata.dimensions.length ? metadata.dimensions : fallbackDimensions)
+/**
+ * ★ 2026-11-14 维度生效：向导里只展示当前指标「真正会影响数据」的维度组合。
+ * 之前 10 个维度随便勾、勾了不改数据，比不让勾更伤信任。
+ *  - 趋势类（trend/defectTrend）：时间（横轴）+ 一个拆分维（相机/工位/缺陷类型/班次/严重度）→ 多序列折线
+ *  - 排行类（defectRanking/defectPareto/stationRanking/cameraRanking）：单一分组维
+ *  - 热力图 / 班次对比：维度固定（时间×类型 / 班次×类型），不再提供勾选
+ *  - 其余指标：暂不支持维度切换，只给默认组合
+ */
+const DIM_NAME = { time: '时间', line: '产线', workstation: '工位', camera: '相机', product: '产品', defectType: '缺陷类型', shift: '班次', severity: '严重度' }
+const wizardDimOptions = computed(() => {
+  const m = widgetForm.metric
+  const pick = codes => codes.map(c => ({ code: c, name: DIM_NAME[c] || c }))
+  if (m === 'trend' || m === 'defectTrend') return pick(['time', 'camera', 'workstation', 'defectType', 'shift', 'severity'])
+  // ★ 2026-11-15 P1：defectRanking / defectPareto 的 dim 真正参与 SQL（按维度分组）；
+  //   stationRanking / cameraRanking 在 SQL 里固定按工位/相机分组，勾别的维度不会改变数据，
+  //   所以只保留它自己的维度 —— 与「不让勾」相比，「勾了没变」才是真正伤信任的那个。
+  if (m === 'defectRanking' || m === 'defectPareto') return pick(['defectType', 'camera', 'workstation', 'shift', 'severity'])
+  if (m === 'stationRanking') return pick(['workstation'])
+  if (m === 'cameraRanking') return pick(['camera'])
+  if (m === 'defectHeatmap') return pick(['time', 'defectType'])
+  if (m === 'shiftCompare') return pick(['shift', 'defectType'])
+  if (m === 'defectTypeShare') return pick(['defectType'])
+  if (m === 'defectCalendar') return pick(['time'])
+  return pick(['time'])
+})
+const wizardDimHint = computed(() => {
+  const m = widgetForm.metric
+  if (m === 'trend' || m === 'defectTrend') return '勾「时间」画时间趋势；再勾一个维度（相机/工位/缺陷类型/班次/严重度）即按该维度拆成多条线（取第一个勾选的拆分维）。'
+  if (m === 'defectRanking' || m === 'defectPareto') return '勾选的维度就是排行/帕累托的分组依据（默认分组为该指标的固有维度，勾它=默认行为）。'
+  if (m === 'stationRanking') return '该指标固定按「工位」分组。想看其他维度对比，请改用「缺陷类型排行」并切换到目标维度。'
+  if (m === 'cameraRanking') return '该指标固定按「相机」分组。想看其他维度对比，请改用「缺陷类型排行」并切换到目标维度。'
+  if (m === 'defectHeatmap') return '热力图维度固定为「时间 × 缺陷类型」，无需选择。'
+  if (m === 'shiftCompare') return '班次对比维度固定为「班次 × 缺陷类型」，无需选择。'
+  if (m === 'defectTypeShare') return '占比图横轴固定为缺陷类型（按当前筛选范围计算构成）。'
+  if (m === 'defectCalendar') return '日历图横轴固定为自然日，跨月会自动滚动展示。'
+  return '该指标的维度暂不支持切换，图表按默认口径统计。'
+})
 const filteredCameras = computed(() => {
   const f = injectedFilters.value || {}
   const lineId = f.lineIds?.[0]
@@ -636,8 +736,8 @@ const lastAggregationJob = computed(() => aggregationJobs.value[0] || null)
 const previewWidget = computed(() => ({ widgetId: '__preview', widgetName: widgetForm.widgetName || '预览图表', widgetType: widgetForm.widgetType, metricJson: { metric: widgetForm.metric }, layoutJson: { w: widgetForm.width, h: widgetForm.height }, followGlobalFilter: 1, sortOrder: widgetForm.sortOrder, isEnabled: 1 }))
 
 watch(() => injectedFilters.value, async () => { currentDashboardId.value = null; await loadDashboards(); await loadDashboard(); await loadData() }, { deep: true })
-watch([visibleWidgets, () => summary.trend, () => summary.defectRanking, () => summary.defectPareto, () => summary.severityDistribution, () => summary.defectTrend, () => summary.stationRanking, () => summary.cameraRanking, () => summary.defectPivot, () => summary.hourlyHeatmap, () => summary.shiftCompare], () => renderAllCharts(), { deep: true })
-watch([() => widgetDialogVisible.value, () => widgetForm.widgetType, () => widgetForm.metric, () => widgetForm.width, () => widgetForm.height, () => summary.trend, () => summary.defectRanking, () => summary.defectPareto, () => summary.severityDistribution, () => summary.defectTrend, () => summary.stationRanking, () => summary.cameraRanking], () => renderPreviewChart(), { deep: true })
+watch([visibleWidgets, () => summary.trend, () => summary.defectRanking, () => summary.defectPareto, () => summary.severityDistribution, () => summary.defectTrend, () => summary.stationRanking, () => summary.cameraRanking, () => summary.defectPivot, () => summary.hourlyHeatmap, () => summary.shiftCompare, () => summary.dailyCalendar], () => renderAllCharts(), { deep: true })
+watch([() => widgetDialogVisible.value, () => widgetForm.widgetType, () => widgetForm.metric, () => widgetForm.width, () => widgetForm.height, () => summary.trend, () => summary.defectRanking, () => summary.defectPareto, () => summary.severityDistribution, () => summary.defectTrend, () => summary.stationRanking, () => summary.cameraRanking, () => summary.dailyCalendar], () => renderPreviewChart(), { deep: true })
 
 onMounted(async () => { restoreRangePreset(); await loadMetadata(); loadDefectTypeOptions(); await loadDashboards(); await loadDashboard(); await loadData(); await loadAggregationJobs(); await loadAggregationSchedule(); window.addEventListener('resize', resizeCharts) })
 onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); window.removeEventListener('mousemove', onResizeMove); window.removeEventListener('mouseup', endResize); chartInstances.forEach(i => i.dispose()); chartInstances.clear(); disposePresentationCharts(); disposePreviewChart() })
@@ -650,14 +750,33 @@ async function loadDashboard(){ dashboardLoading.value=true; try{ const f=inject
 async function loadDashboardById(id){ currentDashboardId.value=id; await loadDashboard() }
 async function refreshDashboard(){ await loadDashboards(); await loadDashboard() }
 async function loadData(){ loading.value=true; try{ const data=(await getLineAnalyticsSummary(globalParams())).data?.data||{}; Object.assign(summary,normalizeSummary(data)); await loadWidgetData(); await nextTick(); renderAllCharts() }catch(e){ Object.assign(summary,normalizeSummary({})); ElMessage.error('加载产线统计失败：'+errorMessage(e)) }finally{ loading.value=false } }
-async function loadWidgetData(){ const independent=visibleWidgets.value.filter(w=>Number(w.followGlobalFilter??1)!==1); const alive=new Set(independent.map(w=>String(w.widgetId))); Object.keys(widgetData).forEach(k=>{if(!alive.has(k)) delete widgetData[k]}); await Promise.all(independent.map(async w=>{ try{ widgetData[w.widgetId]=normalizeSummary((await getLineAnalyticsSummary(widgetParams(w))).data?.data||{}) }catch{ widgetData[w.widgetId]=normalizeSummary({}) } })) }
-function normalizeSummary(data){ return {aggregationLevel:data.aggregationLevel||'30M',aggregationMessage:data.aggregationMessage||'',aggregationThresholdDays:data.aggregationThresholdDays||3,dataSource:data.dataSource||'AGGREGATION',dataSourceMessage:data.dataSourceMessage||'',kpi:data.kpi||{},trend:data.trend||[],defectRanking:data.defectRanking||[],stationRanking:data.stationRanking||[],cameraRanking:data.cameraRanking||[],defectPivot:data.defectPivot||[],mappingExceptions:data.mappingExceptions||[],severityDistribution:data.severityDistribution||[],defectPareto:data.defectPareto||[],plantOverview:data.plantOverview||{},defectTrend:data.defectTrend||[],hourlyHeatmap:data.hourlyHeatmap||[],shiftCompare:data.shiftCompare||[],shiftNames:data.shiftNames||{}} }
+async function loadWidgetData(){ const independent=visibleWidgets.value.filter(w=>Number(w.followGlobalFilter??1)!==1||!!splitDimOf(w)); const alive=new Set(independent.map(w=>String(w.widgetId))); Object.keys(widgetData).forEach(k=>{if(!alive.has(k)) delete widgetData[k]}); await Promise.all(independent.map(async w=>{ try{ widgetData[w.widgetId]=normalizeSummary((await getLineAnalyticsSummary(widgetParams(w))).data?.data||{}) }catch{ widgetData[w.widgetId]=normalizeSummary({}) } })) }
+function normalizeSummary(data){ return {aggregationLevel:data.aggregationLevel||'30M',aggregationMessage:data.aggregationMessage||'',aggregationThresholdDays:data.aggregationThresholdDays||3,dataSource:data.dataSource||'AGGREGATION',dataSourceMessage:data.dataSourceMessage||'',ignoredFilters:data.ignoredFilters||[],ignoredFilterMessage:data.ignoredFilterMessage||'',trendGranularity:data.trendGranularity||'HOUR',kpi:data.kpi||{},trend:data.trend||[],defectRanking:data.defectRanking||[],stationRanking:data.stationRanking||[],cameraRanking:data.cameraRanking||[],defectPivot:data.defectPivot||[],mappingExceptions:data.mappingExceptions||[],severityDistribution:data.severityDistribution||[],defectPareto:data.defectPareto||[],plantOverview:data.plantOverview||{},defectTrend:data.defectTrend||[],hourlyHeatmap:data.hourlyHeatmap||[],shiftCompare:data.shiftCompare||[],dailyCalendar:data.dailyCalendar||[],shiftNames:data.shiftNames||{}} }
 const isDefectImageSource = computed(() => summary.dataSource === 'DEFECT_IMAGE')
 function plantOverviewFor(w){ const d=summaryFor(w); return d.plantOverview||{} }
 /** 环比格（plantOverview widget）：缺陷上升红、下降绿、不可计算灰 */
 function plantCompareFor(w){ const d=summaryFor(w).plantOverview||{}; const v=d.dayOverDayRate; if(v===null||v===undefined) return {text:'—',cls:''}; const n=Number(v); return {text:(n>0?'+':'')+Number(n.toFixed(2))+'%',cls:n>0?'ng':'ok'} }
 function globalParams(){ const f=injectedFilters.value||{}; return {startTime:timeRange.value?.[0],endTime:timeRange.value?.[1],factoryId:f.factoryId||undefined,lineId:f.lineIds?.[0],workstationId:f.stationIds?.[0],productId:filters.productId||undefined,shiftId:filters.shiftId||undefined,cameraId:filters.cameraId||undefined,defectType:filters.defectType||undefined,severity:filters.severity||undefined} }
-function widgetParams(w){ const f=parseJsonField(w?.filterJson,{}); return {startTime:timeRange.value?.[0],endTime:timeRange.value?.[1],factoryId:f.factoryId||undefined,lineId:f.lineId||undefined,workstationId:f.workstationId||undefined,productId:f.productId||undefined,shiftId:f.shiftId||undefined,cameraId:f.cameraId||undefined,defectType:f.defectType||undefined,severity:f.severity||undefined} }
+function widgetParams(w){ const f=parseJsonField(w?.filterJson,{}); return {startTime:timeRange.value?.[0],endTime:timeRange.value?.[1],factoryId:f.factoryId||undefined,lineId:f.lineId||undefined,workstationId:f.workstationId||undefined,productId:f.productId||undefined,shiftId:f.shiftId||undefined,cameraId:f.cameraId||undefined,defectType:f.defectType||undefined,severity:f.severity||undefined,dim:splitDimOf(w)||undefined} }
+/**
+ * ★ 2026-11-14 维度生效：从 dimensionJson 推导拆分维度（dim 参数）。
+ * 趋势类指标：第一个非时间维 = 序列拆分依据（不选 = 单序列，与旧版一致）。
+ * 排行类指标：选中的维度就是分组依据；与该指标默认分组一致时不传（走原逻辑）。
+ */
+function splitDimOf(w){
+  const m=widgetMetric(w)
+  // 维度固定的指标不需要拆分参数（它们自带固有分组）
+  if(m==='defectHeatmap'||m==='shiftCompare'||m==='defectTypeShare'||m==='defectCalendar') return ''
+  const dims=parseJsonField(w?.dimensionJson,null)
+  const arr=Array.isArray(dims)?dims:defaultDimensionsByMetric(m)
+  // stationRanking/cameraRanking 在 SQL 里固定分组，传别的维度只会白算一遍趋势块
+  if(m==='stationRanking'||m==='cameraRanking') return ''
+  const cands=(Array.isArray(arr)?arr:[]).filter(d=>['camera','workstation','defectType','shift','severity'].includes(d))
+  if(!cands.length) return ''
+  if(m==='trend'||m==='defectTrend') return cands[0]
+  const defaultGroup={defectRanking:'defectType',defectPareto:'defectType'}[m]||''
+  return cands[0]===defaultGroup?'':cands[0]
+}
 
 function openWidgetDialog(t){ editingWidgetId.value=null; const type=t?.code||'LINE', metric=defaultMetricByType(type); Object.assign(widgetForm,{widgetName:t?.name||'自定义图表',widgetType:type,metric,dimensions:defaultDimensionsByMetric(metric),width:type==='KPI'?12:6,height:type==='KPI'?2:3,sortOrder:Math.max(0,...widgets.value.map(w=>Number(w.sortOrder||0)))+10,followGlobalFilter:true,filterProductId:null,filterCameraId:null,filterDefectType:null,filterSeverity:null}); widgetDialogVisible.value=true }
 function editWidget(w){ selectedWidget.value=w; editingWidgetId.value=w.widgetId; const l=widgetLayout(w), f=parseJsonField(w.filterJson,{}), metric=widgetMetric(w), dims=parseJsonField(w.dimensionJson,defaultDimensionsByMetric(metric)); Object.assign(widgetForm,{widgetName:w.widgetName,widgetType:w.widgetType||'LINE',metric,dimensions:Array.isArray(dims)?dims:defaultDimensionsByMetric(metric),width:Number(l.w||6),height:Number(l.h||3),sortOrder:Number(w.sortOrder||0),followGlobalFilter:Number(w.followGlobalFilter??1)===1,filterProductId:f.productId||null,filterCameraId:f.cameraId||null,filterDefectType:f.defectType||null,filterSeverity:f.severity||null}); widgetDialogVisible.value=true }
@@ -772,25 +891,66 @@ function setChartRef(id,el){ if(el) chartRefs.set(String(id),el); else chartRefs
 function setPresentationChartRef(id,el){ if(el) presentationChartRefs.set(String(id),el); else presentationChartRefs.delete(String(id)) }
 function renderAllCharts(){ nextTick(()=>{ visibleWidgets.value.filter(isChartWidget).forEach(renderChart); if(presentationVisible.value) renderPresentationCharts() }) }
 function resizeCharts(){ chartInstances.forEach(i=>i.resize()); presentationChartInstances.forEach(i=>i.resize()) }
-function renderChart(w){ const el=chartRefs.get(String(w.widgetId)); if(!el||!hasChartData(w)) return; const id=String(w.widgetId); const ins=chartInstances.get(id)||echarts.init(el); chartInstances.set(id,ins); ins.setOption(chartOption(w),true); ins.resize() }
+/**
+ * ★ 2026-11-15：setOption 安全包装。
+ *
+ * ECharts 在「同一实例被快速连续 setOption + 容器尺寸同时变化」时，偶发在
+ * requestAnimationFrame 里抛 `Cannot read properties of undefined (reading 'type')`。
+ * 异常发生在动画帧内部，调用方 try/catch 抓不到，只能表现为全局 JS 错误，
+ * 让人误以为页面坏了（实测打开配置弹窗时必现一次）。
+ * 处理：首帧失败后延迟 120ms 用同一份 option 重试一次 —— 竞态消失即可正常渲染；
+ * 仍失败则降级为 warn（带图表名），不污染全局错误，也不白屏整页。
+ */
+function safeSetOption(ins,option,label){
+  if(!ins||!option) return
+  // 诊断用：记录最近若干次渲染的序列构成，出错时可定位是哪张图（不影响行为）
+  try{
+    const hist = window.__chartHistory || (window.__chartHistory = [])
+    hist.push({ t: Date.now(), label, series: (option.series||[]).map(x=>String(x.type)+'/'+String(x.coordinateSystem||'')).join(','), n: (option.series||[]).reduce((a,x)=>a+((x.data||[]).length),0) })
+    if (hist.length > 30) hist.shift()
+  }catch(e){}
+  try{ ins.setOption(option,true) }
+  catch(e){ window.setTimeout(()=>{ try{ ins.setOption(option,true) }catch(e2){ console.warn('[chart] 渲染失败：',label,e2&&e2.message) } },120) }
+}
+function renderChart(w){ const el=chartRefs.get(String(w.widgetId)); if(!el||!hasChartData(w)) return; const id=String(w.widgetId); const ins=chartInstances.get(id)||echarts.init(el); chartInstances.set(id,ins); safeSetOption(ins,chartOption(w),w.widgetName||id); ins.resize() }
 function renderPresentationCharts(){ nextTick(()=>presentationWidgets.value.filter(isChartWidget).forEach(renderPresentationChart)) }
-function renderPresentationChart(w){ const el=presentationChartRefs.get(String(w.widgetId)); if(!el||!hasChartData(w)) return; const id=String(w.widgetId); const ins=presentationChartInstances.get(id)||echarts.init(el); presentationChartInstances.set(id,ins); ins.setOption(chartOption(w),true); ins.resize() }
-function renderPreviewChart(){ nextTick(()=>{ if(!widgetDialogVisible.value || !isChartWidget(previewWidget.value) || !hasChartData(previewWidget.value) || !previewChartRef.value) return; const ins=previewChartInstance.value || echarts.init(previewChartRef.value); previewChartInstance.value=ins; ins.setOption(chartOption(previewWidget.value),true); ins.resize() }) }
+function renderPresentationChart(w){ const el=presentationChartRefs.get(String(w.widgetId)); if(!el||!hasChartData(w)) return; const id=String(w.widgetId); const ins=presentationChartInstances.get(id)||echarts.init(el); presentationChartInstances.set(id,ins); safeSetOption(ins,chartOption(w),w.widgetName||id); ins.resize() }
+/**
+ * ★ 2026-11-15：预览图**每次都重建实例**。
+ *
+ * 复用同一个 ECharts 实例在「折线 → 饼图 → 日历热力图」之间切换时，
+ * 上一族的增量渲染任务（`_doProgress`，跑在 requestAnimationFrame 里）会跨 option 残留，
+ * 表现为控制台一条 "Cannot read properties of undefined (reading 'type')"，
+ * 而图看起来又是好的 —— 属于最难定位的一类问题。重建实例最彻底，代价可忽略
+ * （只在配置弹窗里、由用户操作触发）。
+ */
+function renderPreviewChart(){ nextTick(()=>{ if(!widgetDialogVisible.value || !isChartWidget(previewWidget.value) || !hasChartData(previewWidget.value) || !previewChartRef.value) return; if(previewChartInstance.value){ previewChartInstance.value.dispose(); previewChartInstance.value=null } const ins=echarts.init(previewChartRef.value); previewChartInstance.value=ins; safeSetOption(ins,chartOption(previewWidget.value),'预览图表'); ins.resize() }) }
 function disposePreviewChart(){ if(previewChartInstance.value){ previewChartInstance.value.dispose(); previewChartInstance.value=null } }
 function disposePresentationCharts(){ presentationChartInstances.forEach(i=>i.dispose()); presentationChartInstances.clear(); presentationChartRefs.clear(); presentationWidget.value=null }
-function chartOption(w){ const data=summaryFor(w), m=widgetMetric(w); if(m==='defectPareto') return paretoOption(data.defectPareto||data.defectRanking||[]); if(m==='severityDistribution') return severityPieOption(data.severityDistribution||[]); if(m==='defectTrend'){ const rows=data.defectTrend||data.trend||[]; return baseOption({tooltip:{trigger:'axis'},legend:{top:0,data:['缺陷数','异常数']},xAxis:{type:'category',data:rows.map(r=>shortTime(r.timeBucket))},yAxis:{type:'value'},series:[{name:'缺陷数',type:'bar',data:rows.map(r=>Number(r.defectCount||r.totalCount||0))},{name:'异常数',type:'line',smooth:true,data:rows.map(r=>Number(r.ngCount||0))}]}) } if(m==='trend'){ const rows=data.trend||[];
+function chartOption(w){ const data=summaryFor(w), m=widgetMetric(w); if(m==='defectPareto') return paretoOption(data.defectPareto||data.defectRanking||[]); if(m==='severityDistribution') return severityPieOption(data.severityDistribution||[]); if(m==='defectTrend'){ const rows=data.defectTrend||data.trend||[]; if(rows.some(r=>r&&r.seriesKey!==undefined&&r.seriesKey!==null)) return groupedTrendOption(rows); return baseOption({tooltip:{trigger:'axis'},legend:{top:0,data:['缺陷数','异常数']},xAxis:{type:'category',data:rows.map(r=>shortTime(r.timeBucket))},yAxis:{type:'value'},series:[{name:'缺陷数',type:'bar',data:rows.map(r=>Number(r.defectCount||r.totalCount||0))},{name:'异常数',type:'line',smooth:true,data:rows.map(r=>Number(r.ngCount||0))}]}) } if(m==='trend'){ const rows=data.trend||[]; if(rows.some(r=>r&&r.seriesKey!==undefined&&r.seriesKey!==null)) return groupedTrendOption(rows);
   // ★ 2026-11-05：缺陷图片事实表通道只上报缺陷图，**没有良品样本** → 良率不可计算。
   //   该源下不画良率线（否则会画出一条 0% 的假曲线，误导现场）。
   const noYield = data.dataSource==='DEFECT_IMAGE';
   const series=[{name:'检测总数',type:'line',smooth:true,data:rows.map(r=>Number(r.totalCount||0))},{name:'NG数',type:'line',smooth:true,data:rows.map(r=>Number(r.ngCount||0))}];
   if(!noYield) series.push({name:'良率',type:'line',smooth:true,yAxisIndex:1,data:rows.map(r=>Number(r.yieldRate||0))});
-  return baseOption({tooltip:{trigger:'axis'},legend:{top:0,data:noYield?['检测总数','NG数']:['检测总数','NG数','良率']},xAxis:{type:'category',data:rows.map(r=>shortTime(r.timeBucket))},yAxis:noYield?[{type:'value'}]:[{type:'value'},{type:'value',axisLabel:{formatter:'{value}%'}}],series}) } if(m==='defectRanking') return rankingBarOption(data.defectRanking||[],'defectName','defectCount','缺陷数'); if(m==='stationRanking') return rankingBarOption(data.stationRanking||[],'workstationName','ngCount','NG数'); if(m==='cameraRanking') return rankingBarOption(data.cameraRanking||[],'cameraName','ngCount','NG数'); if(m==='stackDefectBySeverity') return stackSeverityOption(data.defectRanking||[]); if(m==='defectHeatmap') return heatmapOption(data.hourlyHeatmap||[]); if(m==='shiftCompare') return shiftCompareOption(data.shiftCompare||[],data.shiftNames||{}); return {} }
-function baseOption(o){ return {grid:{left:40,right:42,top:42,bottom:34},color:['#2563eb','#ef4444','#16a34a','#f59e0b'],...o} }
+  return baseOption({tooltip:{trigger:'axis'},legend:{top:0,data:noYield?['检测总数','NG数']:['检测总数','NG数','良率']},xAxis:{type:'category',data:rows.map(r=>shortTime(r.timeBucket))},yAxis:noYield?[{type:'value'}]:[{type:'value'},{type:'value',axisLabel:{formatter:'{value}%'}}],series}) } if(m==='defectRanking') return rankingBarOption(data.defectRanking||[],'defectName','defectCount','缺陷数'); if(m==='stationRanking') return rankingBarOption(data.stationRanking||[],'workstationName','ngCount','NG数'); if(m==='cameraRanking') return rankingBarOption((data.cameraRanking||[]).map(r=>({...r,cameraName:r.cameraCode||r.cameraName||'未命名'})),'cameraName','ngCount','NG数'); if(m==='stackDefectBySeverity') return stackSeverityOption(data.defectRanking||[]); if(m==='defectHeatmap') return heatmapOption(data.hourlyHeatmap||[]); if(m==='shiftCompare') return shiftCompareOption(data.shiftCompare||[],data.shiftNames||{}); if(m==='defectTypeShare') return typeShareOption(data.defectRanking||[]); if(m==='defectCalendar') return calendarOption(data.dailyCalendar||[]); return {} }
+function baseOption(o){ return {grid:{left:40,right:42,top:42,bottom:34,containLabel:true},color:['#2563eb','#ef4444','#16a34a','#f59e0b'],...o} }
 function rankingBarOption(rows,nameKey,valueKey,seriesName){ const list=rows.slice(0,12).reverse(); return baseOption({tooltip:{trigger:'axis'},xAxis:{type:'value'},yAxis:{type:'category',data:list.map(r=>r[nameKey]||r.cameraCode||'未命名')},series:[{name:seriesName,type:'bar',barWidth:14,data:list.map(r=>Number(r[valueKey]||0))}]}) }
+/** ★ 2026-11-14 维度生效：趋势行带 seriesKey 时按序列拆多条线（Top6，其余并入「其他」省略） */
+function groupedTrendOption(rows){
+  const list=rows||[]
+  const keyOf=r=>String(r.seriesKey==null||r.seriesKey===''?'未知':r.seriesKey)
+  const totals=new Map()
+  list.forEach(r=>{ const k=keyOf(r); totals.set(k,(totals.get(k)||0)+Number(r.defectCount||r.totalCount||0)) })
+  const top=Array.from(totals.entries()).sort((a,b)=>b[1]-a[1]).slice(0,6).map(e=>e[0])
+  const buckets=Array.from(new Set(list.map(r=>r.timeBucket))).sort()
+  const series=top.map(k=>({name:k,type:'line',smooth:true,data:buckets.map(b=>{ const hit=list.find(r=>r.timeBucket===b&&keyOf(r)===k); return hit?Number(hit.defectCount||hit.totalCount||0):0 })}))
+  return baseOption({tooltip:{trigger:'axis'},legend:{top:0,type:'scroll',data:top},xAxis:{type:'category',data:buckets.map(shortTime)},yAxis:{type:'value'},series})
+}
 function stackSeverityOption(rows){ const names=Array.from(new Set(rows.slice(0,12).map(r=>r.defectName||'未知缺陷'))); const values=sev=>names.map(n=>rows.filter(r=>(r.defectName||'未知缺陷')===n&&String(r.severity||'').toUpperCase()===sev).reduce((s,r)=>s+Number(r.defectCount||0),0)); return baseOption({tooltip:{trigger:'axis'},legend:{top:0,data:['HIGH','MEDIUM','LOW']},xAxis:{type:'category',data:names},yAxis:{type:'value'},series:[{name:'HIGH',type:'bar',stack:'severity',data:values('HIGH')},{name:'MEDIUM',type:'bar',stack:'severity',data:values('MEDIUM')},{name:'LOW',type:'bar',stack:'severity',data:values('LOW')}]}) }
-function summaryFor(w){ if(String(w?.widgetId)==='__preview') return summary; return Number(w?.followGlobalFilter??1)===1?summary:(widgetData[w.widgetId]||normalizeSummary({})) }
-function isChartWidget(w){ return ['trend','defectTrend','defectRanking','defectPareto','severityDistribution','stationRanking','cameraRanking','stackDefectBySeverity','defectHeatmap','shiftCompare'].includes(widgetMetric(w)) }
-function hasChartData(w){ const d=summaryFor(w),m=widgetMetric(w); if(m==='trend') return (d.trend||[]).length>0; if(m==='defectTrend') return (d.defectTrend||d.trend||[]).length>0; if(m==='defectRanking'||m==='stackDefectBySeverity') return (d.defectRanking||[]).length>0; if(m==='defectPareto') return (d.defectPareto||d.defectRanking||[]).length>0; if(m==='severityDistribution') return (d.severityDistribution||[]).length>0; if(m==='stationRanking') return (d.stationRanking||[]).length>0; if(m==='cameraRanking') return (d.cameraRanking||[]).length>0; if(m==='defectHeatmap') return (d.hourlyHeatmap||[]).length>0; if(m==='shiftCompare') return (d.shiftCompare||[]).length>0; return false }
+function summaryFor(w){ if(String(w?.widgetId)==='__preview') return summary; if(widgetData[w.widgetId]) return widgetData[w.widgetId]; return Number(w?.followGlobalFilter??1)===1?summary:normalizeSummary({}) }
+function isChartWidget(w){ return ['trend','defectTrend','defectRanking','defectPareto','severityDistribution','stationRanking','cameraRanking','stackDefectBySeverity','defectHeatmap','shiftCompare','defectTypeShare','defectCalendar'].includes(widgetMetric(w)) }
+function hasChartData(w){ const d=summaryFor(w),m=widgetMetric(w); if(m==='trend') return (d.trend||[]).length>0; if(m==='defectTrend') return (d.defectTrend||d.trend||[]).length>0; if(m==='defectRanking'||m==='stackDefectBySeverity'||m==='defectTypeShare') return (d.defectRanking||[]).length>0; if(m==='defectPareto') return (d.defectPareto||d.defectRanking||[]).length>0; if(m==='severityDistribution') return (d.severityDistribution||[]).length>0; if(m==='stationRanking') return (d.stationRanking||[]).length>0; if(m==='cameraRanking') return (d.cameraRanking||[]).length>0; if(m==='defectHeatmap') return (d.hourlyHeatmap||[]).length>0; if(m==='shiftCompare') return (d.shiftCompare||[]).length>0; if(m==='defectCalendar') return (d.dailyCalendar||[]).length>0; return false }
 /** 帕累托图：柱状（缺陷数）+ 折线（累计占比%），一眼看出主要矛盾 */
 /** 严重度构成饼图 */
 /**
@@ -809,7 +969,7 @@ function heatmapOption(rows){
   list.forEach(r=>{ const ti=idx.get(String(r.defectType||'未知')); if(ti===undefined) return; const c=Number(r.defectCount||0); if(c>max) max=c; data.push([ti,Number(r.hourOfDay),c]) })
   return baseOption({
     tooltip:{position:'top',formatter:p=>`${topTypes[p.value[0]]} ${p.value[1]}点：${p.value[2]} 张`},
-    grid:{left:40,right:70,top:16,bottom:70},
+    grid:{left:40,right:70,top:16,bottom:70,containLabel:true},
     xAxis:{type:'category',data:topTypes,splitArea:{show:true},axisLabel:{interval:0,rotate:topTypes.length>6?30:0,fontSize:11}},
     yAxis:{type:'category',data:hours,splitArea:{show:true}},
     visualMap:{min:0,max:max||1,calculable:true,orient:'vertical',right:4,top:'center',inRange:{color:['#eff6ff','#93c5fd','#2563eb','#1e3a8a']}},
@@ -824,13 +984,58 @@ function shiftCompareOption(rows,shiftNames){
   return baseOption({
     tooltip:{trigger:'axis'},
     legend:{top:0,data:[dayName,nightName]},
-    grid:{left:50,right:20,top:42,bottom:70},
+    grid:{left:50,right:20,top:42,bottom:70,containLabel:true},
     xAxis:{type:'category',data:list.map(r=>r.defectType||'未知'),axisLabel:{interval:0,rotate:list.length>6?24:0,fontSize:11}},
     yAxis:{type:'value'},
     series:[
       {name:dayName,type:'bar',barMaxWidth:26,data:list.map(r=>Number(r.dayCount||0)),itemStyle:{color:'#2563eb'}},
       {name:nightName,type:'bar',barMaxWidth:26,data:list.map(r=>Number(r.nightCount||0)),itemStyle:{color:'#f58d2e'}}
     ]
+  })
+}
+
+/**
+ * ★ 2026-11-15 P2：缺陷类型占比（环形饼图）。
+ * 数据直接复用 defectRanking（按类型计缺陷框数），不额外查库。
+ */
+function typeShareOption(rows){
+  const list=(rows||[]).slice(0,10).map(r=>({ name:String(r.defectName||r.defectCode||'未知'), value:Number(r.defectCount||0) }))
+  const palette=['#2563eb','#ef4444','#16a34a','#f59e0b','#8b5cf6','#06b6d4','#ec4899','#84cc16','#f97316','#64748b']
+  return baseOption({
+    tooltip:{trigger:'item',formatter:'{b}: {c} ({d}%)'},
+    legend:{type:'scroll',bottom:0,data:list.map(r=>r.name)},
+    series:[{type:'pie',radius:['40%','66%'],center:['50%','44%'],avoidLabelOverlap:true,
+      label:{formatter:'{b} {d}%',fontSize:11},
+      itemStyle:{borderColor:'#fff',borderWidth:1},
+      data:list.map((r,i)=>({ ...r, itemStyle:{color:palette[i%palette.length]} }))}]
+  })
+}
+
+/**
+ * ★ 2026-11-15 P2：日缺陷日历热力图。
+ * 跨月/跨年时按年份切片，最多展示最近 12 个月（日历坐标系一次只画一个 year）。
+ * 无数据的日期不传坐标（ECharts 自然不会着色），一眼能看停机空档。
+ */
+function calendarOption(rows){
+  const list=(rows||[]).filter(r=>r&&r.dayKey)
+  if(!list.length) return baseOption({calendar:[],series:[]})
+  const days=list.map(r=>String(r.dayKey))
+  const maxDay=days[days.length-1]
+  const year=Number(maxDay.slice(0,4))||new Date().getFullYear()
+  const inYear=list.filter(r=>String(r.dayKey).startsWith(String(year)))
+  const range=[`${year}-01-01`,`${year}-12-31`]
+  const max=inYear.reduce((m,r)=>Math.max(m,Number(r.imageCount||0)),0)||1
+  return baseOption({
+    tooltip:{formatter:p=>`${p.value[0]}：${p.value[1]} 张缺陷图`},
+    visualMap:{min:0,max,calculable:true,orient:'horizontal',left:'center',bottom:6,
+      inRange:{color:['#eff6ff','#bfdbfe','#60a5fa','#2563eb','#1e3a8a']}},
+    calendar:{top:20,left:40,right:20,range,cellSize:['auto',14],
+      yearLabel:{show:true,position:'top'},
+      dayLabel:{firstDay:1,nameMap:'ZH'},
+      monthLabel:{nameMap:'ZH'},
+      itemStyle:{borderWidth:1,borderColor:'#e5e7eb'}},
+    series:[{type:'heatmap',coordinateSystem:'calendar',
+      data:inYear.map(r=>[String(r.dayKey),Number(r.imageCount||0)])}]
   })
 }
 
@@ -856,7 +1061,7 @@ function paretoOption(rows){
   return baseOption({
     tooltip:{trigger:'axis',axisPointer:{type:'shadow'}},
     legend:{top:0,data:['缺陷数','累计占比']},
-    grid:{left:50,right:56,top:42,bottom:66},
+    grid:{left:50,right:56,top:42,bottom:66,containLabel:true},
     xAxis:{type:'category',data:names,axisLabel:{interval:0,rotate:list.length>6?24:0,fontSize:11}},
     yAxis:[{type:'value',name:'缺陷数'},{type:'value',name:'累计占比(%)',max:100,axisLabel:{formatter:'{value}%'}}],
     series:[
@@ -940,10 +1145,10 @@ function widgetCardClass(w){ const l=widgetLayout(w); return {wide:Number(l.w||6
 function widgetCardStyle(w){ const h=Number(widgetLayout(w).h||3); return {'--chart-height': Math.max(220,h*110)+'px', minHeight: Math.max(260,h*120)+'px'} }
 function widgetSubtitle(w){ const typeName=widgetTypes.value.find(t=>t.code===w.widgetType)?.name||w.widgetType||'图表'; return typeName+' · '+metricLabel(widgetMetric(w))+' · '+(Number(w.followGlobalFilter??1)===1?'跟随全局筛选':'独立筛选') }
 function widgetTypeText(w){ return widgetTypes.value.find(t=>t.code===w?.widgetType)?.name||w?.widgetType||'图表' }
-function metricLabel(m){ return {plantOverview:'工厂总览（厂长视角）',quality:'核心质量指标',trend:'30分钟质量趋势',defectTrend:'缺陷发生趋势',defectPareto:'缺陷类型帕累托',defectRanking:'缺陷类型排行',severityDistribution:'缺陷严重度构成',stationRanking:'责任工位定位',cameraRanking:'责任相机定位',stackDefectBySeverity:'缺陷严重度堆叠',defectPivot:'产品缺陷透视表',mappingExceptions:'映射异常明细'}[m]||'自定义指标' }
-function metricDescription(m){ return {quality:'适合负责人快速查看检测总数、OK、NG、良率等总体质量表现。',trend:'按时间观察产量、NG数和良率波动，适合班次复盘和异常追溯。',defectRanking:'按缺陷类型统计 Top 问题，适合定位产品质量主要矛盾。',stationRanking:'按工位统计异常数量，适合定位产线瓶颈。',cameraRanking:'按相机统计异常数量，适合排查设备或视角问题。',stackDefectBySeverity:'按严重度堆叠缺陷类型，适合区分高危/中危/低危问题。',defectPivot:'按产品动态生成缺陷列，适合产品维度横向对比。',mappingExceptions:'展示未能完成映射的数据，适合维护配置和接口联调。',defectHeatmap:'小时×缺陷类型的热力分布，一眼定位缺陷高发时段。',shiftCompare:'白班/夜班各缺陷类型对比，适合班组质量横向排名。'}[m]||'用于自定义统计口径，保存后在看板中生效。' }
-function defaultMetricByType(t){ return {KPI:'quality',LINE:'trend',BAR:'stationRanking',STACK_BAR:'stackDefectBySeverity',RANK:'defectRanking',PIVOT:'defectPivot',PLANT_OVERVIEW:'plantOverview',PARETO:'defectPareto',SEVERITY:'severityDistribution',HEATMAP:'defectHeatmap'}[t]||'trend' }
-function defaultDimensionsByMetric(m){ return {plantOverview:['time'],quality:['time'],trend:['time'],defectTrend:['time'],defectPareto:['defectType'],defectRanking:['defectType'],severityDistribution:['severity'],stationRanking:['workstation'],cameraRanking:['camera'],stackDefectBySeverity:['defectType','severity'],defectPivot:['product','defectType'],mappingExceptions:['camera','product','defectType'],defectHeatmap:['time','defectType'],shiftCompare:['shift','defectType']}[m]||[] }
+function metricLabel(m){ return {plantOverview:'工厂总览（厂长视角）',quality:'核心质量指标',trend:'30分钟质量趋势',defectTrend:'缺陷发生趋势',defectPareto:'缺陷类型帕累托',defectRanking:'缺陷类型排行',severityDistribution:'缺陷严重度构成',stationRanking:'责任工位定位',cameraRanking:'责任相机定位',stackDefectBySeverity:'缺陷严重度堆叠',defectPivot:'产品缺陷透视表',mappingExceptions:'映射异常明细',defectHeatmap:'时段×缺陷类型热力图',shiftCompare:'班次缺陷对比',defectTypeShare:'缺陷类型占比',defectCalendar:'日缺陷日历'}[m]||'自定义指标' }
+function metricDescription(m){ return {quality:'适合负责人快速查看检测总数、OK、NG、良率等总体质量表现。',trend:'按时间观察产量、NG数和良率波动，适合班次复盘和异常追溯。',defectRanking:'按缺陷类型统计 Top 问题，适合定位产品质量主要矛盾。',stationRanking:'按工位统计异常数量，适合定位产线瓶颈。',cameraRanking:'按相机统计异常数量，适合排查设备或视角问题。',stackDefectBySeverity:'按严重度堆叠缺陷类型，适合区分高危/中危/低危问题。',defectPivot:'按产品动态生成缺陷列，适合产品维度横向对比。',mappingExceptions:'展示未能完成映射的数据，适合维护配置和接口联调。',defectHeatmap:'小时×缺陷类型的热力分布，一眼定位缺陷高发时段。',shiftCompare:'白班/夜班各缺陷类型对比，适合班组质量横向排名。',defectTypeShare:'缺陷类型构成占比（环形图），适合报周会一页看清主要矛盾。',defectCalendar:'按自然日的缺陷量日历热力图，看节律、看空档、找停机。'}[m]||'用于自定义统计口径，保存后在看板中生效。' }
+function defaultMetricByType(t){ return {KPI:'quality',LINE:'trend',BAR:'stationRanking',STACK_BAR:'stackDefectBySeverity',RANK:'defectRanking',PIVOT:'defectPivot',PLANT_OVERVIEW:'plantOverview',PARETO:'defectPareto',SEVERITY:'severityDistribution',HEATMAP:'defectHeatmap',PIE:'defectTypeShare',CALENDAR:'defectCalendar'}[t]||'trend' }
+function defaultDimensionsByMetric(m){ return {plantOverview:['time'],quality:['time'],trend:['time'],defectTrend:['time'],defectPareto:['defectType'],defectRanking:['defectType'],severityDistribution:['severity'],stationRanking:['workstation'],cameraRanking:['camera'],stackDefectBySeverity:['defectType','severity'],defectPivot:['product','defectType'],mappingExceptions:['camera','product','defectType'],defectHeatmap:['time','defectType'],shiftCompare:['shift','defectType'],defectTypeShare:['defectType'],defectCalendar:['time']}[m]||[] }
 function widgetSort(a,b){ return Number(a.sortOrder||0)-Number(b.sortOrder||0)||Number(a.widgetId||0)-Number(b.widgetId||0) }
 function cameraOptionLabel(c){ return (c.cameraName||c.cameraCode||'未命名相机')+(c.cameraCode?'（'+c.cameraCode+'）':'') }
 function independentFilterText(w){ const f=parseJsonField(w.filterJson,{}), names=[]; if(f.productId) names.push('产品='+idName(metadata.products,'productId','productName',f.productId)); if(f.cameraId) names.push('相机='+idName(metadata.cameras,'cameraId','cameraName',f.cameraId)); if(f.defectType) names.push('缺陷='+f.defectType); if(f.severity) names.push('严重度='+severityText(f.severity)); return names.length?names.join(' / '):'独立筛选：全部范围' }
@@ -955,7 +1160,7 @@ function clamp(v,min,max){ return Math.max(min,Math.min(max,v)) }
 function number(v){ return Number(v||0).toLocaleString() }
 function percent(v){ return Number(v||0).toFixed(2)+'%' }
 function shortTime(v){ return String(v||'').replace('T',' ').slice(5,16) }
-function jobTagType(s){ return {RUNNING:'warning',SUCCESS:'success',FAILED:'danger'}[s]||'info' }
+function jobTagType(s){ return {RUNNING:'warning',SUCCESS:'success',FAILED:'danger',SKIPPED:'info'}[s]||'info' }
 function aggregationJobText(job){ const range=[job.startDate,job.endDate].filter(Boolean).join(' ~ ')||'未设置时间范围'; const rows=[]; if(job.qualityRows!=null) rows.push('质量'+number(job.qualityRows)); if(job.defectRows!=null) rows.push('缺陷'+number(job.defectRows)); return range+(rows.length?' · '+rows.join(' / '):'') }
 function triggerSourceText(s){ return {MANUAL:'手动执行',SCHEDULE:'夜间自动',RETRY:'失败重试'}[s]||s||'-' }
 </script>
@@ -973,7 +1178,13 @@ function triggerSourceText(s){ return {MANUAL:'手动执行',SCHEDULE:'夜间自
 /* ★ 2026-11-04：筛选控件自适应宽度（原为固定 px，窄屏必然溢出/换行错乱） */
 .filter-ctrl{flex:1 1 180px;min-width:150px;max-width:220px}
 .filter-ctrl.narrow{flex:0 1 140px;min-width:120px;max-width:150px}
-.aggregation-card{align-items:flex-start;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 58%,var(--color-bg-page) 100%);border-color:#dbeafe}.aggregation-copy{max-width:860px}.ops-title-row,.panel-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}.job-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.job-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;background:var(--color-bg-subtle);border:1px solid var(--color-border-strong);color:#475569;font-size:12px}.job-chip b{color:var(--color-text)}.job-chip em{font-style:normal;font-weight:800}.job-chip .status-success{color:var(--color-success)}.job-chip .status-running{color:var(--color-warning-dark)}.job-chip .status-failed{color:var(--color-error)}.schedule-line{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;color:var(--color-text-secondary);font-size:12px}.schedule-line b{color:var(--color-primary)}
+/* P0-1：图片通道下「产品」筛选物理上不生效，就地标注，不静默吞掉 */
+.filter-with-hint{display:inline-flex;align-items:center;gap:6px;flex:1 1 180px;min-width:150px;max-width:260px}
+.filter-with-hint .filter-ctrl{min-width:0;max-width:none;flex:1 1 auto}
+.filter-unsupported{flex:0 0 auto;padding:2px 6px;border-radius:6px;background:#fef3c7;color:#b45309;font-size:11px;font-weight:700;cursor:help;white-space:nowrap}
+/* P1：向导里已隐藏的指标给出汇总说明，避免用户以为「功能丢了」 */
+.metric-hidden-hint{margin:-6px 0 14px 110px;padding:8px 12px;border-radius:10px;background:#f8fafc;border:1px dashed #cbd5e1;color:var(--color-text-secondary)}
+.aggregation-card{align-items:flex-start;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 58%,var(--color-bg-page) 100%);border-color:#dbeafe}.aggregation-copy{max-width:860px}.ops-title-row,.panel-title-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}.job-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.job-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 9px;border-radius:999px;background:var(--color-bg-subtle);border:1px solid var(--color-border-strong);color:#475569;font-size:12px}.job-chip b{color:var(--color-text)}.job-chip em{font-style:normal;font-weight:800}.job-chip .status-success{color:var(--color-success)}.job-chip .status-running{color:var(--color-warning-dark)}.job-chip .status-failed{color:var(--color-error)}.job-chip .status-skipped{color:var(--color-text-secondary)}.schedule-line{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;color:var(--color-text-secondary);font-size:12px}.schedule-line b{color:var(--color-primary)}
 /* ★ 2026-11-04：指标卡网格改为自适应列数。
    原来固定 repeat(6,1fr)，在「无良品样本」形态下只有 5 张卡 → 末尾留一格空白。
    改用 auto-fit + minmax，卡片数量变化时自动均分铺满，不留空位。 */
@@ -981,7 +1192,7 @@ function triggerSourceText(s){ return {MANUAL:'手动执行',SCHEDULE:'夜间自
 /* ★ 2026-11-04：良品样本未接入的状态卡（灰色中性态，与其它彩色指标卡区分） */
 .kpi-card.pending{border-style:dashed;border-color:#cbd5e1;background:var(--color-bg-page)}
 .kpi-card.pending strong{color:var(--color-text-secondary);font-size:20px;line-height:1.3}
-.kpi-card.pending small{color:var(--color-text-placeholder);line-height:1.5}.source-hint{display:flex;align-items:center;gap:10px;margin:-4px 0 4px;padding:9px 14px;border-radius:10px;font-size:12px;line-height:1.5;border:1px solid #dbeafe;background:var(--color-primary-bg);color:var(--color-primary-active)}.source-hint b{font-weight:700;white-space:nowrap}.source-hint.src-defect_image{border-color:#fed7aa;background:#fff7ed;color:#c2410c}.plant-overview-grid{grid-template-columns:repeat(7,minmax(0,1fr))}.plant-overview-grid b.high{color:var(--color-error)}.plant-overview-grid b.top{color:#c2410c;font-size:16px}.plant-overview-grid small{display:block;margin-top:4px;color:var(--color-text-placeholder);font-size:11px;font-weight:400}.presentation-quality-grid.plant-overview-grid{grid-template-columns:repeat(7,minmax(0,1fr))}.presentation-quality-grid b.high{color:var(--color-error)}.presentation-quality-grid b.top{color:#c2410c;font-size:22px}.presentation-quality-grid small{display:block;margin-top:6px;color:var(--color-text-placeholder);font-size:12px;font-weight:400}
+.kpi-card.pending small{color:var(--color-text-placeholder);line-height:1.5}.source-hint{display:flex;align-items:center;gap:10px;margin:-4px 0 4px;padding:9px 14px;border-radius:10px;font-size:12px;line-height:1.5;border:1px solid #dbeafe;background:var(--color-primary-bg);color:var(--color-primary-active)}.source-hint b{font-weight:700;white-space:nowrap}.source-hint.src-defect_image{border-color:#fed7aa;background:#fff7ed;color:#c2410c}.source-hint em{font-style:normal;color:var(--color-text-secondary)}.source-hint.src-warning{border-color:#fde68a;background:#fffbeb;color:#b45309}.plant-overview-grid{grid-template-columns:repeat(7,minmax(0,1fr))}.plant-overview-grid b.high{color:var(--color-error)}.plant-overview-grid b.top{color:#c2410c;font-size:16px}.plant-overview-grid small{display:block;margin-top:4px;color:var(--color-text-placeholder);font-size:11px;font-weight:400}.presentation-quality-grid.plant-overview-grid{grid-template-columns:repeat(7,minmax(0,1fr))}.presentation-quality-grid b.high{color:var(--color-error)}.presentation-quality-grid b.top{color:#c2410c;font-size:22px}.presentation-quality-grid small{display:block;margin-top:6px;color:var(--color-text-placeholder);font-size:12px;font-weight:400}
 .builder-layout{display:grid;grid-template-columns:220px minmax(0,1fr) 260px;gap:16px;align-items:start}.widget-palette,.config-panel,.canvas{border-radius:18px;background:var(--color-bg-card);border:1px solid var(--color-border);box-shadow:0 1px 4px rgba(15,23,42,.06)}.widget-palette,.config-panel{padding:16px;position:sticky;top:140px}.canvas{padding:16px;min-width:0}.widget-palette h3,.config-panel h3{margin:0 0 12px;font-size:16px;color:var(--color-text)}.panel-tip{margin:-4px 0 12px;color:var(--color-text-secondary);font-size:12px;line-height:1.6}
 .widget-btn{width:100%;border:1px solid var(--color-border);background:var(--color-bg-page);border-radius:14px;padding:12px;text-align:left;margin-bottom:10px;cursor:pointer;transition:.15s}.widget-btn:hover{border-color:#93c5fd;background:var(--color-primary-bg);transform:translateY(-1px)}.widget-btn b{display:block;color:var(--color-text);margin-bottom:4px}.widget-btn span{color:var(--color-text-secondary);font-size:12px;line-height:1.5}
 .canvas-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}.canvas-head h3{margin:0 0 4px;color:var(--color-text)}.canvas-head p{margin:0;color:var(--color-text-secondary);font-size:13px}.chart-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}

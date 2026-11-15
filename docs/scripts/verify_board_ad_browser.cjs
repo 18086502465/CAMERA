@@ -22,6 +22,7 @@ const PWD = process.env.ADMIN_PWD || 'admin123'
 const CHROME = resolveChrome()
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
+let STEP = 'init'
 const results = []
 function check(name, ok, detail) {
   results.push({ name, ok })
@@ -39,7 +40,7 @@ function check(name, ok, detail) {
 
   const jsErrors = []
   const badResponses = []
-  page.on('pageerror', e => jsErrors.push(String(e.message || e)))
+  page.on('pageerror', e => jsErrors.push('[step=' + STEP + '] ' + String(e.message || e) + ' @ ' + String((e.stack||'').split('\n').slice(0,4).join(' | '))))
   page.on('response', r => {
     const s = r.status()
     if (s >= 400 && !/favicon/.test(r.url())) badResponses.push(`${s} ${r.url().slice(-70)}`)
@@ -61,6 +62,7 @@ function check(name, ok, detail) {
     })
     if (clicked) { console.log('  已切到「近7天」'); await sleep(5000) }
 
+    STEP = 'kpi'
     // ① KPI 卡
     const labels = await page.$$eval('.kpi-card span', els => els.map(e => (e.textContent || '').trim()))
     console.log('  KPI 标签：', labels.join(' | '))
@@ -72,6 +74,7 @@ function check(name, ok, detail) {
     check('旧恒等三卡已移除（NG数/缺陷数/高危缺陷）',
       !labels.includes('NG数') && !labels.includes('缺陷数') && !labels.includes('高危缺陷'))
 
+    STEP = 'charts'
     // ②③ 图表卡片与画布
     const cards = await page.$$eval('.chart-card', els => els.map(e => ({
       title: (e.querySelector('.card-head h4')?.textContent || '').trim(),
@@ -91,6 +94,7 @@ function check(name, ok, detail) {
     check('班次对比卡片存在且出图', !!shift && shift.canvases > 0 && !shift.empty,
       shift ? `canvas=${shift.canvases} ${shift.w}x${shift.h}` : '未找到')
 
+    STEP = 'defect-type-dropdown'
     // ④ 缺陷类型下拉：实际类型 + 计数
     const placeholders = await page.evaluate(() => {
       const selects = [...document.querySelectorAll('.filter-card .el-select')]
@@ -114,6 +118,7 @@ function check(name, ok, detail) {
     check('选项不是 dim_defect_type 标准类型',
       !typeOpts.some(o => /内装胶滴|前腰腹异物/.test(o)), typeOpts.slice(0, 2).join(','))
 
+    STEP = 'filter-apply'
     // ⑤ 选「接头」→ KPI 收缩（选项计数是**全时段**口径，当前筛选是时间窗，故只比方向与首要缺陷）
     const before = await page.$$eval('.kpi-card strong', els => els.map(e => (e.textContent || '').trim()))
     const picked = await page.evaluate(() => {
@@ -135,9 +140,86 @@ function check(name, ok, detail) {
       check('缺陷类型下拉可选中「接头」', false, '未找到选项')
     }
 
+    STEP = 'filter-hint'
+    // ⑦ P0-1：图片通道下「产品」筛选物理上不生效，必须就地标注（静默吞掉才是最伤信任的）
+    const filterHint = await page.evaluate(() => {
+      const box = document.querySelector('.filter-with-hint')
+      return box ? (box.textContent || '').includes('不生效') : false
+    })
+    check('产品筛选标注「不生效」（图片通道）', filterHint === true)
+
+    STEP = 'palette'
+    // ⑧ P2：组件库出现占比饼图 / 日历热力图两种新形态
+    const palette = await page.$$eval('.widget-palette .widget-btn b', els => els.map(e => (e.textContent || '').trim()))
+    console.log('  组件库：', palette.join(' | '))
+    check('组件库含「占比饼图」', palette.includes('占比饼图'))
+    check('组件库含「日历热力图」', palette.includes('日历热力图'))
+
+    STEP = 'wizard'
+    // ⑨ P1：向导里隐藏「当前数据源下无意义」的指标入口，并给出说明
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.canvas-actions button')].find(b => (b.textContent || '').trim() === '新增图表')
+      if (btn) btn.click()
+    })
+    await sleep(1600)
+    await page.evaluate(() => {
+      const item = [...document.querySelectorAll('.el-dialog .el-form-item')]
+        .find(i => /统计指标/.test(i.textContent || ''))
+      const sel = item && item.querySelector('.el-select')
+      if (sel) sel.click()
+    })
+    await sleep(1200)
+    const metricOpts = await page.$$eval('.el-select-dropdown__item', els => els.map(e => (e.textContent || '').trim()))
+    console.log('  指标下拉：', metricOpts.join(' | '))
+    check('指标下拉已隐藏「核心质量指标」', !metricOpts.some(o => o.includes('核心质量指标')))
+    check('指标下拉已隐藏「产品缺陷透视表」', !metricOpts.some(o => o.includes('产品缺陷透视表')))
+    check('指标下拉含「缺陷类型占比」「日缺陷日历」',
+      metricOpts.some(o => o.includes('缺陷类型占比')) && metricOpts.some(o => o.includes('日缺陷日历')))
+    const hiddenNotice = await page.$eval('.metric-hidden-hint', el => (el.textContent || '').trim()).catch(() => '')
+    check('给出隐藏指标的原因说明', /已隐藏/.test(hiddenNotice), hiddenNotice.slice(0, 40))
+
+    STEP = 'preview-new-shapes'
+    // ⑩ 两个新形态能真正出图（直接在指标下拉里切换，避免 Esc 关掉整个对话框）
+    const pickMetric = async name => {
+      await page.evaluate(() => {
+        const item = [...document.querySelectorAll('.el-dialog .el-form-item')]
+          .find(i => /统计指标/.test(i.textContent || ''))
+        const sel = item && item.querySelector('.el-select')
+        if (sel) sel.click()
+      })
+      await sleep(900)
+      return page.evaluate(text => {
+        // 只看当前可见的下拉浮层，避免点到其它 select 残留的 popper
+        const poppers = [...document.querySelectorAll('.el-select-dropdown')].filter(p => p.offsetParent !== null)
+        const scope = poppers.length ? poppers[poppers.length - 1] : document
+        const hit = [...scope.querySelectorAll('.el-select-dropdown__item')]
+          .find(i => (i.textContent || '').includes(text))
+        if (hit) { hit.click(); return (hit.textContent || '').trim() }
+        return ''
+      }, name)
+    }
+    const piePick = await pickMetric('缺陷类型占比')
+    await sleep(2200)
+    const pieW = await page.$eval('.preview-panel canvas', el => el.width).catch(() => 0)
+    check('「缺陷类型占比」预览出图', pieW > 0, `${piePick} → canvas w=${pieW}`)
+    const calPick = await pickMetric('日缺陷日历')
+    await sleep(2200)
+    const calW = await page.$eval('.preview-panel canvas', el => el.width).catch(() => 0)
+    check('「日缺陷日历」预览出图', calW > 0, `${calPick} → canvas w=${calW}`)
+    await page.evaluate(() => {
+      const b = [...document.querySelectorAll('.el-dialog__footer button')].find(x => (x.textContent || '').trim() === '取消')
+      if (b) b.click()
+    })
+    await sleep(800)
+
     // ⑥ 错误面
     const shotDir = path.resolve(__dirname, '../../.workbuddy/tmp')
     await page.screenshot({ path: path.join(shotDir, 'board-ad-full.png'), fullPage: false })
+    if (jsErrors.length) {
+      const hist = await page.evaluate(() => (window.__chartHistory || []).slice(-8)).catch(() => [])
+      console.log('  最近渲染历史（诊断）：')
+      hist.forEach(h => console.log(`    - ${h.label} | ${h.series} | n=${h.n}`))
+    }
     check('0 JS 错误', jsErrors.length === 0, jsErrors.slice(0, 2).join(' ; '))
     check('无 4xx/5xx 接口响应', badResponses.length === 0, badResponses.slice(0, 3).join(' ; '))
   } catch (e) {
