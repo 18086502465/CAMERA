@@ -196,6 +196,72 @@ class CameraTypeContractTest {
                 anyString(), anyString(), anyString());
     }
 
+    // ---------------- 新建：复活软删行 / 拒绝活跃重号（2026-11-16） ----------------
+
+    @Test
+    @DisplayName("create: 编号已被软删行占用（is_active=0）→ 原位复活而非报「已存在」")
+    void createRevivesSoftDeletedRow() throws Exception {
+        // ★ 现场实测（DA6090850）：删除是逻辑删除，软删行还占着 uk_camera_code 物理唯一键，
+        //   旧行为「删了重加」必报「设备编号已存在」。复活时：复用原行主键、is_active 置回 1、
+        //   类型未指定则保留原值（REAL 不许被降级成 TEST，否则数据会被每小时清理删掉）。
+        CameraStatus deleted = new CameraStatus();
+        deleted.setId(9L);
+        deleted.setCameraCode("DA6090850");
+        deleted.setCameraName("CV2_Cma1");
+        deleted.setLineId(3);
+        deleted.setWorkstationId(14);
+        deleted.setIsActive(0);
+        deleted.setCameraType("REAL");
+        java.time.LocalDateTime originalCreated = java.time.LocalDateTime.of(2026, 11, 16, 17, 8, 15);
+        deleted.setCreateTime(originalCreated);
+        when(cameraStatusMapper.selectOne(any())).thenReturn(deleted);
+
+        stubRelation();
+        when(cameraDirectory.countDimCameraByCode(anyString())).thenReturn(0);
+
+        mvc().perform(post("/api/cameras")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(cameraBody("DA6090850", null))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 必须走 updateById 复活原行，绝不能 insert（会撞 uk_camera_code）
+        verify(cameraStatusMapper, never()).insert(any());
+        ArgumentCaptor<CameraStatus> captor = ArgumentCaptor.forClass(CameraStatus.class);
+        verify(cameraStatusMapper).updateById(captor.capture());
+        assertEquals(9L, captor.getValue().getId());
+        assertEquals(Integer.valueOf(1), captor.getValue().getIsActive());
+        // 未带类型 → 保留原值 REAL（降级会被定时清理删数据）
+        assertEquals("REAL", captor.getValue().getCameraType());
+        // 建档时间保留首次创建时间，不推成“刚刚”
+        assertEquals(originalCreated, captor.getValue().getCreateTime());
+        // dim_camera 同步复活（is_deleted=0 由 upsert 的 ON DUPLICATE KEY 保证）
+        verify(cameraDirectory).upsertDimCamera(eq(9L), anyInt(), anyInt(), anyInt(),
+                eq("DA6090850"), anyString(), eq("REAL"));
+    }
+
+    @Test
+    @DisplayName("create: 编号被启用中的相机占用 → 仍拒绝（复活只针对软删行）")
+    void createRejectsActiveDuplicate() throws Exception {
+        CameraStatus active = new CameraStatus();
+        active.setId(7L);
+        active.setCameraCode("DA6090850");
+        active.setCameraName("CV2_Cma1");
+        active.setIsActive(1);
+        when(cameraStatusMapper.selectOne(any())).thenReturn(active);
+
+        stubRelation();
+
+        mvc().perform(post("/api/cameras")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(om.writeValueAsString(cameraBody("DA6090850", null))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(500));
+
+        verify(cameraStatusMapper, never()).insert(any());
+        verify(cameraStatusMapper, never()).updateById(any());
+    }
+
     // ---------------- 编辑：保留原类型（防误降级） ----------------
 
     @Test

@@ -664,6 +664,12 @@ public class LineAnalyticsController {
             case "workstation":
                 return new DimSplit("COALESCE(NULLIF(w.station_name,''), CONCAT('工位#', IFNULL(c.workstation_id, 0)))",
                         " LEFT JOIN dim_workstation w ON w.workstation_id = c.workstation_id ", false);
+            case "line":
+                // 产线维（2026-11-16）：相机→产线，支撑「同工位跨产线」「同类型跨产线」对比。
+                // 序列名 code-first：优先 line_name，其次 line_code；无产线归属的相机
+                // （c.line_id 为空）归入「产线#0」，LEFT JOIN 不丢图，与工位/相机维的兜底口径一致。
+                return new DimSplit("COALESCE(NULLIF(l.line_name,''), l.line_code, CONCAT('产线#', IFNULL(c.line_id, 0)))",
+                        " LEFT JOIN dim_production_line l ON l.line_id = c.line_id ", false);
             case "defectType":
                 // 趋势块本不带 box 表，由 needBoxJoin 标记在趋势处补 LEFT JOIN
                 // （有 40 张图无缺陷框，不能 INNER JOIN 丢图）；join 只放非 box 的额外 JOIN，

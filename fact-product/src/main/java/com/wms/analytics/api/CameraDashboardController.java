@@ -162,30 +162,47 @@ public class CameraDashboardController {
                         .eq(CameraStatus::getCameraCode, camera.getCameraCode())
                         .last("LIMIT 1")
         );
-        if (exists != null) {
+        // ★ 2026-11-16 复活软删行：删除是逻辑删除（camera_status.is_active=0，行还在库里），
+        //   而 camera_status 有物理唯一键 uk_camera_code —— 软删行不处理，同编号重新新增
+        //   要么被查重挡住（旧行为报「设备编号已存在」，现场实测 DA6090850：加错位置 → 删除
+        //   → 重加被自己删掉的行挡死），要么撞唯一键。正确做法是原位复活：字段按本次请求
+        //   更新、is_active 置回 1；dim_camera 由 upsertDimCamera 的 ON DUPLICATE KEY
+        //   自动复活（is_deleted=0），两表口径保持一致。
+        boolean revivingDeleted = exists != null
+                && exists.getIsActive() != null && exists.getIsActive() == 0;
+        if (exists != null && !revivingDeleted) {
             return ResultVO.fail("设备编号已存在");
         }
         if (cameraDirectory.countDimCameraByCode(camera.getCameraCode()) > 0) {
             return ResultVO.fail("设备编号已存在");
         }
         // 授权相机数配额（2026-11-12）。放在「编号已存在」之后：重号是更明确的原因，
-        // 先报配额会让用户以为「加不了」而实际只是编号冲突。
+        // 先报配额会让用户以为「加不了」而实际只是编号冲突。复活同样占用配额，不能跳过。
         String quotaError = licenseService.checkCameraQuota(cameraDirectory.countDimCameras());
         if (quotaError != null) {
             return ResultVO.fail(quotaError);
         }
-        camera.setId(null);
         if (camera.getStatus() == null || camera.getStatus().trim().isEmpty()) camera.setStatus("RUNNING");
         if (camera.getIsActive() == null) camera.setIsActive(1);
         // ★ 2026-11-05 新增：相机类型（REAL=真实产线相机，不参与定时清理；TEST=测试相机，参与清理）。
-        //   未指定时按 TEST 处理（与存量现状一致：现场 16 台中 14 台为测试相机）。
-        String typeError = normalizeCameraType(camera, null);
+        //   未指定时新增默认 TEST（与存量现状一致：现场 16 台中 14 台为测试相机）；
+        //   复活场景传原值 —— 「REAL 相机删了重加」绝不能被静默降级成 TEST（会被每小时清理删数据）。
+        String typeError = normalizeCameraType(camera, revivingDeleted ? exists.getCameraType() : null);
         if (typeError != null) {
             return ResultVO.fail(typeError);
         }
         java.time.LocalDateTime now = java.time.LocalDateTime.now();
-        camera.setCreateTime(now);
         camera.setUpdateTime(now);
+        if (revivingDeleted) {
+            camera.setId(exists.getId());
+            camera.setIsActive(1);
+            camera.setCreateTime(exists.getCreateTime());
+            cameraStatusMapper.updateById(camera);
+            syncDimCamera(camera);
+            return ResultVO.success("创建成功");
+        }
+        camera.setId(null);
+        camera.setCreateTime(now);
         cameraStatusMapper.insert(camera);
         syncDimCamera(camera);
         return ResultVO.success("创建成功");

@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -293,6 +294,56 @@ class P3Batch4ContractTest {
                 .andExpect(jsonPath("$.data.trend[0].seriesKey").value("DA8119489"))
                 .andExpect(jsonPath("$.data.trend[0].totalCount").value(6))
                 .andExpect(jsonPath("$.data.defectRanking[0].defectName").value("DA8119489"));
+    }
+
+    @Test
+    @DisplayName("line-summary: dim=line → 趋势/排行按产线拆分（JOIN dim_production_line，跨产线对比）")
+    void lineSummaryDimSplitByLine() throws Exception {
+        // ★ 2026-11-16 产线维上线：支撑「同工位跨产线」「同类型跨产线」对比。
+        //   expr 必须来自 dim_production_line（line_name 优先、line_code 兜底）——
+        //   桩用 contains 匹配，表达式退化（比如误写成相机维）时匹配不上、trend 为 null，断言直接红。
+        when(queryRepository.queryOpenMappingExceptions()).thenReturn(Collections.emptyList());
+        Map<String, Object> imgKpi = new LinkedHashMap<>();
+        imgKpi.put("imageCount", 10);
+        imgKpi.put("defectCount", 2);
+        imgKpi.put("highCount", 1);
+        imgKpi.put("mediumCount", 1);
+        imgKpi.put("lowCount", 0);
+        imgKpi.put("cameraCount", 1);
+        imgKpi.put("workstationCount", 1);
+        when(queryRepository.queryDefectImageKpi(anyString(), anyString(), any())).thenReturn(imgKpi);
+
+        List<Map<String, Object>> groupedTrend = new ArrayList<>();
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("timeBucket", "2026-11-16 09:00:00");
+        row.put("seriesKey", "ZK23");
+        row.put("totalCount", 4);
+        row.put("defectCount", 4);
+        groupedTrend.add(row);
+        // 桩匹配维度表达式（第 4 参）；JOIN 片段（第 1 参）用 verify 单独校验
+        when(queryRepository.queryDefectImageTrendGrouped(anyString(), anyString(), any(),
+                contains("line_name"), anyString())).thenReturn(groupedTrend);
+
+        List<Map<String, Object>> groupedRanking = new ArrayList<>();
+        Map<String, Object> rankRow = new LinkedHashMap<>();
+        rankRow.put("defectName", "ZK23");
+        rankRow.put("defectCount", 4);
+        groupedRanking.add(rankRow);
+        when(queryRepository.queryDefectImageRankingGrouped(anyString(), anyString(), anyString(), any(),
+                contains("line_name"))).thenReturn(groupedRanking);
+
+        MockMvc mvc = mvc();
+        mvc.perform(get("/api/v1/analytics/line-summary").param("dim", "line"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.dataSource").value("DEFECT_IMAGE"))
+                .andExpect(jsonPath("$.data.trend[0].seriesKey").value("ZK23"))
+                .andExpect(jsonPath("$.data.defectRanking[0].defectName").value("ZK23"));
+        // JOIN 片段必须是 dim_production_line（跨产线对比的数据来源），否则对比是假的
+        verify(queryRepository).queryDefectImageTrendGrouped(
+                contains("dim_production_line"), anyString(), any(), contains("line_name"), anyString());
+        verify(queryRepository).queryDefectImageRankingGrouped(
+                contains("dim_production_line"), anyString(), anyString(), any(), contains("line_name"));
     }
 
     @Test

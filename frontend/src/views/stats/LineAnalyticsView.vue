@@ -679,7 +679,9 @@ const widgetPresets = [
   { key: 'defectHeatmap', name: '时段热力图', description: '小时×缺陷类型，定位高发时段', widgetType: 'HEATMAP', metric: 'defectHeatmap', dimensions: ['time', 'defectType'], width: 12, height: 4 },
   { key: 'shiftCompare', name: '班次对比', description: '白班/夜班各类型缺陷对比', widgetType: 'BAR', metric: 'shiftCompare', dimensions: ['shift', 'defectType'], width: 6, height: 3 },
   { key: 'defectTypeShare', name: '类型占比', description: '缺陷类型构成（环形占比）', widgetType: 'PIE', metric: 'defectTypeShare', dimensions: ['defectType'], width: 6, height: 3 },
-  { key: 'defectCalendar', name: '日缺陷日历', description: '按天看缺陷量的节律与空档', widgetType: 'CALENDAR', metric: 'defectCalendar', dimensions: ['time'], width: 12, height: 3 }
+  { key: 'defectCalendar', name: '日缺陷日历', description: '按天看缺陷量的节律与空档', widgetType: 'CALENDAR', metric: 'defectCalendar', dimensions: ['time'], width: 12, height: 3 },
+  { key: 'lineTrendCompare', name: '产线对比', description: '缺陷量趋势按产线拆分，跨线看谁在恶化', widgetType: 'LINE', metric: 'defectTrend', dimensions: ['time', 'line'], width: 12, height: 3 },
+  { key: 'lineTypeCompare', name: '产线缺陷排行', description: '按产线分组统计缺陷数，跨线横向排名', widgetType: 'BAR', metric: 'defectRanking', dimensions: ['line'], width: 6, height: 3 }
 ]
 
 const widgetTypes = computed(() => metadata.widgetTypes.length ? metadata.widgetTypes : fallbackWidgetTypes)
@@ -696,11 +698,11 @@ const DIM_NAME = { time: '时间', line: '产线', workstation: '工位', camera
 const wizardDimOptions = computed(() => {
   const m = widgetForm.metric
   const pick = codes => codes.map(c => ({ code: c, name: DIM_NAME[c] || c }))
-  if (m === 'trend' || m === 'defectTrend') return pick(['time', 'camera', 'workstation', 'defectType', 'shift', 'severity'])
+  if (m === 'trend' || m === 'defectTrend') return pick(['time', 'line', 'camera', 'workstation', 'defectType', 'shift', 'severity'])
   // ★ 2026-11-15 P1：defectRanking / defectPareto 的 dim 真正参与 SQL（按维度分组）；
   //   stationRanking / cameraRanking 在 SQL 里固定按工位/相机分组，勾别的维度不会改变数据，
   //   所以只保留它自己的维度 —— 与「不让勾」相比，「勾了没变」才是真正伤信任的那个。
-  if (m === 'defectRanking' || m === 'defectPareto') return pick(['defectType', 'camera', 'workstation', 'shift', 'severity'])
+  if (m === 'defectRanking' || m === 'defectPareto') return pick(['defectType', 'line', 'camera', 'workstation', 'shift', 'severity'])
   if (m === 'stationRanking') return pick(['workstation'])
   if (m === 'cameraRanking') return pick(['camera'])
   if (m === 'defectHeatmap') return pick(['time', 'defectType'])
@@ -711,7 +713,7 @@ const wizardDimOptions = computed(() => {
 })
 const wizardDimHint = computed(() => {
   const m = widgetForm.metric
-  if (m === 'trend' || m === 'defectTrend') return '勾「时间」画时间趋势；再勾一个维度（相机/工位/缺陷类型/班次/严重度）即按该维度拆成多条线（取第一个勾选的拆分维）。'
+  if (m === 'trend' || m === 'defectTrend') return '勾「时间」画时间趋势；再勾一个维度（产线/相机/工位/缺陷类型/班次/严重度）即按该维度拆成多条线（取第一个勾选的拆分维）。勾「产线」可做跨产线对比。'
   if (m === 'defectRanking' || m === 'defectPareto') return '勾选的维度就是排行/帕累托的分组依据（默认分组为该指标的固有维度，勾它=默认行为）。'
   if (m === 'stationRanking') return '该指标固定按「工位」分组。想看其他维度对比，请改用「缺陷类型排行」并切换到目标维度。'
   if (m === 'cameraRanking') return '该指标固定按「相机」分组。想看其他维度对比，请改用「缺陷类型排行」并切换到目标维度。'
@@ -771,7 +773,7 @@ function splitDimOf(w){
   const arr=Array.isArray(dims)?dims:defaultDimensionsByMetric(m)
   // stationRanking/cameraRanking 在 SQL 里固定分组，传别的维度只会白算一遍趋势块
   if(m==='stationRanking'||m==='cameraRanking') return ''
-  const cands=(Array.isArray(arr)?arr:[]).filter(d=>['camera','workstation','defectType','shift','severity'].includes(d))
+  const cands=(Array.isArray(arr)?arr:[]).filter(d=>['line','camera','workstation','defectType','shift','severity'].includes(d))
   if(!cands.length) return ''
   if(m==='trend'||m==='defectTrend') return cands[0]
   const defaultGroup={defectRanking:'defectType',defectPareto:'defectType'}[m]||''

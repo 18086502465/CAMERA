@@ -16,7 +16,9 @@ This file provides guidance to CodeBuddy Code when working with code in this rep
 | `dist-release/` | 构建产物输出，不入库 |
 | `docs/` | 架构 / 模块 / 接口 / 运维 / 使用 / 配置项 / **踩坑速查**；`docs/scripts/` 为运维与验证脚本 |
 
-Windows 版安装脚本（`installer/**/*.ps1`、`.iss`）已冻结，不要在其上继续开发。
+Windows 版安装链（`installer/**/*.ps1`、`.iss`）已于 **2026-11-13 从工作树移除**（15 个文件）——
+保留两套实现却只维护一套，会让新协作者误以为 Windows 链仍可用。需要历史版本时从 git 取出：
+`git log --oneline --all -- installer/scripts` → `git show <commit>:installer/scripts/install-service.ps1`。
 
 ## 常用命令
 
@@ -60,25 +62,38 @@ npm run preview        # 预览 dist 产物
 
 ### 发版链路
 
+现场已迁到**统一布局**（2026-11-11）：唯一根 `/main/app`，`/main` 是数据盘挂载点。
+部署目录 `/main/app/dist`，数据目录 `/main/app/data`，脚本 `/main/app/dist/scripts/`。
+
 ```bash
 bash installer/linux/build-release.sh              # 全量包：前端构建 → 同步 static → 打 JAR → 组装 stage → tar.gz
-bash installer/linux/build-release.sh --update-only # 轻量增量包（~2MB，只含 BOOT-INF/classes/**）
+bash installer/linux/build-release.sh --update-only # 轻量增量包（classes + static 增量，体积随历史 chunk 数量增长）
 SUDO_PASSWORD='xxx' bash installer/linux/scripts/deploy_jar.sh /tmp/update-*.zip  # 服务器端：*.zip 增量 / *.jar 全量，失败自动回滚
-sudo env VERIFY_PASSWORD='xxx' MYSQL_PASSWORD='xxx' bash installer/linux/scripts/verify.sh
+sudo env VERIFY_PASSWORD='xxx' MYSQL_PASSWORD='xxx' bash /main/app/dist/scripts/verify.sh
 ```
 
 `build-release.sh` 是唯一被认可的打包入口 —— 它做的三件事手工很容易漏：清空 `dist/assets`、把前端产物同步进 `static/`、保留历史 chunk 版本。
+
+> ⚠️ **改脚本模板 ≠ 改现场**：已经在跑的那台机器上 `/etc/cron.d/*` 不会跟着模板更新。
+> 涉及 cron / systemd 单元的改动，必须**同时重写现场文件**再重启，否则跑的还是旧副本
+> （现场踩过：磁盘巡检一直监控的是系统盘；见速查 §十八）。
+>
+> ⚠️ 增量模式依赖**同目录**的 `jar_manifest.py` —— 发布包只复制 `*.sh` 时它从未进包，
+> 增量部署会静默失败（速查 §15.1）。
 
 ### 建库
 
 严格按序执行 `fact-product/src/main/resources/sql/deploy/`（**不是** `dist-release` 里的 `wms-new.sql`，那份缺 15 张 P0 表）：
 
 ```
-01_init_schema_nodb → 02_final_schema_p0 → 03_system_settings → 04_align_entity_columns
+01_init_schema_nodb → 02_final_schema_p0 → 03_system_settings → 04_align_entity_columns → 05_camera_type_migration
 ```
 
-已有库按需追加增量补丁（幂等，不进全新库流程）：`05_camera_type_migration.sql`（相机类型字段）、
-`06_index_tuning.sql`（`camera_images.capture_time` 索引 —— 两处清理任务的判据字段）。
+`05_camera_type_migration.sql`（相机类型字段）**是全新库流程的第 5 步，不是可选补丁** ——
+缺了它，清理脚本查不到"哪些相机不能删"，保护集恒为空 → 每小时清理直接中止并告警。
+`installer/linux/scripts/init-database.sh` 已按 01→05 执行并在第 5 步做
+「camera_type 列缺失 → die」校验。`06_index_tuning.sql`（`camera_images.capture_time` 索引）
+才是**存量库按需追加**的幂等补丁。
 
 `02_final_schema_p0.sql` 会 **DROP 重建 21 张表**。生产升级绝不能跑全量流程。
 
@@ -96,19 +111,19 @@ sudo env VERIFY_PASSWORD='xxx' MYSQL_PASSWORD='xxx' bash installer/linux/scripts
 com.wms
 ├── TimeBucketApplication      装配根（@MapperScan 七包）
 ├── init/SchemaInitializer     启动期统一建表（system → defect → analytics），失败记 ERROR 不阻断启动
-├── shared/                    common(ResultVO) / util(Excel, ShiftCalculator) / config / web(SpaFallbackController)
+├── shared/                    common(ResultVO) / util(Excel, ShiftCalculator) / config / web(SpaFallbackController) / license(授权签发与校验)
 ├── iam/          登录 JWT、用户、操作日志            (AuthController, SecurityConfig, JwtRequestFilter)
 ├── masterdata/   工厂/产线/工位/品牌/公司/班次/节假日 + 级联树下发
 ├── device/       相机档案、心跳、状态快照、服务器指标
 ├── defect/       缺陷图片上传/检索 ——  现场主通道
 ├── inspection/   批量上报冻结契约（fact_inspection_* + agg_*）
 ├── analytics/    产线统计、看板、聚合、告警查询（最重）
-└── system/       系统设置、数据清理、Excel 导入导出、映射维护
+└── system/       系统设置、数据清理、Excel 导入导出、映射维护、授权管理
 ```
 
 每域分层：`api/`（Controller + DTO/VO）→ `app/`（应用服务、事件、跨域端口）→ `domain/model/`（被动实体）→ `infra/`（`mapper/` MyBatis-Plus + `repository/` JdbcTemplate + `task/`）。层不齐是既有状态：`defect` 没有 `domain/`，`system` 没有 `app/` —— 别为了"整齐"新建空层。
 
-规模参考（2026-11-07 实测）：162 个 Java 文件 / 20,728 行、28 个 Controller / 135 个端点、15 个 Repository / 17 个 Mapper、22 个测试类 / 145 个 `@Test`（展开后 148 个用例）。文档里若见 151 文件 / 134 端点 / 79 用例，都是 DDD 定稿时的旧值。
+规模参考（2026-11-16 实测）：**175** 个 Java 文件 / **22,725** 行、**29** 个 Controller / **141** 个端点、15 个 Repository / 17 个 Mapper、**27** 个测试类 / **224** 个 `@Test`。文档里若见 151 文件 / 134 端点 / 79 用例，都是 DDD 定稿时的旧值。
 
 ### ArchUnit 三条铁律（`com.wms.arch.ArchitectureTest`）
 
@@ -121,9 +136,23 @@ com.wms
 ### 跨域协作只有两种模式
 
 - **进程内事件**（Spring `ApplicationEvent`，同步）：`device` 发 `CameraAlertEvent`（5 类心跳告警）→ `analytics.CameraAlertEventListener` 落 `fact_anomaly_alert`。监听器吞 `DataAccessException`，不影响心跳主流程。
-- **端口-适配器**：接口定义在**消费方**。`device.app.CameraDirectory`（14 方法，供 analytics）← `CameraDirectoryAdapter`；`device.app.SystemSettingReader`（读告警阈值）← `system.infra.SystemSettingReaderAdapter`。
+- **端口-适配器**：接口定义在**消费方**。`device.app.CameraDirectory`（15 方法，供 analytics）← `CameraDirectoryAdapter`；`device.app.SystemSettingReader`（读告警阈值）← `system.infra.SystemSettingReaderAdapter`。
 
 新增跨域调用优先走这两种，不要直接注别的域的 Repository —— 会撞 ArchUnit。
+
+### 授权（License）
+
+`shared/license/`（签发与校验）+ `system/api/LicenseController.java` + 前端 `system/LicenseView.vue`。
+授权文件落在 `${app.home}/data/license/license.lic`（现场 `/main/app/data/license/`），
+**必须落在应用用户 `cdsys` 可写且已在 systemd `ReadWritePaths` 内的目录** —— 放 `/etc` 会让
+「上传新授权」永远 `Permission denied`，而旧授权还在、系统照常跑，只在真换授权那天才暴露。
+
+`expired-mode` 默认 `warn`（只告警不阻断，产线不能因授权到期停线）—— **交付合同要求
+"必须有授权才能用"时必须显式切 `readonly`**，切之前先确认授权文件已装好。
+对称密钥在 jar 里，反编译可提取，**只挡"改到期日/换机器拷/过期继续用"，挡不住逆向**，
+不要对客户承诺"无法破解"。Java 与签发工具 `installer/linux/scripts/gen_license.py` 的密钥与
+base64 变体必须逐字节一致（`LicenseSignerTest.GOLDEN` 固化了真实签发文件）。
+改签名的测试一律改**中间位**（改末位可能因 base64 末位只有 4 位有效信息而假绿）。
 
 ### 两条上报通道（最容易理解错的一点）
 
@@ -136,6 +165,29 @@ com.wms
 所以统计接口必须做 `defect_image_*` 兜底，响应带 `dataSource` 字段。**判定顺序是"图片事实表优先、聚合表兜底"，不是反过来** —— 反过来会被 `agg_*` 里的孤儿行（已删产线的残留）骗过，出现"筛选后比不筛选还多"。孤儿行由 `purgeOrphanAggregationRows()` 在日聚合重建后清理。
 
 `product_detection_history` 实测 0 行，检测记录页必须走 `defect-images/history`。
+
+### 统计口径必须"诚实降级"，不能静默吞筛选（2026-11-15 收口）
+
+图片通道的 `defect_image_file/_box/_batch` **三张表都没有产品列**，物理上无法按产品过滤。
+`camera_status.product_name` 看着能用，实际是**心跳当前快照、无历史** —— 拿它 join 历史图片行
+等于用今天的在制品解释上周的缺陷，数字对不上且无法自证。
+
+所以产品维**只能忽略，但必须显式上报**：`line-summary` 回传 `ignoredFilters:["productId"]`
++ `ignoredFilterMessage`，前端在下拉旁挂「不生效」角标。
+**静默吞掉筛选是这一层最伤信任的失败模式。**
+
+日聚合同理：源表 `agg_quality_30m` 恒空（现场不写）时，
+`submitDailyAggregation` 记 **`SKIPPED`**（附原因）而不是 SUCCESS —— 源表空却记 SUCCESS
+会让人以为"聚合跑过了、没加速是别的原因"。
+
+### 看板形态（`/stats/line`）
+
+`LineAnalyticsView` 的 widget 类型共 16 种，改这个页面前先认全：
+`plantOverview`（厂长总览）/ `quality` / `trend` / `defectTrend` / `defectRanking` /
+`defectPareto` / `severityDistribution` / `stationRanking` / `cameraRanking` /
+`stackDefectBySeverity` / `heatmap` / `shiftCompare` / `pie` / `calendar` /
+`defectPivot` / `mappingExceptions`。
+看板 A（缺陷分析：热力图/班次对比/环比）与看板 D（厂长日报）为 2026-11-14~15 新增。
 
 ### 相机身份：code-first
 
@@ -179,9 +231,9 @@ com.wms
 
 `axios` 实例在 `utils/request.js`，`baseURL = '/api'`，所以 `api/*.js` 里写的是 `/cameras` 这种相对路径。拦截器只做认证分流，权限判定集中在 `utils/auth-redirect.js`（401 → 清 token 跳登录；403 → 仅未登录才跳，权限不足只透传提示），登录上下文存 sessionStorage `camera_login_redirect`，用后即焚。
 
-路由里有一批**重定向兼容桩**（`/factories`、`/lines`、`/workstations`、`/companies`、`/brands`、`/users`、`/defect-types`、`/holidays` 全部 redirect 到 `/system/config`）。这是既有状态，不代表对应页面可用 —— 这 8 个 `.vue`（`FactoryList`/`LineList`/`WorkstationList`/`CompanyList`/`BrandList`/`UserList`/`DefectTypeList`/`HolidayConfig`）**没有任何路由指向它们**。
+路由里有一批**重定向兼容桩**（`/factories`、`/lines`、`/workstations`、`/companies`、`/brands`、`/users`、`/defect-types`、`/holidays`、`/operation-logs`、`/stats/overview`、`/stats/line-dashboard`、`/system/config` 全部 redirect 到 `/system/config`）。这是既有状态，不代表对应页面可用 —— 前 8 个对应的 `.vue`（`FactoryList`/`LineList`/`WorkstationList`/`CompanyList`/`BrandList`/`UserList`/`DefectTypeList`/`HolidayConfig`）**没有任何路由指向它们**。
 
-2026-11-07 实测口径：`views/` 下 31 个 `.vue` − 16 个路由指向的页面 − 8 个重定向桩 − 1 个子组件（`system/config/ConfigImportDialog.vue` 挂在 `ConfigView` 内）= **6 个真孤立页面**：
+2026-11-16 实测口径：`views/` 下 **32** 个 `.vue` − 17 个路由指向的页面 − 8 个重定向桩页面 − 1 个子组件（`system/config/ConfigImportDialog.vue` 挂在 `ConfigView` 内）= **6 个真孤立页面**：
 `stats/DefectTrend.vue`、`stats/LineDashboard.vue`、`stats/ProductShiftYield.vue`、`stats/StatsOverview.vue`、
 `system/OperationLog.vue`、`system/SystemSettings.vue`。它们改代码不会影响任何在线路由，别花时间调。
 
@@ -202,7 +254,9 @@ com.wms
 | 定时任务 | `infra/task/`，cron 用 `${app.xxx.cron:默认值}` 形式，别硬编码 |
 | 前端新页面 | `frontend/src/views/` + `router/index.js` + `api/*.js`；日期/相机身份一律用 `utils/` 下的公共函数 |
 | 前端配色 | 只用 `frontend/src/styles/tokens.css` 里的 `var(--color-*)`，**不要写死色值**。该文件是唯一真源（`main.js` 在 element-plus 的 CSS 之后引入，顺序不能改）。`global.css` 当前**未被任何文件 import**，是死文件，别往里加东西 |
-| 表结构变更 | `sql/deploy/` 新增 `0X_*.sql`（不改已发布的 01~04），并在对应域 Repository 的 `ensureXxx`（`ensureColumn` / `ensureSchemaFull`）里做幂等补列/补索引 —— `init/SchemaInitializer` 启动期统一调度，失败只记 ERROR 不阻断启动 |
+| 表结构变更 | `sql/deploy/` 新增 `0X_*.sql`（不改已发布的 01~05），并在对应域 Repository 的 `ensureXxx`（`ensureColumn` / `ensureSchemaFull`）里做幂等补列/补索引 —— `init/SchemaInitializer` 启动期统一调度，失败只记 ERROR 不阻断启动 |
+| 授权相关 | `shared/license/`（签发与校验）+ `system/api/LicenseController` + 前端 `system/LicenseView.vue`；授权**文件**路径必须落在 `${app.home}/data/` 下且应用用户可写 |
+| 统计页 / 看板 | `analytics/api/LineAnalyticsController` + `analytics/infra/repository/LineAnalyticsQueryRepository` + 前端 `views/stats/LineAnalyticsView.vue`；**9 个数据块**（KPI/趋势/排行/工位/相机/透视/严重度/热力图/班次）同源，改一处要确认其余没串源 |
 
 ## 改代码前必须知道的纪律
 
@@ -218,6 +272,13 @@ com.wms
 - **构建前清空 `dist/assets`**：`vite build` 默认不清理输出目录，会混入上次的旧 chunk。
 - **shell / sql / py 一律 LF**（`.gitattributes` 强制）。CRLF 传到 Linux 会报 `set: pipefail: invalid option name`，整条部署链直接失败。
 - **配置与密钥分离**：唯一密钥源 `/etc/default/camera-detection`（640 root），systemd `EnvironmentFile` 注入。占位符写成 `${MYSQL_PASSWORD}`，**绝不能带空默认值** —— 带空默认值是"服务 active 但业务全错"，无默认值才会启动即报 `Could not resolve placeholder`。生产还须显式覆盖 `mybatis-plus.configuration.log-impl=Slf4jImpl` 与 `logging.level.com.wms.mapper=INFO`。
+- **统一布局的唯一根是 `/main/app`**（2026-11-11 现场迁移）：`dist`（程序）/`data`（mysql、images、uploads、backup）/`logs`/`run`/`tmp`/`backup` 分列其下。
+  `/main` 是**数据盘挂载点**（500G xfs），fstab 用 UUID 且**绝不加 nofail**，两个 systemd unit 带 `RequiresMountsFor=/main`。
+  三个旧路径是 symlink **不能拆**（库内历史 `image_path` 靠它兜底）：`/opt/camera-detection-system`→`dist`、
+  `/var/lib/camera-detection-system`→`/main/app`、`/data/camera-detection`→`/main/app/data`。
+  改动图片路径必须同步 systemd `ReadWritePaths`。迁移坑见速查 §十四。
+- **改脚本模板 ≠ 改现场**：已经在跑的那台机器上 `/etc/cron.d/*` 不会跟着模板更新。
+  涉及 cron / systemd 单元的改动，必须**同时重写现场文件**再重启（速查 §十八）。
 - **测试数据只用 `ZZTEST*` 前缀**，验证后清理；现场（杭州临平二期）数据一律不得动。
 - **磁盘图片文件只有一个删除者**：`cleanup-defect-images.sh`（730 天日期目录）。`DataCleanupTask` 清 `camera_images` **只删行、不删文件** —— 两表 `image_path` 完全重叠，Java 侧删文件会让「记录留 730 天、文件 30 天消失」直接裂图。测试相机清理脚本另有三道防误删防线（双表 OR 保护集 / 保护集为空即中止 / 单轮超阈值即中止），改脚本时必须保留。
 - **脚本的「先删库后删盘」只适用于 shell 侧同类清理**：`cleanup-defect-images.sh` 删库记录 → 删磁盘文件；反过来会留「库有行、盘无文件」的裂图。Java 侧不再有这个顺序问题（不碰文件）。
@@ -225,6 +286,7 @@ com.wms
   2026-11-12 删除了 `jar_manifest.py`、`prune_legacy_chunks.py`、`recover_legacy_chunks.py` 三份
   与 installer 逐字节一致的副本 —— 本仓库栽过「副本漂移、测的是旧版」，而增量部署正确性
   直接依赖 `jar_manifest.py`。**不要再往 `docs/scripts/` 拷第二份。**
+  脚本改名同理以 installer 为准：测试相机清理脚本现名 `cleanup-test-cameras.sh`。
 
 ## 验证顺序（每轮改动照此走）
 
@@ -234,12 +296,23 @@ com.wms
 
 | 改动区域 | 回归脚本 |
 |---|---|
-| 清理脚本 / `camera_type` 判定 | `docs/scripts/test_cleanup_protect_set.sh`、`verify_camera_type_guards.sh` |
+| 清理脚本 / `camera_type` 判定 | `docs/scripts/test_cleanup_protect_set.sh`、`docs/scripts/verify_camera_type_guards.sh` |
+| 测试相机清理脚本本身 | `installer/linux/scripts/cleanup-test-cameras.sh`（**唯一真源**在 installer，`docs/scripts/` 不留副本） |
 | 前端 API 路径 | `docs/scripts/probe_api_paths.sh`（防 `/users` vs `/api/user` 这类断裂） |
 | SQL 列名 | `docs/scripts/check_sql_columns.py`（information_schema 反查） |
+| 实体类 ↔ DDL 一致性 | `docs/scripts/check_entity_vs_ddl.py` |
+| 旧路径残留（统一布局迁移后） | `docs/scripts/check_legacy_paths.py` |
+| 文档链接有效性 | `docs/scripts/check_doc_links.py` |
 | 老 chunk / 旧标签页 | `installer/linux/scripts/recover_legacy_chunks.py`、`prune_legacy_chunks.py` |
+| 相机状态页 / 相机类型 | `docs/scripts/verify_camera_status_browser.cjs`、`verify_camera_type_browser.cjs`、`verify_camera_kpi_browser.cjs` |
+| 产线统计页 / 看板 A·D | `docs/scripts/verify_line_analytics_browser.cjs`、`verify_board_ad_browser.cjs` |
+| 授权 / 登录 | `docs/scripts/verify_license_browser.cjs`、`verify_login_flow_browser.cjs` |
 
-`verify.sh` 必须 **root + 正确 `VERIFY_PASSWORD`**，否则会有一批项误报失败。
+浏览器回归脚本统一用 `docs/scripts/browser-helper.cjs` 的 `login()` 登录（自己拼输入框会因
+Element Plus 的 value 绑定与 password 类型输入静默失效）。
+
+`verify.sh` 必须 **root + 正确 `VERIFY_PASSWORD`**，否则会有一批项误报失败；
+统一布局与老布局的项数不同，**以脚本实际输出为准**（不要在文档里写死数字）。
 
 ## 文档地图
 
@@ -247,11 +320,13 @@ com.wms
 
 | 文档 | 什么时候看 |
 |---|---|
-| `docs/踩坑速查.md` | **改任何东西之前**；13 节真实事故与根因 |
+| `docs/踩坑速查.md` | **改任何东西之前**；**19 节**真实事故与根因（逐节累加，编号只增不改） |
 | `docs/架构说明.md` | 分层规则、依赖铁律、关键机制（本文件 §后端架构 的精简版来源） |
 | `docs/部署与运维手册.md` | 安装、增量/全量升级、备份恢复、故障排查 |
+| `docs/相机设备接口协议.md` | 改设备端接口 / 鉴权；**§8.3 记着当前已知安全缺口** |
 
 其余：`docs/模块设计.md`（每域类清单）、`docs/接口文档.md`（端点清单，`gen_api_doc.py` 生成勿手改）、
-`docs/配置项清单.md`、`docs/使用说明.md`、`docs/scripts/README.md`（脚本索引）。
+`docs/配置项清单.md`、`docs/使用说明.md`、`docs/服务器授权设计.md`、`docs/服务器文件布局.md`、
+`docs/scripts/README.md`（脚本索引）。
 
 **`docs/archive/` 下的任何文档都不要拿来做依据** —— 那是历史评审过程记录，结论多已被推翻，其中的数字不可信。
