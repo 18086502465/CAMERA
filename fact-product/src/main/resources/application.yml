@@ -86,6 +86,11 @@ app:
       hot-days: 31             # 主表热数据保留天数
       retain-days: 730         # 月表保留天数（2 年），超期整表 DROP
       batch-size: 5000         # 每批搬移行数
+  # ---- 产线统计日报（2026-11-17）----
+  #   每天此刻物化前一天的日报快照（fact_daily_line_report）；当天数据不入库，查询时实时算。
+  #   默认 00:05 —— 晚于数据库备份（01:00 前）、早于 DataCleanupTask（02:00）。
+  daily-report:
+    cron: "0 5 0 * * ?"
   # ---- NEW-02（2026-11-06 v5 评审）：登录/注册限速的客户端 IP 来源 ----
   #   默认空 = **不信任 X-Forwarded-For**，只用 socket 对端地址。
   #   原因：安装脚本不部署 nginx，Spring Boot 直连 8091，XFF 完全由客户端伪造

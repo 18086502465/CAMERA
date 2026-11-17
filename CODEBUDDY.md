@@ -93,7 +93,12 @@ sudo env VERIFY_PASSWORD='xxx' MYSQL_PASSWORD='xxx' bash /main/app/dist/scripts/
 缺了它，清理脚本查不到"哪些相机不能删"，保护集恒为空 → 每小时清理直接中止并告警。
 `installer/linux/scripts/init-database.sh` 已按 01→05 执行并在第 5 步做
 「camera_type 列缺失 → die」校验。`06_index_tuning.sql`（`camera_images.capture_time` 索引）
-才是**存量库按需追加**的幂等补丁。
+是**存量库按需追加**的幂等补丁。
+
+`07_daily_report.sql`（日报快照表 `fact_daily_line_report`）同样是新表，
+由 `SchemaInitializer` 启动期幂等建（`DailyReportRepository.ensureTable()`）——
+**目前未纳入 `init-database.sh` 的 01→05 序列**（该脚本 11-17 后未更新），
+全新建库时靠应用启动补建，不影响功能，但 DDL 注释里写的「01→07」与实际不符。
 
 `02_final_schema_p0.sql` 会 **DROP 重建 21 张表**。生产升级绝不能跑全量流程。
 
@@ -123,7 +128,7 @@ com.wms
 
 每域分层：`api/`（Controller + DTO/VO）→ `app/`（应用服务、事件、跨域端口）→ `domain/model/`（被动实体）→ `infra/`（`mapper/` MyBatis-Plus + `repository/` JdbcTemplate + `task/`）。层不齐是既有状态：`defect` 没有 `domain/`，`system` 没有 `app/` —— 别为了"整齐"新建空层。
 
-规模参考（2026-11-16 实测）：**175** 个 Java 文件 / **22,725** 行、**29** 个 Controller / **141** 个端点、15 个 Repository / 17 个 Mapper、**27** 个测试类 / **224** 个 `@Test`。文档里若见 151 文件 / 134 端点 / 79 用例，都是 DDD 定稿时的旧值。
+规模参考（2026-11-18 实测）：**178** 个 Java 文件 / **24,191** 行、**30** 个 Controller / **147** 个端点（接口文档口径 146）、16 个 Repository / 17 个 Mapper、**30** 个测试类 / **256** 个用例。文档里若见 151 文件 / 134 端点 / 79 用例，都是 DDD 定稿时的旧值。
 
 ### ArchUnit 三条铁律（`com.wms.arch.ArchitectureTest`）
 
@@ -180,6 +185,26 @@ base64 变体必须逐字节一致（`LicenseSignerTest.GOLDEN` 固化了真实�
 `submitDailyAggregation` 记 **`SKIPPED`**（附原因）而不是 SUCCESS —— 源表空却记 SUCCESS
 会让人以为"聚合跑过了、没加速是别的原因"。
 
+### 产线统计日报（`/daily-report`，2026-11-17 新增）
+
+快照表 `fact_daily_line_report`（`sql/deploy/07_daily_report.sql` +
+`SchemaInitializer` 启动期幂等建表），每天 00:05（`app.daily-report.cron`）物化前一天；
+**当天不入库**，查询时实时算并回传 `dataSource=REALTIME`。
+端点 `/api/v1/analytics/daily-reports`：list / detail / calendar / breakdown /
+regenerate(ADMIN) / export。失败落 `DAILY_REPORT_FAILED` 告警，成功自动恢复。
+
+**缺陷率双口径**（现场实测后确立，别改反）：
+
+- **主口径（计数）**：缺陷率(‰) = NG 计数**日增差分** ÷ 检测总数**日增差分** × 1000，
+  数据源是 `camera_status.total_count / ok_count / ng_count` 的**日终快照差分**。
+  首日无前日快照 → NULL；计数器被重置（差分为负）→ 也按 NULL（显示「率待积累」）。
+- **辅口径（图片）**：缺陷图片数列。⚠️ 图片通道**只上报缺陷图**（每张必带缺陷框）→
+  图片口径缺陷率**恒 1000‰**（分母=分子），**无区分度**，只作辅助展示。
+
+**补算历史日不能拍计数快照**（`generateFor(date, stampCounters=false)`）：白天补算时
+当前计数已含之后上传，差分必错 → 计数列留 NULL 是诚实降级，不是故障。
+表上有 `snapshot_version`，改口径只影响此版本之后的日期，历史快照数字不变。
+
 ### 看板形态（`/stats/line`）
 
 `LineAnalyticsView` 的 widget 类型共 16 种，改这个页面前先认全：
@@ -188,6 +213,32 @@ base64 变体必须逐字节一致（`LicenseSignerTest.GOLDEN` 固化了真实�
 `stackDefectBySeverity` / `heatmap` / `shiftCompare` / `pie` / `calendar` /
 `defectPivot` / `mappingExceptions`。
 看板 A（缺陷分析：热力图/班次对比/环比）与看板 D（厂长日报）为 2026-11-14~15 新增。
+
+### 内置「工厂质量看板」与产线多选（2026-11-17）
+
+**内置看板**：产线统计首屏默认渲染代码常量 `BUILTIN_DASHBOARD`（id `builtin-quality-board`），
+7 个 widget 结论优先排序（工厂总览 → 缺陷趋势按产线 → 产线排行+责任相机 → 帕累托+时段热力 →
+缺陷日历）。`loadDashboards` 把它插列表首位；`loadDashboard` 命中该 id 时**不发请求**直接用常量。
+内置态**只读**（禁用拖动/编辑/删除、隐藏组件库与配置面板），用户自己的模板不受影响。
+「记住上次看板」开关**默认关**（`line-analytics:remember-board`）—— 每次进页先看默认看板，
+保证可预期。
+
+**产线/工位多选**：前端总是**同时**带 `lineId=lineIds[0]` 与 `lineIds`（逗号串）→
+后端 `buildImageWhere` 必须取**单值 ∪ 集合**再 `IN`，只判「lineId 非空就走 =」会退化成第一条
+（第一版就栽在这，靠浏览器回归抓回）。工位同理走 `workstationIds`（`appendIdFilter()` 统一处理）。
+页面内相机筛选必须按**全部**所选产线过滤，并在筛选变化时清掉不属于新范围的相机
+（否则 `line=B & camera=A的相机` 恒 0 条，而筛选藏在抽屉里看不出原因）。
+
+### 相机「删除后可重加」（2026-11-16）
+
+删除是**逻辑删除**（`camera_status.is_active=0`，行还在库里），而 `camera_status` 有物理唯一键
+`uk_camera_code` → 软删行不处理的话，同编号重新新增要么被查重挡住（旧行为报「设备编号已存在」，
+现场实测 DA6090850），要么撞唯一键。
+
+正确做法是**原位复活**：同 id、`is_active=1`、保留 createTime、类型取**原值**
+（★ REAL 相机删了重加**绝不能**被静默降级成 TEST，否则数据被每小时清理删掉），
+`dim_camera` 由 `upsertDimCamera` 的 ON DUPLICATE KEY 自动复活（`is_deleted=0`）。
+配额检查**不能跳过**（复活同样占名额）；活跃行重号仍拒绝。
 
 ### 相机身份：code-first
 
@@ -307,6 +358,9 @@ base64 变体必须逐字节一致（`LicenseSignerTest.GOLDEN` 固化了真实�
 | 相机状态页 / 相机类型 | `docs/scripts/verify_camera_status_browser.cjs`、`verify_camera_type_browser.cjs`、`verify_camera_kpi_browser.cjs` |
 | 产线统计页 / 看板 A·D | `docs/scripts/verify_line_analytics_browser.cjs`、`verify_board_ad_browser.cjs` |
 | 授权 / 登录 | `docs/scripts/verify_license_browser.cjs`、`verify_login_flow_browser.cjs` |
+| 产线统计日报 | `docs/scripts/verify_daily_report_browser.cjs` |
+| 产线多选（并集/竞态） | `docs/scripts/verify_line_multi_browser.cjs` |
+| 产线统计复核 | `docs/scripts/review_line_analytics.cjs` |
 
 浏览器回归脚本统一用 `docs/scripts/browser-helper.cjs` 的 `login()` 登录（自己拼输入框会因
 Element Plus 的 value 绑定与 password 类型输入静默失效）。

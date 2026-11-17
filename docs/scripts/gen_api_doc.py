@@ -68,12 +68,31 @@ for dom in DOMAINS:
                         for extra in paths[1:]:
                             eps.append((verb, base + extra, '?', '?'))
                         continue
-                # 向上 3 行找 @PreAuthorize
+                # 权限判定：在映射注解**前后各 8 行**内找 @PreAuthorize 并解析角色。
+                # ★ 2026-11-18 修正两个缺陷：
+                #   ① 原来只**向上 3 行**找 → 注解写在 @XxxMapping **之后**（项目里很常见，
+                #      如 @PostMapping 下一行才写 @PreAuthorize）或注解隔了 4 行以上就找不到，
+                #      实测 8 个 ADMIN 端点被错标成「登录用户」（含 DailyReport 的 regenerate、
+                #      4 个 Dim*Controller 的 /{id}、config-import 等）—— 读者会误以为普通用户能调。
+                #   ② 原来只找裸字符串 'ADMIN' → 注释里写「管理员」也算命中，
+                #      且 hasAnyRole('ADMIN','USER') 会被标成 ADMIN（实际两种角色都行）。
+                #   现在：只认 @PreAuthorize 注解本身，按表达式解析角色。
                 role = '登录用户'
-                for k in range(max(0, i - 3), i):
-                    if 'ADMIN' in lines_in[k]:
+                for k in range(max(0, i - 8), min(len(lines_in), i + 9)):
+                    if '@PreAuthorize' not in lines_in[k]:
+                        continue
+                    expr = lines_in[k]
+                    has_admin = re.search(r"hasRole\(\s*['\"]ADMIN['\"]\s*\)", expr) is not None \
+                        or re.search(r"hasAnyRole\([^)]*['\"]ADMIN['\"]", expr) is not None
+                    has_user = re.search(r"hasRole\(\s*['\"]USER['\"]\s*\)", expr) is not None \
+                        or re.search(r"hasAnyRole\([^)]*['\"]USER['\"]", expr) is not None
+                    if has_admin and has_user:
+                        role = 'ADMIN/USER'
+                    elif has_admin:
                         role = 'ADMIN'
-                        break
+                    elif has_user:
+                        role = 'USER'
+                    break
                 # 向下 10 行找第一个 public 方法名
                 mname = '?'
                 for k in range(i, min(len(lines_in), i + 12)):
@@ -117,8 +136,24 @@ for dom in DOMAINS:
         lines.append('')
 
 out_path = os.path.join(REPO, 'docs', '接口文档.md')
+# ★ 2026-11-18：拼接手工补充区。
+#   本脚本是**全量覆盖**写文件 —— 之前手工写在生成结果里的说明（line-summary 的
+#   诚实度键、daily-reports 的口径约定）在每次重新生成后都会被抹掉。
+#   现在把手工部分单独放 `docs/scripts/api_doc_extra.md`，由本脚本在末尾拼接：
+#   自动部分永远从源码重新生成（不会漂移），手工部分永远保留（不会丢）。
+extra_path = os.path.join(REPO, 'docs', 'scripts', 'api_doc_extra.md')
+extra = ''
+if os.path.isfile(extra_path):
+    with open(extra_path, encoding='utf-8') as f:
+        extra = f.read().strip()
+    lines.append('---')
+    lines.append('')
+    lines.append('## 补充说明（手工维护：`docs/scripts/api_doc_extra.md`）')
+    lines.append('')
+    lines.append(extra)
+    lines.append('')
 open(out_path, 'w', encoding='utf-8', newline='\n').write('\n'.join(lines))
-print('生成完成: %s（%d 端点）' % (out_path, total))
+print('生成完成: %s（%d 端点%s）' % (out_path, total, '，已拼接手工补充区' if extra else ''))
 
 # 回写端点数到 docs/README.md —— 手写的数字迟早漂移（曾出现 135 vs 实际 139）。
 # 约定：README 里用 <!--API_COUNT-->N<!--/API_COUNT--> 包裹，本脚本只改中间的数字。
