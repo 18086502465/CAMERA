@@ -41,6 +41,20 @@ public class DefectImageController {
     private int maxBatchImages;
 
     /**
+     * 设备令牌校验器（2026-11-18 评审 M-03）。
+     *
+     * <p>★ 此前本端点<b>只校验 Authorization 以 "Bearer " 开头，从不比对令牌</b> ——
+     *   而心跳与批量上报两个端点都比对了。任何非空 Bearer 串 + 合法 X-Device-Id
+     *   即可写图片与缺陷框 → 污染统计与良率口径（现场 2.4 万张图全走这条通道）。
+     *   现与心跳<b>同一口径</b>：{@code CameraTokenVerifier.verify(token, deviceId)}。
+     *
+     * <p>跨域说明：{@code CameraTokenVerifier} 在 {@code device.app}（跨域只走 app 层，
+     *   ArchUnit 铁律①允许）。
+     */
+    @Autowired
+    private com.wms.device.app.CameraTokenVerifier cameraTokenVerifier;
+
+    /**
      * POST /api/v1/defect-images/upload
      * form-data: files=file[]，metadata=JSON 字符串。
      */
@@ -52,6 +66,36 @@ public class DefectImageController {
             @RequestParam(value = "file", required = false) MultipartFile[] file,
             @RequestParam(value = "metadata", required = false) String metadata) {
         try {
+            // ★ 2026-11-18 评审 M-03：补齐设备令牌校验（与心跳同一口径）。
+            //   缺 Authorization / X-Device-Id → 422 AUTH_DEVICE_UNAUTHORIZED（协议既有码）；
+            //   令牌与相机不匹配 → 401 DEVICE_TOKEN_INVALID（设备端应停止重试、转人工处理）；
+            //   该相机未配置令牌 → 沿用 camera.token.strict：false 放行 + WARN（与心跳一致），
+            //   true 拒绝。现场 cfg_camera_token 目前为空表 + strict=false → 放行，不影响现场上报。
+            String token = extractBearer(authorization);
+            if (token == null || deviceId == null || deviceId.trim().isEmpty()) {
+                return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                        .body(ResultVO.<DefectImageUploadResultDTO>fail(422,
+                                "缺少 Authorization(Bearer) 或 X-Device-Id", null)
+                                .withErrorCode("AUTH_DEVICE_UNAUTHORIZED"));
+            }
+            com.wms.device.app.CameraTokenVerifier.Result tokenResult =
+                    cameraTokenVerifier.verify(token, deviceId.trim());
+            if (tokenResult == com.wms.device.app.CameraTokenVerifier.Result.MISMATCH) {
+                log.warn("缺陷图片上传令牌无效: deviceId={}", deviceId);
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(ResultVO.<DefectImageUploadResultDTO>fail(401,
+                                "设备令牌无效或已过期", null)
+                                .withErrorCode("DEVICE_TOKEN_INVALID"));
+            }
+            if (tokenResult == com.wms.device.app.CameraTokenVerifier.Result.NOT_CONFIGURED
+                    && cameraTokenVerifier.rejectWhenNotConfigured()) {
+                log.warn("缺陷图片上传：相机未配置设备令牌，严格模式拒绝: deviceId={}", deviceId);
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(ResultVO.<DefectImageUploadResultDTO>fail(401,
+                                "该相机未配置设备令牌", null)
+                                .withErrorCode("DEVICE_TOKEN_NOT_CONFIGURED"));
+            }
+
             MultipartFile[] actualFiles = mergeFiles(files, file);
             if (actualFiles.length > maxBatchImages) {
                 throw new IllegalArgumentException("单批次最多支持 " + maxBatchImages + " 张图片，当前上传 " + actualFiles.length + " 张；请拆分为多个批次后重试");
@@ -154,6 +198,15 @@ public class DefectImageController {
         if ("METADATA_INVALID".equals(code)) return "请按接口协议重新生成 metadata，确认 cameraId、uploadTime、images[].fileName 等字段正确。";
         if ("AUTH_OR_DEVICE_INVALID".equals(code)) return "请在 Header 中传 Authorization: Bearer <token> 和 X-Device-Id。";
         return "请检查请求格式、必填字段、文件名映射、图片数量和上传目录权限后重试。";
+    }
+
+    /** 取出 Authorization 里的 Bearer 令牌（无 "Bearer " 前缀或为空返回 null） */
+    private String extractBearer(String authorization) {
+        if (authorization == null || !authorization.startsWith("Bearer ")) {
+            return null;
+        }
+        String token = authorization.substring("Bearer ".length()).trim();
+        return token.isEmpty() ? null : token;
     }
 
     private MultipartFile[] mergeFiles(MultipartFile[] files, MultipartFile[] file) {

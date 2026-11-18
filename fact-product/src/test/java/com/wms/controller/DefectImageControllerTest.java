@@ -16,6 +16,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -37,6 +38,13 @@ class DefectImageControllerTest {
     @Mock
     private IDefectImageService defectImageService;
 
+    /**
+     * ★ 2026-11-18 评审 M-03：上传端点已补设备令牌校验（与心跳同一口径）。
+     *   默认桩返回 OK —— 与现场一致（cfg_camera_token 当前为空表 + strict=false → 放行）。
+     */
+    @Mock
+    private com.wms.device.app.CameraTokenVerifier cameraTokenVerifier;
+
     @InjectMocks
     private DefectImageController controller;
 
@@ -45,6 +53,13 @@ class DefectImageControllerTest {
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(controller, "maxBatchImages", 100);
+        // 默认：令牌校验通过（现场现状：未配令牌 + strict=false → 放行）
+        org.mockito.Mockito.lenient()
+                .when(cameraTokenVerifier.verify(anyString(), anyString()))
+                .thenReturn(com.wms.device.app.CameraTokenVerifier.Result.OK);
+        org.mockito.Mockito.lenient()
+                .when(cameraTokenVerifier.rejectWhenNotConfigured())
+                .thenReturn(false);
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
     }
 

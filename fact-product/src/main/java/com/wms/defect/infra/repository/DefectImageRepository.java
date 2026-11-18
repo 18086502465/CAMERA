@@ -119,7 +119,15 @@ public class DefectImageRepository {
      * <b>完全一致</b>。
      */
     private String cameraStatusJoinSql() {
-        return "LEFT JOIN camera_status cs ON cs.camera_code = f.camera_id ";
+        // ★ 2026-11-18 评审 S-05：补 `cs.is_active = 1` —— 排除**已逻辑删除**的相机。
+        //   删除是逻辑删除（camera_status.is_active=0，行还在库里），不加这个条件时
+        //   软删相机的历史图片会被算进"未筛选产线"的总数 → 与筛选后的数字对不上。
+        //   实测：软删相机 4 台（图片量 0），当前恰好不污染，但这是"恰好没数据"
+        //   而不是"逻辑上排除" —— 相机下线后其历史图片仍在保留期内，就会被算进去。
+        //   ⚠️ 不改成 JOIN dim_camera：camera_status 独有 status / camera_name 等运行态字段，
+        //   且实测两表的绑定关系当前完全一致（0 行差异），换表收益为零、风险不小。
+        //   权威表口径（dim_camera）由 upsertDimCamera 保证与 camera_status 同步。
+        return "LEFT JOIN camera_status cs ON cs.camera_code = f.camera_id AND cs.is_active = 1 ";
     }
 
     /**
@@ -467,7 +475,7 @@ public class DefectImageRepository {
         }
         sql.append("GROUP BY COALESCE(NULLIF(f.camera_id, ''), f.camera_name) ")
                 .append(") agg ")
-                .append("LEFT JOIN camera_status cs ON cs.camera_code = agg.camera_id ")
+                .append("LEFT JOIN camera_status cs ON cs.camera_code = agg.camera_id AND cs.is_active = 1 ")
                 .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
                 .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
                 .append("WHERE 1=1 ");
@@ -622,7 +630,7 @@ public class DefectImageRepository {
         }
         // 相机 IN (...) 的右括号已在上方闭合，这里只需闭合内层派生表
         sql.append(") r ")
-                .append("LEFT JOIN camera_status cs ON cs.camera_code = r.camera_id ")
+                .append("LEFT JOIN camera_status cs ON cs.camera_code = r.camera_id AND cs.is_active = 1 ")
                 .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
                 .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
                 .append("WHERE r.rn <= ?");

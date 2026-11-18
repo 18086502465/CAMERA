@@ -66,7 +66,9 @@ class DefectImageRepositoryCameraSummariesTest {
                 "image_id BIGINT, defect_type VARCHAR(128), severity VARCHAR(32), " +
                 "severity_level INT, x INT, y INT, width INT, height INT, area INT)");
         jdbc.execute("CREATE TABLE camera_status (" +
-                "camera_code VARCHAR(64) PRIMARY KEY, workstation_id BIGINT, line_id BIGINT)");
+                "camera_code VARCHAR(64) PRIMARY KEY, workstation_id BIGINT, line_id BIGINT, "
+                // ★ 2026-11-18 评审 S-05：统计查询已补 `cs.is_active = 1`（排除软删相机）
+                + "is_active INT DEFAULT 1)");
         jdbc.execute("CREATE TABLE dim_workstation (" +
                 "workstation_id BIGINT PRIMARY KEY, station_name VARCHAR(128), station_code VARCHAR(64))");
         jdbc.execute("CREATE TABLE dim_production_line (" +
