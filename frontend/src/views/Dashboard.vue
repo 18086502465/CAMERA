@@ -12,6 +12,13 @@
       <el-button :loading="loading" type="primary" @click="loadData">刷新数据</el-button>
     </div>
 
+    <!-- ★ 2026-11-18 评审 S-06.1：部分指标块计算失败时如实提示，
+         而不是让用户对着"少了一块"的数字猜原因 -->
+    <div v-if="partialFailureMessage" class="partial-fail-tip">
+      <b>部分指标计算失败</b>
+      <span>{{ partialFailureMessage }}</span>
+    </div>
+
     <div class="kpi-row">
       <div class="kpi-card">
         <span class="kpi-label">产线数</span>
@@ -152,6 +159,9 @@ const ngRate = computed(() => kpiData.value.todayTotal ? Number((kpiData.value.t
 const defectKpi = computed(() => defectOverview.value?.kpi || {})
 /** ★ S-09：数据源是冻结通道且现场为空 → 不展示假的 0 */
 const defectSourceEmpty = computed(() => defectOverview.value?.dataSource === 'FROZEN_EMPTY')
+/** ★ 2026-11-18 评审 S-06.1：后端如实回传"哪些指标块计算失败" → 这里提示，别让用户猜 */
+const overviewRaw = ref(null)
+const partialFailureMessage = computed(() => overviewRaw.value?.partialFailureMessage || '')
 const defectSourceNote = computed(() => defectOverview.value?.dataSourceMessage || '')
 
 const filterInfo = computed(() => {
@@ -252,6 +262,7 @@ const loadData = async () => {
       getDefectStats({ factoryId: fp.factoryId || undefined, startDate: today, endDate: today })
     ])
     const ov = overviewRes.data?.data || overviewRes.data || {}
+    overviewRaw.value = ov
     kpiData.value = {
       todayTotal: ov.todayTotal || 0,
       todayOk: ov.todayOk || 0,
@@ -368,6 +379,10 @@ watch(linePageSize, () => { linePageNo.value = 1 })
 .page-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 .page-intro h2 { margin: 0 0 6px; color: var(--color-text); font-size: 22px; }
 .page-intro p { margin: 0; color: var(--color-text-secondary); font-size: 13px; }
+/* ★ S-06.1：部分指标失败提示（琥珀色警示，区别于正常卡） */
+.partial-fail-tip { display:flex; align-items:center; gap:10px; margin:0 0 14px; padding:9px 14px;
+  border-radius:10px; font-size:12px; line-height:1.5; border:1px solid #fde68a; background:#fffbeb; color:#b45309; }
+.partial-fail-tip b { font-weight:700; white-space:nowrap; }
 .kpi-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 20px; }
 .kpi-card { background: var(--color-bg-card); border-radius: 12px; padding: 20px 18px; box-shadow: 0 1px 3px rgba(0,0,0,.06); display: flex; flex-direction: column; gap: 8px; }
 .kpi-label { font-size: 13px; color: #737373; }

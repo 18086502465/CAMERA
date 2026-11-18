@@ -21,7 +21,12 @@
     <!-- 瀑布流网格 -->
     <div class="image-grid" v-if="filteredImages.length > 0">
       <div v-for="img in filteredImages" :key="img.id" class="grid-item" @click="previewData=img;previewVisible=true">
-        <div class="grid-img"><span style="font-size:32px">📷</span></div>
+        <!-- ★ 2026-11-18 评审 S-07：数据源切到真实通道后**有真实图片了**，
+             原来的 📷 占位符换掉（此前无图片 URL 才只能放占位符） -->
+        <div class="grid-img">
+          <img v-if="img.imageUrl" :src="img.imageUrl" :alt="img.type" loading="lazy" @error="onImgError($event, img)" />
+          <span v-else style="font-size:32px">📷</span>
+        </div>
         <div class="grid-info">
           <span class="gi-type">{{ img.type }}</span>
           <el-tag :type="img.severity==='严重'?'danger':img.severity==='重大'?'warning':'info'" size="small">{{ img.severity }}</el-tag>
@@ -45,13 +50,15 @@
     <!-- 图片预览 -->
     <el-dialog v-model="previewVisible" title="缺陷详情" width="720px" :close-on-click-modal="false">
       <div v-if="previewData" style="text-align:center">
-        <div style="width:100%;height:380px;background:linear-gradient(135deg,#1e293b,#475569);display:flex;align-items:center;justify-content:center;border-radius:8px;margin-bottom:12px">
-          <span style="font-size:72px;opacity:0.5">📷</span>
+        <div style="width:100%;height:380px;background:#0f172a;display:flex;align-items:center;justify-content:center;border-radius:8px;margin-bottom:12px;overflow:hidden">
+          <img v-if="previewData.imageUrl" :src="previewData.imageUrl" :alt="previewData.type"
+               style="max-width:100%;max-height:100%;object-fit:contain" @error="onImgError($event)" />
+          <span v-else style="font-size:72px;opacity:0.5">📷</span>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:left">
           <div><strong>产线</strong>: {{ previewData.line }}</div><div><strong>工位</strong>: {{ previewData.station }}</div><div><strong>时间</strong>: {{ previewData.time }}</div>
           <div><strong>缺陷</strong>: {{ previewData.type }}</div><div><strong>严重度</strong>: <el-tag :type="previewData.severity==='严重'?'danger':'warning'" size="small">{{ previewData.severity }}</el-tag></div>
-          <div><strong>面积</strong>: {{ previewData.area }} mm²</div>
+          <div><strong>缺陷框面积</strong>: {{ previewData.area }} px²</div>
         </div>
       </div>
     </el-dialog>
@@ -70,6 +77,11 @@ const pageSizeOptions = [10, 20, 50, 100]
 const pageSize = ref(10)
 const previewVisible = ref(false)
 const previewData = ref(null)
+/** 图片加载失败（文件已被清理 / 路径失效）→ 退回占位符，不留破图 */
+const onImgError = (event, img) => {
+  if (event && event.target) event.target.style.display = 'none'
+  if (img) img.imageUrl = ''
+}
 
 /* ---- Cascade data ---- */
 const lineOptions = ref([])
@@ -132,25 +144,44 @@ const filterParams = inject('filterParams', ref({ factoryId: null, lineIds: [], 
 const fetchImages = async () => {
   try {
     const fp = filterParams.value
+    // ★ 2026-11-18 评审 S-07：数据源改为**缺陷图片事实表**（真实通道）。
+    //   原先查 product_detection_history（冻结通道，现场恒 0 行）→ 本页现场全空白。
+    //   真实通道的缺陷类型在 defects[] 数组里，严重度是 HIGH/MEDIUM/LOW 计数。
     const dr = filters.dateRange
+    const endDay = dr?.length === 2 ? dr[1]
+      : new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+    const startDay = dr?.length === 2 ? dr[0] : '2026-01-01'
     const params = {
-      startDate: dr?.length === 2 ? dr[0] : '2026-01-01',
-      endDate: dr?.length === 2 ? dr[1] : new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10),
+      startTime: startDay + ' 00:00:00',
+      endTime: endDay + ' 23:59:59',
+      page: 1,
+      size: 200,
     }
     if (fp.factoryId) params.factoryId = fp.factoryId
+    if (filters.lineId) params.lineId = filters.lineId
+    if (filters.stationId) params.workstationId = filters.stationId
     const res = await getDefectList(params)
-    const list = res.data?.data || res.data || []
-    images.value = (Array.isArray(list) ? list : []).map((d, i) => ({
-      id: d.detectionId || i + 1,
-      lineId: d.lineId,
-      workstationId: d.workstationId,
-      line: d.lineLabel || d.lineName || lineLabelById(d.lineId) || (d.lineId ? `产线${d.lineId}` : '-'),
-      station: d.stationLabel || d.stationName || stationLabelById(d.workstationId) || '未配置工位',
-      type: d.defectType || '未知',
-      severity: d.defectSize ? (Number(d.defectSize) > 50 ? '严重' : Number(d.defectSize) >= 20 ? '重大' : '轻微') : '轻微',
-      area: d.defectSize || '0',
-      time: d.detectionTime || '',
-    }))
+    const payload = res.data?.data || res.data || {}
+    const list = payload.records || (Array.isArray(payload) ? payload : [])
+    images.value = (Array.isArray(list) ? list : []).map((d, i) => {
+      const box = (Array.isArray(d.defects) && d.defects.length) ? d.defects[0] : null
+      const severity = Number(d.mediumCount || 0) > 0 ? '重大'
+        : Number(d.highCount || 0) > 0 ? '严重'
+          : Number(d.lowCount || 0) > 0 ? '轻微' : '轻微'
+      return {
+        id: d.imageId || i + 1,
+        lineId: d.lineId,
+        workstationId: d.workstationId,
+        line: d.lineName || lineLabelById(d.lineId) || (d.lineId ? `产线${d.lineId}` : '-'),
+        station: d.stationLabel || d.stationName || stationLabelById(d.workstationId) || '未配置工位',
+        type: (box && (box.defectType || box.type)) || d.defectType || '未知',
+        severity,
+        area: (box && (box.area || box.width)) || d.defectCount || '0',
+        time: d.captureTime || d.receiveTime || d.uploadTime || '',
+        imageUrl: d.imageUrl || '',
+        cameraName: d.cameraName || '',
+      }
+    })
   } catch (e) { console.warn('GalleryView fetch error:', e) }
 }
 
@@ -190,7 +221,9 @@ onMounted(async () => {
 .image-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .grid-item { cursor: pointer; border: 1px solid #e4e7ed; border-radius: 8px; overflow: hidden; transition: box-shadow .2s; }
 .grid-item:hover { box-shadow: 0 4px 12px rgba(0,0,0,.1); }
-.grid-img { height: 140px; background: #f9fafb; display: flex; align-items: center; justify-content: center; }
+.grid-img { height: 140px; background: #f9fafb; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+/* ★ S-07：真实通道有图了，缩略图按 contain 显示（不裁切缺陷区域） */
+.grid-img img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
 .grid-info { padding: 8px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .gi-type { font-size: 13px; font-weight: 600; color: #1a1a2e; flex: 1; }
 </style>

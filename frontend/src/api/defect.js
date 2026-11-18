@@ -22,9 +22,15 @@ export function getDefectTrend(params) {
 }
 
 // 缺陷明细列表（分页）
+// ★ 2026-11-18 评审 S-07：原实现查 **/detection-history/query**
+//   （product_detection_history = 冻结的批量上报通道，现场实测恒 0 行）
+//   → 缺陷图库页（/defects/gallery，有路由）现场**完全空白**，
+//   用户分不清是"数据没了"还是"功能坏了"。
+//   改为查**真实通道**：缺陷图片事实表（现场 2.4 万条）。
+//   参数语义随之变化：日期由 startDate/endDate 改为 startTime/endTime。
 export function getDefectList(params) {
   return request({
-    url: '/detection-history/query',
+    url: '/v1/defect-images/history',
     method: 'get',
     params
   })
@@ -39,10 +45,3 @@ export function getDefectHeatmap(params) {
   })
 }
 
-// 缺陷类型列表
-export function getDefectTypes() {
-  return request({
-    url: '/v1/config/defect-types',
-    method: 'get'
-  })
-}

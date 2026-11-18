@@ -39,6 +39,9 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/stats")
 public class StatsController {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(StatsController.class);
+
     @Autowired private IFactProduction30minService production30minService;
     @Autowired private IProductDetectionHistoryService detectionHistoryService;
     @Autowired private IDimWorkstationService workstationService;
@@ -287,6 +290,9 @@ public class StatsController {
         }
 
         // 3. 产线良率排行
+        //    ★ 2026-11-18 评审 S-06.1：记录"哪些指标块计算失败"，
+        //    在响应里如实回传 —— 避免出现"数字少一块但看不出原因"。
+    List<String> partialFailures = new ArrayList<>();
         List<Map<String, Object>> lineRanking = new ArrayList<>();
         try {
             if (todayList == null) todayList = productionInfoService.listByDate(queryDate);
@@ -315,7 +321,13 @@ public class StatsController {
                 lineRanking.sort((a, b) -> Double.compare(
                         (Double) b.get("yieldRate"), (Double) a.get("yieldRate")));
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            // ★ 2026-11-18 评审 S-06.1：原先 `catch (Exception ignored) {}` 把统计失败
+            //   **静默吞掉** —— 该段结果直接缺失，接口照常返回 200，页面看不出少了内容，
+            //   现场只能靠"数字看着少一块"猜。现在至少记 WARN 并在响应里标记部分失败。
+            log.warn("产线良率排行计算失败（该段结果缺失，其余指标仍可用）: {}", e.getMessage(), e);
+            partialFailures.add("产线良率排行");
+        }
 
         // 4. brandStats — v3.1 新增
         List<Map<String, Object>> brandStats = new ArrayList<>();
@@ -345,7 +357,11 @@ public class StatsController {
                     brandStats.add(bs);
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            // ★ S-06.1：同上 —— 静默吞掉会让"品牌统计"整块消失而无提示
+            log.warn("品牌统计计算失败（该段结果缺失，其余指标仍可用）: {}", e.getMessage(), e);
+            partialFailures.add("品牌统计");
+        }
 
         // If the daily fact table has not been generated yet, keep the dashboard useful by
         // falling back to the latest camera heartbeat counters. These counters are cumulative
@@ -435,6 +451,10 @@ public class StatsController {
         result.put("todayYieldRate", Math.round(todayYieldRate * 100.0) / 100.0);
         result.put("lineRanking", lineRanking.stream().limit(5).collect(Collectors.toList()));
         result.put("brandStats", brandStats);
+        // ★ S-06.1：部分指标计算失败时如实回传（不静默吞、不假装成功）
+        result.put("partialFailures", partialFailures);
+        result.put("partialFailureMessage", partialFailures.isEmpty() ? null
+                : "以下指标块计算失败，本次结果不完整：" + String.join("、", partialFailures));
 
         return ResultVO.success(result);
     }
