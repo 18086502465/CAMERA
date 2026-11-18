@@ -80,7 +80,12 @@ export function useCameraStatusTable({
       uploadNone: 0,
       imageCount: 0,
       defectCount: 0,
-      highCount: 0
+      highCount: 0,
+      // ★ 2026-11-18 评审 S-09：带上中/低危计数，
+      //   便于页面判断"严重度是否只有 HIGH"（现场设备端 severity 恒 HIGH，
+      //   此时"高危占比 100%"没有信息量，需要给出说明而不是让用户误以为真实分布）。
+      mediumCount: 0,
+      lowCount: 0
     }
     filteredRows.value.forEach((row) => {
       if (row.statusCode === 1) result.running += 1
@@ -94,6 +99,8 @@ export function useCameraStatusTable({
       result.imageCount += row.imageCount || 0
       result.defectCount += row.defectCount || 0
       result.highCount += row.highCount || 0
+      result.mediumCount += row.mediumCount || 0
+      result.lowCount += row.lowCount || 0
     })
     return result
   })

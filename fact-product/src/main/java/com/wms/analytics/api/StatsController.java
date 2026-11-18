@@ -559,6 +559,17 @@ public class StatsController {
         result.put("byType", byType);
         result.put("byStation", byStation);
         result.put("topDefects", topDefects);
+        // ★ 2026-11-18 评审 S-09：本端点读的是 **product_detection_history** ——
+        //   那是**冻结的批量上报通道**，现场恒 0 行（实测）。也就是说这里的
+        //   「高危缺陷」永远是 0，而真实通道 defect_image_box 里同期有上万条。
+        //   首页 Dashboard 直接展示这个数 → 用户会误判"今天没有高危缺陷"。
+        //   按项目的"诚实降级"原则：明确告知数据源为空，而不是展示一个假的 0。
+        boolean sourceEmpty = allDefects.isEmpty();
+        result.put("dataSource", sourceEmpty ? "FROZEN_EMPTY" : "DETECTION_HISTORY");
+        result.put("dataSourceMessage", sourceEmpty
+                ? "该统计基于批量上报通道（product_detection_history），现场未启用该通道，数据恒为空。"
+                  + "请改用「产线统计」页查看真实通道（缺陷图片事实表）的缺陷数据。"
+                : "数据来自批量上报通道 product_detection_history。");
 
         return ResultVO.success(result);
     }

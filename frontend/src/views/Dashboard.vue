@@ -38,10 +38,13 @@
         <span class="kpi-value orange">{{ riskLineCount }}</span>
         <span class="kpi-sub">良率低于 97% 或 NG 率偏高</span>
       </div>
-      <div class="kpi-card">
+      <!-- ★ 2026-11-18 评审 S-09：该卡数据源是**冻结的批量上报通道**（现场恒 0 行），
+           展示 0 会让用户误判"今天没有高危缺陷"（实际今天有上万条 NG）。
+           数据源为空时诚实显示「—」并说明该看哪个页面。 -->
+      <div class="kpi-card" :title="defectSourceNote">
         <span class="kpi-label">高危缺陷</span>
-        <span class="kpi-value red">{{ defectKpi.severe || 0 }}</span>
-        <span class="kpi-sub">今日严重缺陷</span>
+        <span class="kpi-value red">{{ defectSourceEmpty ? '—' : number(defectKpi.severe) }}</span>
+        <span class="kpi-sub">{{ defectSourceEmpty ? '该通道现场未启用' : '今日严重缺陷' }}</span>
       </div>
     </div>
 
@@ -147,6 +150,9 @@ const number = (v) => toNumber(v).toLocaleString()
 const percent = (ok, total) => total ? Number((ok / total * 100).toFixed(2)) : 0
 const ngRate = computed(() => kpiData.value.todayTotal ? Number((kpiData.value.todayNg / kpiData.value.todayTotal * 100).toFixed(1)) : 0)
 const defectKpi = computed(() => defectOverview.value?.kpi || {})
+/** ★ S-09：数据源是冻结通道且现场为空 → 不展示假的 0 */
+const defectSourceEmpty = computed(() => defectOverview.value?.dataSource === 'FROZEN_EMPTY')
+const defectSourceNote = computed(() => defectOverview.value?.dataSourceMessage || '')
 
 const filterInfo = computed(() => {
   const { factoryId, lineIds, stationIds } = filterParams.value

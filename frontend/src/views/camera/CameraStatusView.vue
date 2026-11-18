@@ -23,6 +23,13 @@
     </div>
 
     <p class="kpi-note">「累计」两项统计该相机自首次上报以来的全部历史（含测试相机），不受「产线统计」时间范围限制，两处数字不能直接对比。</p>
+    <!-- ★ 2026-11-18 评审 S-09：现场设备端上报的 severity 恒为 HIGH，
+         此时「高危缺陷 = 缺陷总数」是**设备侧**现状，不是真实风险分布 → 给出说明，
+         避免用户把 100% 当成"全部是高危缺陷"。服务端分级逻辑本身是正确的。 -->
+    <p v-if="severityAllHigh" class="kpi-note warn">
+      当前所有缺陷的严重度都被上报为「高危」，因此「累计高危缺陷」等于「累计缺陷数」，**不代表真实风险分布**。
+      这是设备端严重度分级的现状（系统侧分级逻辑正常），需要在设备/算法侧修复后才能区分高/中/低。
+    </p>
 
     <el-card shadow="never" class="table-card">
       <template #header>
@@ -172,6 +179,12 @@ let timer = null
 
 const sameId = (a, b) => String(a ?? '') === String(b ?? '')
 const { filteredRows, pagedRows, stats } = useCameraStatusTable({ rows, tablePage, tablePageSize, searchKeyword, statusFilter, uploadFilter, abnormalFirst, filterParams, sameId })
+
+/** ★ S-09：范围内有高危、但一条中/低危都没有 → 严重度维度无区分度，需要说明 */
+const severityAllHigh = computed(() =>
+  Number(stats.value?.highCount || 0) > 0
+  && Number(stats.value?.mediumCount || 0) === 0
+  && Number(stats.value?.lowCount || 0) === 0)
 
 const toTimeText = (value) => {
   if (!value) return ''
@@ -460,6 +473,7 @@ onBeforeUnmount(() => { if (timer) window.clearInterval(timer) })
 .image-link { text-decoration: none; color: var(--color-primary); font-size: 13px; font-weight: 700; padding: 8px 12px; border-radius: 8px; background: var(--color-primary-bg); }
 .kpi-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
 .kpi-note { margin: -4px 0 12px; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; }
+.kpi-note.warn { color: var(--color-warning, #b45309); margin-top: -8px; }
 .kpi { border: 1px solid var(--color-border); border-radius: 14px; }
 .kpi span { display: block; color: var(--color-text-secondary); font-size: 13px; margin-bottom: 8px; }
 .kpi strong { display: block; color: var(--color-text); font-size: 28px; line-height: 1; }

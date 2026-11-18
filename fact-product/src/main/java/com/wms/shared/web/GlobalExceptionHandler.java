@@ -33,6 +33,10 @@ public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+    /** 事件发布器（上传失败告警用；可为空 → 跳过发事件，不影响上传响应） */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
+
     /** 参数/状态不合法（业务代码大量使用 IllegalArgumentException 表达入参错误） */
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ResultVO<Void>> handleIllegalArgument(IllegalArgumentException e) {
@@ -60,6 +64,42 @@ public class GlobalExceptionHandler {
         log.error("数据库访问异常: {}", e.getMessage(), e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ResultVO.fail("数据访问异常，请稍后重试或联系管理员"));
+    }
+
+    /**
+     * 设备上传失败（multipart 解析异常 / 客户端断流）。
+     *
+     * <p>★ 2026-11-18 评审 M-04：这类失败<b>只进 journald，现场完全无感知</b> ——
+     * 失败的那张图既没入库也没告警，设备端若不重试就永久丢失。
+     * 现场近 24h 实测 39 条 multipart 解析失败 + 19 条 Broken pipe。
+     *
+     * <p>为什么在这里而不是 Controller：multipart 解析发生在 <b>Spring 参数绑定阶段</b>，
+     * 请求还没进 Controller 方法体，Controller 的 try/catch 捕获不到。
+     *
+     * <p>事件类型定义在 shared（共享内核不得依赖业务域，ArchUnit 铁律②），
+     * 由 analytics 域的监听器落 {@code fact_anomaly_alert}。
+     */
+    @ExceptionHandler(org.springframework.web.multipart.MultipartException.class)
+    public ResponseEntity<ResultVO<Void>> handleMultipart(org.springframework.web.multipart.MultipartException e,
+                                                          javax.servlet.http.HttpServletRequest request) {
+        String deviceId = request == null ? null : request.getHeader("X-Device-Id");
+        String reason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        log.error("设备上传失败（multipart 解析异常）deviceId={} reason={}", deviceId, reason, e);
+        publishUploadFailed(deviceId, reason, e.getClass().getSimpleName());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(ResultVO.fail("上传失败，请重试该批次"));
+    }
+
+    /** 发布上传失败事件（发布失败不影响主流程 —— 原始异常已在 log.error 落盘） */
+    private void publishUploadFailed(String deviceId, String reason, String errorType) {
+        if (eventPublisher == null) {
+            return;
+        }
+        try {
+            eventPublisher.publishEvent(new com.wms.shared.common.event.UploadFailedEvent(deviceId, reason, errorType));
+        } catch (Exception ex) {
+            log.warn("发布上传失败告警事件异常（不影响上传响应）: {}", ex.getMessage());
+        }
     }
 
     /**

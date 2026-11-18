@@ -59,7 +59,11 @@ public class FactAnomalyAlertController {
                     "DISK_FULL",
                     // 2026-11-17：产线日报快照生成失败（DailyReportGenerationTask，
                     // Java 侧落库，成功后 findUnresolvedAlertId+resolve 自动恢复）。
-                    "DAILY_REPORT_FAILED")));
+                    "DAILY_REPORT_FAILED",
+                    // 2026-11-18：设备图片上传失败（multipart 解析异常 / 客户端断流）。
+                    // 评审 M-04：此前这类失败只进 journald —— 失败的图既没入库也没告警，
+                    // 现场完全无感知（近 24h 实测 39 条 multipart 失败 + 19 条 Broken pipe）。
+                    "UPLOAD_FAILED")));
 
     /** 运维类告警最多返回条数（低频，20 条足够覆盖全部历史积压）。 */
     private static final int OPS_LIMIT = 20;
