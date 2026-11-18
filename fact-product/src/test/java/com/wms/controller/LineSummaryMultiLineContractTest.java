@@ -17,6 +17,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -100,7 +101,7 @@ class LineSummaryMultiLineContractTest {
                 .andExpect(jsonPath("$.code").value(200));
         CapturedWhere c = captureKpiWhere();
         assertTrue(c.where.contains("c.line_id IN (?,?)"), "WHERE 应为 IN，实际：" + c.where);
-        assertEquals(List.of(11L, 10L), c.params.subList(2, 4), "IN 参数应为时间之后的 11,10");
+        assertEquals(Arrays.asList(11L, 10L), c.params.subList(2, 4), "IN 参数应为时间之后的 11,10");
     }
 
     @Test
@@ -158,7 +159,7 @@ class LineSummaryMultiLineContractTest {
                 .andExpect(jsonPath("$.code").value(200));
         CapturedWhere c = captureKpiWhere();
         assertTrue(c.where.contains("c.workstation_id IN (?,?)"), "WHERE 应为 IN，实际：" + c.where);
-        assertEquals(List.of(33L, 34L), c.params.subList(2, 4), "IN 参数应为时间之后的 33,34");
+        assertEquals(Arrays.asList(33L, 34L), c.params.subList(2, 4), "IN 参数应为时间之后的 33,34");
     }
 
     @Test

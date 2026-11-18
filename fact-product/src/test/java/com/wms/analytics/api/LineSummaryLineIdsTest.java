@@ -3,6 +3,7 @@ package com.wms.analytics.api;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -22,21 +23,21 @@ class LineSummaryLineIdsTest {
     @Test
     @DisplayName("常规逗号分隔：解析为 Long 列表")
     void parsesCommaSeparatedIds() {
-        assertEquals(List.of(11L, 10L), LineAnalyticsController.parseLineIds("11,10"));
-        assertEquals(List.of(3L), LineAnalyticsController.parseLineIds("3"));
+        assertEquals(Arrays.asList(11L, 10L), LineAnalyticsController.parseLineIds("11,10"));
+        assertEquals(Arrays.asList(3L), LineAnalyticsController.parseLineIds("3"));
     }
 
     @Test
     @DisplayName("容忍空格、空段与非法 token：非法值忽略而不是 500")
     void toleratesWhitespaceAndGarbage() {
-        assertEquals(List.of(11L, 12L), LineAnalyticsController.parseLineIds(" 11 , , abc ,12"));
+        assertEquals(Arrays.asList(11L, 12L), LineAnalyticsController.parseLineIds(" 11 , , abc ,12"));
         assertNull(LineAnalyticsController.parseLineIds("abc,"));
     }
 
     @Test
     @DisplayName("去重并保持首次出现顺序")
     void dedupesKeepingOrder() {
-        assertEquals(List.of(11L, 10L), LineAnalyticsController.parseLineIds("11,10,11,11,10"));
+        assertEquals(Arrays.asList(11L, 10L), LineAnalyticsController.parseLineIds("11,10,11,11,10"));
     }
 
     @Test

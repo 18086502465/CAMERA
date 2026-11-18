@@ -930,7 +930,10 @@ public class LineAnalyticsController {
         if (raw instanceof List) {
             StringJoiner j = new StringJoiner(",");
             for (Object o : (List<?>) raw) {
-                if (o != null && !String.valueOf(o).isBlank()) j.add(String.valueOf(o).trim());
+                // ★ Java 8 等价写法：字符串的空白判定在 Java 11 才有，
+                //   本机 JDK 17 编译得过，CI 用 JDK 8 会直接失败。
+                String v = o == null ? "" : String.valueOf(o).trim();
+                if (!v.isEmpty()) j.add(v);
             }
             return j.length() > 0 ? j.toString() : null;
         }
