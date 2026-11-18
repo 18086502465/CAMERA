@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.wms.iam.domain.model.SysUser;
 import com.wms.iam.app.ISysUserService;
 import com.wms.iam.domain.JwtUtil;
+import com.wms.shared.common.PageParams;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -39,7 +40,13 @@ public class SysUserController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Integer role,
             @RequestParam(required = false) Long factoryId) {
-        return ResultVO.success(userService.pageQuery(page, size, keyword, role, factoryId));
+
+        // ★ 2026-11-18 评审 M-02：分页参数归一化（上限 PageParams.MAX_SIZE）——
+        //   防止误传超大 size 触发全表 COUNT(*) + 全表扫描 + 完整对象构建。
+        int safePage = PageParams.normalizePage(page);
+        int safeSize = PageParams.normalizeSize(size, 10);
+
+        return ResultVO.success(userService.pageQuery(safePage, safeSize, keyword, role, factoryId));
     }
 
     /**

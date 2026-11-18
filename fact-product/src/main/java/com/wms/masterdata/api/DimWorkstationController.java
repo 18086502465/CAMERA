@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.wms.masterdata.domain.model.DimWorkstation;
 import com.wms.masterdata.app.IDimWorkstationService;
+import com.wms.shared.common.PageParams;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.wms.masterdata.infra.repository.MasterDataRepository;
@@ -38,7 +39,10 @@ public class DimWorkstationController {
                 wrapper.and(w -> w.like(DimWorkstation::getStationName, keyword).or().like(DimWorkstation::getStationCode, keyword));
             }
             wrapper.orderByAsc(DimWorkstation::getLineId).orderByAsc(DimWorkstation::getStationId);
-            return ResultVO.success(workstationService.page(new Page<>(pageNo, pageSize), wrapper));
+            // ★ 2026-11-18 评审 M-02：分页参数归一化（上限 PageParams.MAX_SIZE）
+            int safePage = PageParams.normalizePage(pageNo);
+            int safeSize = PageParams.normalizeSize(pageSize, 20);
+            return ResultVO.success(workstationService.page(new Page<>(safePage, safeSize), wrapper));
         }
         if (lineId != null) return ResultVO.success(workstationService.getByLineId(Long.valueOf(lineId)));
         return ResultVO.success(workstationService.list());

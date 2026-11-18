@@ -46,4 +46,17 @@ DELIMITER ;
 
 CALL cds_add_index_if_missing('camera_images', 'idx_capture_time', '`capture_time`');
 
+-- ----------------------------------------------------------------------
+-- 2026-11-18 评审 M-01：统计接口核心查询的索引列错位
+--
+--   查询形态：WHERE camera_id = ? AND capture_time BETWEEN ? AND ?
+--   既有索引 idx_defect_file_camera_id_time 的第二列是 **create_time**，
+--   capture_time 不在索引里 → 索引只能定位到相机，时间范围要回表逐行判断。
+--   生产库 EXPLAIN 实测：rows=3592 / filtered=8.03%（多扫 12 倍）。
+--
+--   补 (camera_id, capture_time)：定位相机 + 精确范围扫描。
+--   ⚠️ 不改既有索引 —— create_time 另有查询在用（listHistoryPage 按它排序）。
+CALL cds_add_index_if_missing('defect_image_file', 'idx_defect_file_camera_id_capture_time',
+    '`camera_id`, `capture_time`');
+
 DROP PROCEDURE IF EXISTS cds_add_index_if_missing;

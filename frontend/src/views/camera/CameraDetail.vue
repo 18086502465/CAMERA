@@ -50,7 +50,7 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getCameraList } from '@/api/camera'
+import { getCameraDetail } from '@/api/camera'
 
 const route = useRoute()
 const previewVisible = ref(false)
@@ -83,9 +83,10 @@ const lineLabel = (item = {}) => item.lineName || item.lineCode || (item.lineId 
 
 const fetchCamera = async () => {
   try {
-    const res = await getCameraList({ page: 1, size: 999 })
-    const list = res.data?.data?.records || res.data?.records || res.data?.data || []
-    const found = list.find(c => c.id === cameraId)
+    // ★ 2026-11-18 评审 M-02：原来"拉全量相机列表再本地 find 一台"，
+    //   载荷浪费且随相机规模恶化 → 改用单台详情端点 GET /api/cameras/{id}
+    const res = await getCameraDetail(cameraId)
+    const found = res.data?.data || null
     if (found) {
       camera.value = {
         id: found.id,

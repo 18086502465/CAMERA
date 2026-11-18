@@ -1,5 +1,6 @@
 package com.wms.system.api;
 
+import com.wms.shared.common.PageParams;
 import com.wms.shared.common.ResultVO;
 import com.wms.system.domain.model.CameraDefectMappingRow;
 import com.wms.system.domain.model.DefectTypeConfigRow;
@@ -43,7 +44,8 @@ public class FinalConfigController {
                                                       @RequestParam(defaultValue = "10") Integer size,
                                                       @RequestParam(required = false) String keyword,
                                                       @RequestParam(required = false) Integer enabled) {
-        return ResultVO.success(finalConfigRepository.queryProductPage(keyword, enabled, page, size));
+        return ResultVO.success(finalConfigRepository.queryProductPage(keyword, enabled,
+                PageParams.normalizePage(page), PageParams.normalizeSize(size, 10)));
     }
 
     @PreAuthorize("hasRole('ADMIN')")
@@ -114,7 +116,8 @@ public class FinalConfigController {
                                                          @RequestParam(required = false) Long productId,
                                                          @RequestParam(required = false) String keyword,
                                                          @RequestParam(required = false) String severity) {
-        return ResultVO.success(finalConfigRepository.queryDefectTypePage(productId, keyword, severity, page, size));
+        return ResultVO.success(finalConfigRepository.queryDefectTypePage(productId, keyword, severity,
+                PageParams.normalizePage(page), PageParams.normalizeSize(size, 10)));
     }
 
     @PreAuthorize("hasRole('ADMIN')")
@@ -199,7 +202,8 @@ public class FinalConfigController {
                                                       @RequestParam(required = false) Long productId,
                                                       @RequestParam(required = false) String keyword,
                                                       @RequestParam(required = false) Integer enabled) {
-        return ResultVO.success(finalConfigRepository.queryMappingPage(cameraId, productId, keyword, enabled, page, size));
+        return ResultVO.success(finalConfigRepository.queryMappingPage(cameraId, productId, keyword, enabled,
+                PageParams.normalizePage(page), PageParams.normalizeSize(size, 10)));
     }
 
     @PreAuthorize("hasRole('ADMIN')")
@@ -237,7 +241,8 @@ public class FinalConfigController {
                                                               @RequestParam(defaultValue = "10") Integer size,
                                                               @RequestParam(required = false) String status,
                                                               @RequestParam(required = false) String keyword) {
-        return ResultVO.success(finalConfigRepository.queryMappingExceptionPage(status, keyword, page, size));
+        return ResultVO.success(finalConfigRepository.queryMappingExceptionPage(status, keyword,
+                PageParams.normalizePage(page), PageParams.normalizeSize(size, 10)));
     }
 
     @PreAuthorize("hasRole('ADMIN')")

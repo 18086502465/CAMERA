@@ -2,6 +2,7 @@ package com.wms.defect.api;
 
 import com.wms.defect.api.dto.DefectImageUploadResultDTO;
 import com.wms.defect.app.IDefectImageService;
+import com.wms.shared.common.PageParams;
 import com.wms.shared.common.ResultVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -233,7 +234,10 @@ public class DefectImageController {
             @RequestParam(required = false) String resolution,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
-        return ResultVO.success(defectImageService.listHistoryPage(page, size, cameraId, cameraName, factoryId, lineId, stationId,
+        // ★ 2026-11-18 评审 M-02：分页参数归一化（上限 PageParams.MAX_SIZE）
+        int safePage = PageParams.normalizePage(page);
+        int safeSize = PageParams.normalizeSize(size, 10);
+        return ResultVO.success(defectImageService.listHistoryPage(safePage, safeSize, cameraId, cameraName, factoryId, lineId, stationId,
                 keyword, severity, defectType, resolution, startTime, endTime));
     }
 

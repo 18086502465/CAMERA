@@ -2,6 +2,10 @@ import request from '../utils/request'
 
 // 相机分页查询
 export const getCameraList = (params) => request({ url: '/cameras', method: 'get', params })
+/** 相机轻量全量列表（不分页，无 COUNT 查询）—— 替代 size:999 的全量拉取 */
+export const getCameraOptions = (params) => request({ url: '/cameras/options', method: 'get', params })
+/** 单台相机详情 */
+export const getCameraDetail = (id) => request({ url: `/cameras/${id}`, method: 'get' })
 
 // 相机状态统计
 export const getCameraStats = () => request({ url: '/cameras/stats', method: 'get' })

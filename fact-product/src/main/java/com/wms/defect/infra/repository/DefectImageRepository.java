@@ -1082,6 +1082,15 @@ public class DefectImageRepository {
                 "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_camera_name_time(camera_name, create_time, image_id)");
         ensureIndex("defect_image_file", "idx_defect_file_capture_time",
                 "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_capture_time(capture_time, image_id)");
+        // ★ 2026-11-18 性能修复（评审 M-01）：统计接口的核心查询是
+        //   「按 camera_id 过滤 + capture_time 范围」，而既有索引
+        //   idx_defect_file_camera_id_time 的第二列是 **create_time**，
+        //   导致时间范围只能回表逐行判断 —— 生产库 EXPLAIN 实测
+        //   rows=3592 / filtered=8.03%（多扫 12 倍）。
+        //   补 (camera_id, capture_time)：只定位相机 + 精确范围扫描。
+        //   ⚠️ 不改既有索引 —— create_time 有其它查询在用（listHistoryPage 按它排序）。
+        ensureIndex("defect_image_file", "idx_defect_file_camera_id_capture_time",
+                "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_camera_id_capture_time(camera_id, capture_time)");
         ensureIndex("defect_image_box", "idx_defect_box_type",
                 "ALTER TABLE defect_image_box ADD INDEX idx_defect_box_type(defect_type)");
         ensureIndex("defect_image_box", "idx_defect_box_severity_image",

@@ -203,7 +203,7 @@
 <script setup>
 import { computed, inject, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { getCameraList, getDefectImageCameraSummaries, getDefectImageFilterOptions, getDefectImageHistory } from '@/api/camera'
+import { getCameraOptions, getDefectImageCameraSummaries, getDefectImageFilterOptions, getDefectImageHistory } from '@/api/camera'
 import EmptyState from '@/components/EmptyState.vue'
 import BasePagination from '@/components/common/BasePagination.vue'
 import ImageViewer from '@/components/common/ImageViewer.vue'
@@ -423,7 +423,7 @@ const loadData = async () => {
   loading.value = true
   try {
     const [camRes, summaryRes] = await Promise.all([
-      getCameraList(buildScopedParams({ page: 1, size: 999 })),
+      getCameraOptions(buildScopedParams({})),
       getDefectImageCameraSummaries(buildImageQueryParams({ latestLimit: 5 }))
     ])
     cameras.value = unwrapPage(camRes)

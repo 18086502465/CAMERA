@@ -121,7 +121,7 @@
 import { ref, computed, inject, watch, onMounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import { getDashboardOverview, getDefectStats } from '@/api/stats'
-import { getCameraList } from '@/api/camera'
+import { getCameraOptions } from '@/api/camera'
 import request from '@/utils/request'
 
 const pageSizeOptions = [10, 20, 50, 100]
@@ -237,12 +237,11 @@ const loadData = async () => {
     const today = localDate()
     const [overviewRes, camRes, defRes] = await Promise.all([
       getDashboardOverview({ factoryId: fp.factoryId || undefined, date: today }),
-      getCameraList({
+      // ★ 2026-11-18 评审 M-02：改用轻量全量列表（无 COUNT 查询、载荷更小）
+      getCameraOptions({
         factoryId: fp.factoryId || undefined,
         lineId: fp.lineIds?.length === 1 ? fp.lineIds[0] : undefined,
-        stationId: fp.stationIds?.length === 1 ? fp.stationIds[0] : undefined,
-        page: 1,
-        size: 999
+        stationId: fp.stationIds?.length === 1 ? fp.stationIds[0] : undefined
       }),
       getDefectStats({ factoryId: fp.factoryId || undefined, startDate: today, endDate: today })
     ])

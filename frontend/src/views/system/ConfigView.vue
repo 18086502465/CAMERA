@@ -305,7 +305,7 @@ import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref
 import { useRoute, useRouter } from 'vue-router'
 import request from '@/utils/request'
 import { getCascadeAll } from '@/api/stats'
-import { getCameraList } from '@/api/camera'
+import { getCameraList, getCameraOptions } from '@/api/camera'
 import { ElMessage, ElMessageBox } from '@/utils/message'
 import OperationLog from './OperationLog.vue'
 import BasePagination from '@/components/common/BasePagination.vue'
@@ -794,12 +794,13 @@ const fetchAll = async () => {
   lineList.value = lines
   stationList.value = stations
 
-  const camRes = await getCameraList({ page: 1, size: 999 })
+  const camRes = await getCameraOptions({})
   const cams = camRes.data?.data?.records || camRes.data?.records || camRes.data || []
   cameraList.value = cams.map(c => ({ ...c, id: c.id || c.cameraId, cameraId: c.cameraId || c.id, cameraName: c.cameraName || c.cameraCode || '', cameraCode: c.cameraCode || c.deviceId || '', lineId: c.lineId, workstationId: c.workstationId, stationName: stationMap.value[c.workstationId] || c.stationName || '-' }))
 
   try {
-    const userRes = await request.get('/user', { params: { page: 1, size: 999 } })
+    // ★ 2026-11-18 评审 M-02：不再按全量拉用户（现场仅 2 个用户，size:999 毫无必要）
+    const userRes = await request.get('/user', { params: { page: 1, size: 200 } })
     const users = userRes.data?.data?.records || userRes.data?.data || userRes.data || []
     userList.value = Array.isArray(users) ? users.map(u => ({ userId: u.userId || u.id, username: u.username, realName: u.realName || u.name || u.username, role: Number(u.role) === 1 || u.role === 'ADMIN' ? '管理员' : '普通用户', phone: u.phone || '', status: u.isDisabled ? '停用' : '启用', lastLogin: toTimeText(u.lastLoginAt) })) : []
   } catch (e) { userList.value = [] }

@@ -476,6 +476,23 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
         return cameraStatusMapper.selectList(null);
     }
 
+    /**
+     * 按主键取单台相机（不存在或已逻辑删除返回 null）。
+     *
+     * <p>★ 2026-11-18 评审 M-02：与 {@code pageQuery} 保持同一口径 ——
+     *   过滤 {@code is_active=0} 的相机（已逻辑删除的不该出现在详情页）。
+     */
+    @Override
+    public CameraStatus getById(Long id) {
+        if (id == null) {
+            return null;
+        }
+        return cameraStatusMapper.selectOne(new LambdaQueryWrapper<CameraStatus>()
+                .eq(CameraStatus::getId, id)
+                .eq(CameraStatus::getIsActive, 1)
+                .last("LIMIT 1"));
+    }
+
     private void ensureCameraStatusColumns() {
         ensureColumn("product_name", "ALTER TABLE camera_status ADD COLUMN product_name VARCHAR(100) NULL COMMENT '当前生产产品'");
         ensureColumn("report_time", "ALTER TABLE camera_status ADD COLUMN report_time DATETIME NULL COMMENT '设备上报时间'");

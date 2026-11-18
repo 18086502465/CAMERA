@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.wms.masterdata.domain.model.DimProductionLine;
 import com.wms.masterdata.app.IDimProductionLineService;
+import com.wms.shared.common.PageParams;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import com.wms.masterdata.infra.repository.MasterDataRepository;
@@ -41,7 +42,10 @@ public class DimProductionLineController {
                 wrapper.and(w -> w.like(DimProductionLine::getLineName, keyword).or().like(DimProductionLine::getLineCode, keyword));
             }
             wrapper.orderByDesc(DimProductionLine::getUpdateTime).orderByDesc(DimProductionLine::getCreateTime);
-            return ResultVO.success(lineService.page(new Page<>(pageNo, pageSize), wrapper));
+            // ★ 2026-11-18 评审 M-02：分页参数归一化（上限 PageParams.MAX_SIZE）
+            int safePage = PageParams.normalizePage(pageNo);
+            int safeSize = PageParams.normalizeSize(pageSize, 20);
+            return ResultVO.success(lineService.page(new Page<>(safePage, safeSize), wrapper));
         }
         if (factoryId != null) {
             return ResultVO.success(lineService.listByFactoryId(factoryId));

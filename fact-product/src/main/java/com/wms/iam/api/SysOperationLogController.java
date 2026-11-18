@@ -2,6 +2,7 @@ package com.wms.iam.api;
 
 import com.wms.iam.api.dto.OperationLogQueryDTO;
 import com.wms.iam.infra.repository.OperationLogRepository;
+import com.wms.shared.common.PageParams;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -51,8 +52,9 @@ public class SysOperationLogController {
         return ResultVO.success(operationLogRepository.pageQuery(
                 buildQuery(keyword, operation, module, result, userName, requestMethod, requestUri, ipAddress,
                         minExecutionTime, maxExecutionTime, startDate, endDate),
-                page == null ? 1 : page,
-                size == null ? 10 : size));
+                // ★ 2026-11-18 评审 M-02：分页参数归一化（上限 PageParams.MAX_SIZE）
+                PageParams.normalizePage(page),
+                PageParams.normalizeSize(size, 10)));
     }
 
     @GetMapping("/summary")

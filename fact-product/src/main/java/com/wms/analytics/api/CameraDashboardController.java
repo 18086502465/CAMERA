@@ -9,6 +9,7 @@ import com.wms.device.app.ICameraStatusService;
 import com.wms.device.app.CameraDirectory;
 import com.wms.masterdata.app.IDimProductionLineService;
 import com.wms.masterdata.app.IDimWorkstationService;
+import com.wms.shared.common.PageParams;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -50,6 +51,11 @@ public class CameraDashboardController {
             @RequestParam(required = false) Integer lineId,
             @RequestParam(required = false) Integer stationId) {
 
+        // ★ 2026-11-18 评审 M-02：分页参数归一化（上限 PageParams.MAX_SIZE）——
+        //   防止误传超大 size 触发全表 COUNT(*) + 全表扫描 + 完整对象构建。
+        int safePage = PageParams.normalizePage(page);
+        int safeSize = PageParams.normalizeSize(size, 20);
+
         Set<Integer> wsIds = null;
         if (factoryId != null || lineId != null || stationId != null) {
             List<DimWorkstation> allStations = workstationService.list();
@@ -77,11 +83,11 @@ public class CameraDashboardController {
                     .map(DimWorkstation::getStationId)
                     .collect(Collectors.toSet());
             if (wsIds.isEmpty()) {
-                return ResultVO.success(new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(page, size, 0));
+                return ResultVO.success(new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(safePage, safeSize, 0));
             }
         }
 
-        IPage<CameraStatus> result = cameraStatusService.pageQuery(page, size, keyword, status, wsIds);
+        IPage<CameraStatus> result = cameraStatusService.pageQuery(safePage, safeSize, keyword, status, wsIds);
 
         Map<Integer, DimWorkstation> stationMap = workstationService.list().stream()
                 .collect(Collectors.toMap(DimWorkstation::getStationId, w -> w, (a, b) -> a));
@@ -142,6 +148,103 @@ public class CameraDashboardController {
     @GetMapping("/recognize-stats")
     public ResultVO<List<Map<String, Object>>> getRecognizeStats() {
         return ResultVO.success(cameraStatusService.getRecognizeStats());
+    }
+
+    /**
+     * 相机**轻量全量列表**（不分页、不带计数大字段以外的冗余）。
+     *
+     * <p><b>用途</b>（2026-11-18 评审 M-02）：前端此前有 5 处按"全量"语义硬编码
+     * {@code getCameraList({page:1, size:999})} —— 首页相机表、图像记录、配置页、
+     * Dashboard 的相机下拉。相机规模上去后首屏传输量随总数线性膨胀，
+     * 且 size=999 会被后端分页上限截断（截断后前端**静默少数据**，用户看不出来）。
+     *
+     * <p><b>与 {@code GET /api/cameras} 的区别</b>：本端点**不返回 IPage**
+     * （没有总数 COUNT 查询），只返回列表要用到的字段；相机数量级的数据量下
+     * 载荷仅为全量实体的 1/3 左右。
+     *
+     * <p><b>返回字段</b>：id / cameraCode / cameraName / lineId / workstationId /
+     * factoryId / status / cameraType / productName / totalCount / okCount /
+     * ngCount / lastHeartbeatAt / lastUploadAt / reportTime / stationLabel。
+     */
+    @GetMapping("/options")
+    public ResultVO<List<Map<String, Object>>> options(
+            @RequestParam(required = false) Integer factoryId,
+            @RequestParam(required = false) Integer lineId,
+            @RequestParam(required = false) Integer workstationId) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (CameraStatus c : cameraStatusService.listAll()) {
+            if (factoryId != null && !Objects.equals(factoryId, c.getFactoryId())) {
+                continue;
+            }
+            if (lineId != null && !Objects.equals(lineId, c.getLineId())) {
+                continue;
+            }
+            if (workstationId != null && !Objects.equals(workstationId, c.getWorkstationId())) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", c.getId());
+            row.put("cameraCode", c.getCameraCode());
+            row.put("cameraName", c.getCameraName());
+            row.put("lineId", c.getLineId());
+            row.put("workstationId", c.getWorkstationId());
+            row.put("factoryId", c.getFactoryId());
+            row.put("status", c.getStatus());
+            row.put("cameraType", c.getCameraType());
+            row.put("productName", c.getProductName());
+            row.put("totalCount", c.getTotalCount());
+            row.put("okCount", c.getOkCount());
+            row.put("ngCount", c.getNgCount());
+            row.put("lastHeartbeatAt", c.getLastHeartbeatAt());
+            row.put("lastUploadAt", c.getLastUploadAt());
+            row.put("reportTime", c.getReportTime());
+            row.put("stationLabel", c.getStationLabel());
+            rows.add(row);
+        }
+        return ResultVO.success(rows);
+    }
+
+    /**
+     * 单台相机详情 —— 补齐 REST 语义。
+     *
+     * <p><b>用途</b>（评审 M-02）：相机详情页此前只能"拉全量相机列表再 find 一台"
+     * （{@code getCameraList({page:1,size:999})} 后本地 find）—— 载荷浪费且随规模恶化。
+     */
+    @GetMapping("/{id}")
+    public ResultVO<Map<String, Object>> detail(@PathVariable Long id) {
+        CameraStatus c = cameraStatusService.getById(id);
+        if (c == null) {
+            return ResultVO.fail("相机不存在: " + id);
+        }
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", c.getId());
+        row.put("cameraCode", c.getCameraCode());
+        row.put("cameraName", c.getCameraName());
+        row.put("lineId", c.getLineId());
+        row.put("workstationId", c.getWorkstationId());
+        row.put("factoryId", c.getFactoryId());
+        row.put("status", c.getStatus());
+        row.put("cameraType", c.getCameraType());
+        row.put("productName", c.getProductName());
+        row.put("totalCount", c.getTotalCount());
+        row.put("okCount", c.getOkCount());
+        row.put("ngCount", c.getNgCount());
+        row.put("recognizeCount", c.getRecognizeCount());
+        row.put("correctCount", c.getCorrectCount());
+        row.put("abnormalCount", c.getAbnormalCount());
+        row.put("yieldRate", c.getYieldRate());
+        row.put("cpuUsage", c.getCpuUsage());
+        row.put("memoryUsage", c.getMemoryUsage());
+        row.put("temperature", c.getTemperature());
+        row.put("latestImagePath", c.getLatestImagePath());
+        row.put("lastHeartbeatAt", c.getLastHeartbeatAt());
+        row.put("lastUploadAt", c.getLastUploadAt());
+        row.put("reportTime", c.getReportTime());
+        row.put("errorMessage", c.getErrorMessage());
+        row.put("stationName", c.getStationName());
+        row.put("stationCode", c.getStationCode());
+        row.put("stationLabel", c.getStationLabel());
+        return ResultVO.success(row);
     }
 
     @PostMapping
