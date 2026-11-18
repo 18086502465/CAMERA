@@ -131,6 +131,8 @@ public class SecurityConfig {
                     "/anomaly",
                     "/stats/**",
                     "/line-analytics",
+                    // 产线统计日报页（2026-11-17 新增）：SPA 深链，刷新需先拿到 index.html
+                    "/daily-report",
                     "/companies",
                     "/factories",
                     "/lines",

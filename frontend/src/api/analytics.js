@@ -24,3 +24,12 @@ export const getAggregationSchedule = () => request({ url: '/v1/analytics/aggreg
 export const updateAggregationSchedule = (data) => request({ url: '/v1/analytics/aggregation/schedule', method: 'put', data })
 export const queryAggregationJobs = (params) => request({ url: '/v1/analytics/aggregation/jobs', method: 'get', params })
 export const retryAggregationJob = (id) => request({ url: `/v1/analytics/aggregation/jobs/${id}/retry`, method: 'post' })
+
+// ==================== 产线统计日报（2026-11-17 新增） ====================
+export const getDailyReports = (params) => request({ url: '/v1/analytics/daily-reports', method: 'get', params })
+export const getDailyReportDetail = (date) => request({ url: `/v1/analytics/daily-reports/${date}`, method: 'get' })
+export const regenerateDailyReport = (date) => request({ url: `/v1/analytics/daily-reports/${date}/regenerate`, method: 'post' })
+export const exportDailyReport = (params) => request({ url: '/v1/analytics/daily-reports/export', method: 'get', params, responseType: 'blob' })
+// 2026-11-17 交互重构：月历 + 单日维度明细
+export const getDailyReportCalendar = (params) => request({ url: '/v1/analytics/daily-reports/calendar', method: 'get', params })
+export const getDailyReportBreakdown = (date, params) => request({ url: `/v1/analytics/daily-reports/${date}/breakdown`, method: 'get', params })

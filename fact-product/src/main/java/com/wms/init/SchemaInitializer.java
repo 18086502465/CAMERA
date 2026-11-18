@@ -46,6 +46,9 @@ public class SchemaInitializer {
     @Autowired
     private AnalyticsAggregationRepository analyticsAggregationRepository;
 
+    @Autowired
+    private com.wms.analytics.infra.repository.DailyReportRepository dailyReportRepository;
+
     /**
      * 启动期按域依次保证表结构就绪。顺序无依赖（各 ensure 幂等），
      * 仅按「设置 → 缺陷图片 → 统计聚合」的业务链排列便于阅读日志。
@@ -86,6 +89,8 @@ public class SchemaInitializer {
             analyticsAggregationRepository.ensureAggregationScheduleTable();
             analyticsAggregationRepository.ensureDailyAggregationTables();
             analyticsAggregationRepository.ensureAggregationJobTable();
+            // 2026-11-17：产线统计日报快照表（幂等，07_daily_report.sql 同构）
+            dailyReportRepository.ensureTable();
         } catch (Exception e) {
             log.error("[SchemaInitializer] analytics 域聚合表保证失败（服务继续启动，聚合任务会自行重试建表）: {}",
                     e.getMessage(), e);

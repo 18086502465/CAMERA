@@ -62,6 +62,36 @@ function check(name, ok, detail) {
     })
     if (clicked) { console.log('  已切到「近7天」'); await sleep(5000) }
 
+    // ★ 2026-11-17 首屏重构适配：默认进内置「工厂质量看板（默认）」——
+    //   只读（隐藏组件库/配置栏）、筛选收起、图表按「结论优先」固定（无班次图）。
+    //   本脚本验的是配置能力与全部筛选，所以先切到可编辑模板并展开高级筛选，
+    //   后续断言因此仍跑在与历史基线相同的页面上。
+    STEP = 'switch-board'
+    const boardSwitched = await page.evaluate(() => {
+      const sel = document.querySelector('.hero-actions .el-select')
+      if (!sel) return false
+      ;(sel.querySelector('.el-select__wrapper') || sel).click()
+      return true
+    })
+    await sleep(900)
+    const pickedBoard = await page.evaluate(() => {
+      const items = [...document.querySelectorAll('.el-select-dropdown__item')]
+      const t = items.find(i => (i.textContent || '').includes('厂长视角'))
+      if (t) { t.click(); return (t.textContent || '').trim() }
+      return null
+    })
+    await sleep(6000)
+    check('可切到用户模板（配置能力仍可用）', boardSwitched && !!pickedBoard, pickedBoard || '未找到可编辑模板')
+
+    const drawerOpened = await page.evaluate(() => {
+      const b = [...document.querySelectorAll('.filter-card button')]
+        .find(x => (x.textContent || '').includes('高级筛选'))
+      if (b) { b.click(); return true }
+      return false
+    })
+    await sleep(1500)
+    check('高级筛选可展开', drawerOpened)
+
     STEP = 'kpi'
     // ① KPI 卡
     const labels = await page.$$eval('.kpi-card span', els => els.map(e => (e.textContent || '').trim()))
@@ -115,8 +145,12 @@ function check(name, ok, detail) {
     console.log('  缺陷类型选项：', typeOpts.join(' | '))
     check('缺陷类型选项带图片计数', typeOpts.length >= 5, `带计数 ${typeOpts.length} 个`)
     check('选项为现场实际类型（含「接头」）', typeOpts.some(o => o.startsWith('接头')), typeOpts.slice(0, 3).join(','))
-    check('选项不是 dim_defect_type 标准类型',
-      !typeOpts.some(o => /内装胶滴|前腰腹异物/.test(o)), typeOpts.slice(0, 2).join(','))
+    // 原断言「选项不是标准类型」基于错误前提：filter-options 返回的是「现场实际上报 ∪
+    // dim_defect_type 标准类型」，两者都会出现。真正该锁的是「现场实际类型必须在列且带计数」，
+    // 否则用户选「接头」会命中 0 张图（这正是 2026-11-14 修过的 bug）。
+    check('选项含现场实际类型（接头 / 小污点）',
+      typeOpts.some(o => o.startsWith('接头')) && typeOpts.some(o => o.startsWith('小污点')),
+      typeOpts.slice(0, 3).join(','))
 
     STEP = 'filter-apply'
     // ⑤ 选「接头」→ KPI 收缩（选项计数是**全时段**口径，当前筛选是时间窗，故只比方向与首要缺陷）

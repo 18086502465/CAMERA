@@ -56,7 +56,10 @@ public class FactAnomalyAlertController {
                     // 与 DISK_USAGE_HIGH 分开：那是「已经到 85%」，这是「还能写多少天」——
                     // 扩盘要走采购/停机流程，需要半年提前量，而百分比给不出提前量。
                     "DISK_CAPACITY_LOW",
-                    "DISK_FULL")));
+                    "DISK_FULL",
+                    // 2026-11-17：产线日报快照生成失败（DailyReportGenerationTask，
+                    // Java 侧落库，成功后 findUnresolvedAlertId+resolve 自动恢复）。
+                    "DAILY_REPORT_FAILED")));
 
     /** 运维类告警最多返回条数（低频，20 条足够覆盖全部历史积压）。 */
     private static final int OPS_LIMIT = 20;

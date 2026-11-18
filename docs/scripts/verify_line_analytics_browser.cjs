@@ -60,6 +60,20 @@ async function readKpis(page) {
     await page.goto(`${BASE}/line-analytics`, { waitUntil: 'networkidle2', timeout: 60000 })
     await new Promise((r) => setTimeout(r, 4000))
 
+    // ★ 2026-11-17 首屏重构：默认进内置「工厂质量看板」、筛选收起、两侧配置栏隐藏
+    const builtinHead = await page.evaluate(() => {
+      const h = document.querySelector('.canvas-head h3')
+      const tag = document.querySelector('.canvas-head .el-tag')
+      return !!h && h.textContent.includes('工厂质量看板')
+        && !!tag && tag.textContent.includes('内置')
+    })
+    check('首屏 = 内置工厂质量看板（结论优先，不要求先选模板）', builtinHead)
+    const hasAdvanced = await page.evaluate(() =>
+      [...document.querySelectorAll('.filter-card button')].some((b) => (b.textContent || '').includes('高级筛选')))
+    check('筛选默认收起（保留「高级筛选」入口）', hasAdvanced)
+    const paletteHidden = await page.evaluate(() => !document.querySelector('.widget-palette'))
+    check('内置看板下隐藏图表组件库侧栏', paletteHidden)
+
     // ★ 2026-11-15：默认时间范围是「今天 00:00 起」，产线一旦停线（实测 11-13 之后无上传）
     //   当天就没有图片数据 → 页面自动落到聚合表兜底分支（6 张卡含良率），
     //   本脚本关于「图片通道 4 卡 + 良品样本」的断言会全红。
@@ -117,10 +131,16 @@ async function readKpis(page) {
     })
     console.log('    [ZK23]   卡片:', JSON.stringify(kpiLine), '| 数据源:', srcLine)
 
-    // ---- ③ 核心：两种筛选的检测总数必须一致 ----
-    const totalAll = kpiAll['检测总数']
-    const totalLine = kpiLine['检测总数']
-    check('筛选产线后检测总数与不筛选一致', totalAll === totalLine, `不筛选=${totalAll} / ZK23=${totalLine}`)
+    // ---- ③ 核心：子集不得大于全集 ----
+    // 原断言比的是「检测总数」，但 2026-11-14 KPI 卡已改名为「缺陷图片数」→
+    // 两边都是 undefined，恒等比较变成假通过。改成数值比较，且方向必须对：
+    // ZK23 是全集的一部分，选它之后数量只能更小（现场 bug 正是「子集比全集大」）。
+    const num = (v) => Number(String(v ?? '').replace(/[^0-9.]/g, ''))
+    const totalAll = num(kpiAll['缺陷图片数'])
+    const totalLine = num(kpiLine['缺陷图片数'])
+    check('筛选产线后数量 ≤ 全集（子集不得大于全集）',
+      Number.isFinite(totalAll) && Number.isFinite(totalLine) && totalLine > 0 && totalLine <= totalAll,
+      `不筛选=${totalAll} / ZK23=${totalLine}`)
     check('两种筛选的数据源一致', srcAll === srcLine, `${srcAll} / ${srcLine}`)
     check('筛选后也没有良率卡片', !('良率' in kpiLine), Object.keys(kpiLine).join('/'))
 

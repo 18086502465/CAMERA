@@ -86,8 +86,12 @@ public class AnomalyAlertRepository {
      * <p>只取最新一条：历史脏数据可能有多条重复未恢复行（见 {@code insertCameraAlert} 注释），
      * 取最新那条继续使用，其余旧行保持原状 —— 不在这里顺手清理，避免在心跳热路径上做
      * 非幂等写。存量重复由运维一次性处理。
+     *
+     * <p>2026-11-17 改 public：{@code DailyReportGenerationTask} 成功后需要按
+     * {@code (0,0,DAILY_REPORT_FAILED)} 找到活跃告警行做「成功自动恢复」，
+     * 与备份/清理告警同一套恢复纪律。
      */
-    private Long findUnresolvedAlertId(Integer lineId, Integer workstationId, String alertType) {
+    public Long findUnresolvedAlertId(Integer lineId, Integer workstationId, String alertType) {
         List<Long> ids = jdbcTemplate.queryForList(
                 "SELECT alert_id FROM fact_anomaly_alert " +
                         "WHERE alert_type=? AND IFNULL(line_id,0)=? AND IFNULL(workstation_id,0)=? " +

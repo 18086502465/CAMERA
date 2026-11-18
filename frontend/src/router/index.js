@@ -152,6 +152,12 @@ const routes = [
         meta: { title: '产线统计' }
       },
       {
+        path: 'daily-report',
+        name: 'DailyReport',
+        component: () => import('../views/stats/DailyReportView.vue'),
+        meta: { title: '产线统计日报' }
+      },
+      {
         path: 'cameras/:id',
         name: 'CameraDetail',
         component: () => import('../views/camera/CameraDetail.vue'),

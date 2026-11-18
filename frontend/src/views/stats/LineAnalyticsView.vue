@@ -3,19 +3,34 @@
     <section class="hero-card">
       <div>
         <p class="eyebrow">LINE ANALYTICS</p>
-        <h2>产线统计</h2>
-        <p>支持动态图表模板、图表新增/编辑/删除、拖拽排序、尺寸调整、独立筛选、导出和日聚合。</p>
+        <h2>产线统计 · 工厂质量看板</h2>
+        <!--
+          2026-11-17：首屏从「配置工具」改为「结论优先」。
+          默认渲染内置工厂质量看板（总览 → 趋势 → 谁最差 → 什么缺陷 → 什么时段），
+          用户模板与配置入口收进「看板设置」二级菜单，需要时再展开。
+        -->
+        <p>默认展示工厂质量看板；筛选默认只留时间范围，其余维度收进「高级筛选」。</p>
       </div>
       <div class="hero-actions">
-        <el-select v-model="currentDashboardId" filterable placeholder="看板模板" style="width:220px" @change="loadDashboardById">
+        <el-select v-model="currentDashboardId" filterable placeholder="切换看板" style="width:220px" @change="loadDashboardById">
           <el-option v-for="d in dashboardList" :key="d.dashboardId" :label="d.dashboardName" :value="d.dashboardId" />
         </el-select>
-        <el-button plain @click="openDashboardDialog()">新建模板</el-button>
-        <el-button plain :disabled="!dashboard" @click="openDashboardDialog(dashboard)">编辑模板</el-button>
-        <el-button plain :disabled="!dashboard" @click="openDashboardCopyDialog('copy')">复制模板</el-button>
-        <el-button plain :disabled="!dashboard" @click="openDashboardCopyDialog('saveAs')">另存为</el-button>
-        <el-button type="warning" plain :disabled="!visibleWidgets.length" @click="openPresentation()">看板大屏</el-button>
-        <el-button type="primary" :loading="loading" @click="loadData">刷新报表</el-button>
+        <el-dropdown trigger="click" @command="onBoardCommand">
+          <el-button plain>看板设置 ▾</el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="create">新建模板</el-dropdown-item>
+              <el-dropdown-item command="edit" :disabled="!dashboard || isBuiltinBoard">编辑模板</el-dropdown-item>
+              <el-dropdown-item command="copy" :disabled="!dashboard || isBuiltinBoard">复制模板</el-dropdown-item>
+              <el-dropdown-item command="saveAs" :disabled="!dashboard || isBuiltinBoard">另存为</el-dropdown-item>
+              <el-dropdown-item command="present" :disabled="!visibleWidgets.length">看板大屏</el-dropdown-item>
+              <el-dropdown-item command="remember" divided>{{ rememberBoard ? '✓ 记住上次看板' : '记住上次看板' }}</el-dropdown-item>
+              <!-- ★ 2026-11-17：默认模板允许删除（后端为逻辑删除，删掉后按工厂会自动重建默认模板；内置看板仍不可删） -->
+              <el-dropdown-item command="delete" :disabled="!dashboard || isBuiltinBoard">删除模板</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-button type="primary" :loading="loading" @click="loadData">刷新</el-button>
       </div>
     </section>
 
@@ -30,39 +45,56 @@
         <el-button v-for="r in rangePresets" :key="r.key" size="small" :plain="activeRangeKey !== r.key" :type="activeRangeKey === r.key ? 'primary' : undefined" @click="applyRangePreset(r)">{{ r.label }}</el-button>
       </el-button-group>
       <el-date-picker v-model="timeRange" type="datetimerange" range-separator="至" start-placeholder="开始时间" end-placeholder="结束时间" value-format="YYYY-MM-DD HH:mm:ss" class="range-picker" @change="onTimeRangeChange" />
-      <!--
-        ★ 2026-11-15 P0-1：产品筛选在图片通道「物理上不生效」——
-        defect_image_file/_box/_batch 都没有产品列，camera_status.product_name 只是
-        当前心跳快照（贴到历史行是时间错配）。与其静默吞掉这个筛选，
-        不如在下拉后面直接标出「不生效」，后端同时回传 ignoredFilters 供对账。
-      -->
-      <span class="filter-with-hint">
-        <el-select v-model="filters.productId" clearable filterable placeholder="全部产品" class="filter-ctrl" @change="loadData">
-          <el-option v-for="p in metadata.products" :key="p.productId" :label="p.productName" :value="p.productId" />
-        </el-select>
-        <small v-if="isDefectImageSource" class="filter-unsupported" title="缺陷图片事实表不记录产品（camera_status.product_name 只是当前快照，无历史），该筛选不会改变统计结果">不生效</small>
+      <el-button :type="advancedFilters ? 'primary' : undefined" plain @click="advancedFilters = !advancedFilters">
+        {{ advancedFilters ? '收起筛选' : '高级筛选 ▾' }}
+      </el-button>
+      <span v-if="!advancedFilters" class="filter-inline-note">
+        {{ injectedLineLabel }} ｜ {{ summary.dataSource === 'DEFECT_IMAGE' ? '缺陷图片事实表' : '质量聚合表' }}
       </span>
-      <el-select v-model="filters.shiftId" clearable placeholder="全部班次" class="filter-ctrl narrow" @change="loadData">
-        <el-option v-for="s in metadata.shifts" :key="s.shiftId" :label="s.shiftName" :value="s.shiftId" />
-      </el-select>
-      <el-select v-model="filters.cameraId" clearable filterable placeholder="全部相机" class="filter-ctrl" @change="loadData">
-        <el-option v-for="c in filteredCameras" :key="c.cameraId" :label="cameraOptionLabel(c)" :value="c.cameraId" />
-      </el-select>
-      <!--
-        ★ 2026-11-14：缺陷类型筛选改走「现场实际上报类型」。
-        dim_defect_type 的 15 个标准类型与现场上报的中文类型名（接头/小污点/胶滴…）
-        完全不相交 —— 用它做选项，选中的类型在图片通道永远命中 0 张图。
-        选项改由 /v1/defect-images/filter-options 提供（带图片数），参数传类型文本。
-      -->
-      <el-select v-model="filters.defectType" clearable filterable placeholder="全部缺陷类型" class="filter-ctrl" @change="loadData">
-        <el-option v-for="t in defectTypeOptions" :key="t.defectType" :label="`${t.defectType}（${t.imageCount}）`" :value="t.defectType" />
-      </el-select>
-      <el-select v-model="filters.severity" clearable placeholder="全部严重度" class="filter-ctrl narrow" @change="loadData">
-        <el-option v-for="s in severityOptions" :key="s.value" :label="s.label" :value="s.value" />
-      </el-select>
-      <el-button plain @click="resetFilters">重置筛选</el-button>
-      <el-tag :type="summary.aggregationLevel === 'DAY' ? 'warning' : 'info'">{{ summary.aggregationLevel === 'DAY' ? '日聚合' : '30分钟聚合' }}</el-tag>
+      <template v-if="advancedFilters">
+        <!--
+          ★ 2026-11-15 P0-1：产品筛选在图片通道「物理上不生效」——
+          defect_image_file/_box/_batch 都没有产品列，camera_status.product_name 只是
+          当前心跳快照（贴到历史行是时间错配）。与其静默吞掉这个筛选，
+          不如在下拉后面直接标出「不生效」，后端同时回传 ignoredFilters 供对账。
+        -->
+        <span class="filter-with-hint">
+          <el-select v-model="filters.productId" clearable filterable placeholder="全部产品" class="filter-ctrl" @change="loadData">
+            <el-option v-for="p in metadata.products" :key="p.productId" :label="p.productName" :value="p.productId" />
+          </el-select>
+          <small v-if="isDefectImageSource" class="filter-unsupported" title="缺陷图片事实表不记录产品（camera_status.product_name 只是当前快照，无历史），该筛选不会改变统计结果">不生效</small>
+        </span>
+        <el-select v-model="filters.shiftId" clearable placeholder="全部班次" class="filter-ctrl narrow" @change="loadData">
+          <el-option v-for="s in metadata.shifts" :key="s.shiftId" :label="s.shiftName" :value="s.shiftId" />
+        </el-select>
+        <el-select v-model="filters.cameraId" clearable filterable placeholder="全部相机" class="filter-ctrl" @change="loadData">
+          <el-option v-for="c in filteredCameras" :key="c.cameraId" :label="cameraOptionLabel(c)" :value="c.cameraId" />
+        </el-select>
+        <!--
+          ★ 2026-11-14：缺陷类型筛选改走「现场实际上报类型」。
+          dim_defect_type 的 15 个标准类型与现场上报的中文类型名（接头/小污点/胶滴…）
+          完全不相交 —— 用它做选项，选中的类型在图片通道永远命中 0 张图。
+          选项改由 /v1/defect-images/filter-options 提供（带图片数），参数传类型文本。
+        -->
+        <el-select v-model="filters.defectType" clearable filterable placeholder="全部缺陷类型" class="filter-ctrl" @change="loadData">
+          <el-option v-for="t in defectTypeOptions" :key="t.defectType" :label="`${t.defectType}（${t.imageCount}）`" :value="t.defectType" />
+        </el-select>
+        <el-select v-model="filters.severity" clearable placeholder="全部严重度" class="filter-ctrl narrow" @change="loadData">
+          <el-option v-for="s in severityOptions" :key="s.value" :label="s.label" :value="s.value" />
+        </el-select>
+        <el-button plain @click="resetFilters">重置筛选</el-button>
+      </template>
+      <!-- ★ 2026-11-17 复核修复：图片事实表是实时读，显示「30分钟聚合」属于口径误导（与下方 dataSourceMessage 自相矛盾） -->
+      <el-tag :type="isDefectImageSource ? 'success' : (summary.aggregationLevel === 'DAY' ? 'warning' : 'info')">{{ isDefectImageSource ? '实时 · 图片事实表' : (summary.aggregationLevel === 'DAY' ? '日聚合' : '30分钟聚合') }}</el-tag>
     </section>
+
+    <!-- ★ 2026-11-17：空结果显式说明。现场把「口径为空」当成「数据丢了」反复报障，
+         这里直接给出时间范围 / 当前产线 / 建议动作，不再只留一片空白。 -->
+    <div v-if="zeroResultTip" class="source-hint src-warning">
+      <b>当前条件下没有检测记录</b>
+      <span>{{ zeroResultTip }}</span>
+      <el-button size="small" plain @click="applyRangePreset({ key: 'last7', label: '近7天' })">改看近7天</el-button>
+    </div>
 
     <section class="kpi-grid" v-loading="loading">
       <!--
@@ -120,43 +152,10 @@
       <span>{{ summary.ignoredFilterMessage }}</span>
     </div>
 
-    <section class="ops-card aggregation-card">
-      <div class="aggregation-copy">
-        <div class="ops-title-row">
-          <h3>性能加速：日聚合</h3>
-          <el-tag :type="summary.aggregationLevel === 'DAY' ? 'warning' : 'info'">
-            当前：{{ summary.aggregationLevel === 'DAY' ? '日聚合查询' : '30分钟聚合查询' }}
-          </el-tag>
-        </div>
-        <p>
-          日聚合把 <b>30 分钟聚合表（agg_quality_30m / agg_defect_type_30m）</b> 按天预汇总。
-          注意：现场设备走缺陷图片上报通道，<b>不写这两张 30 分钟表</b>，
-          因此对当前通道日聚合没有加速收益 —— 任务会如实记为
-          <b>SKIPPED</b>（而不是「成功 0 行」）。图片通道的真实加速来自
-          <code>capture_time</code> 索引 + 大跨度趋势按天分桶。
-        </p>
-        <div v-if="aggregationJobs.length" class="job-list">
-          <span v-for="job in aggregationJobs.slice(0,3)" :key="job.jobId" class="job-chip">
-            <b>#{{ job.jobId }}</b>
-            <em :class="'status-'+String(job.status||'').toLowerCase()">{{ job.status || '-' }}</em>
-            {{ aggregationJobText(job) }}
-          </span>
-        </div>
-        <div class="schedule-line">
-          夜间自动执行：
-          <b>{{ aggregationSchedule.enabled ? '已开启' : '已关闭' }}</b>
-          <span>{{ aggregationSchedule.scheduleTime || '02:00' }} 执行，补算最近 {{ aggregationSchedule.lookbackDays || 7 }} 天</span>
-        </div>
-      </div>
-      <div class="ops-actions">
-        <el-button type="primary" plain :loading="aggregationRunning" @click="runAggregation">执行当前时间范围日聚合</el-button>
-        <el-button plain @click="openAggregationTaskDialog">任务列表 / 定时配置</el-button>
-        <el-tag v-if="lastAggregationJob" :type="jobTagType(lastAggregationJob.status)">{{ lastAggregationJob.status }} · {{ lastAggregationJob.message || '-' }}</el-tag>
-      </div>
-    </section>
 
-    <section class="builder-layout">
-      <aside class="widget-palette">
+    <section class="builder-layout" :class="{ 'builtin-layout': isBuiltinBoard }">
+      <!-- 内置看板下隐藏「组件库 / 配置面板」两侧栏：首屏只留结论，配置入口在「看板设置」 -->
+      <aside v-if="!isBuiltinBoard" class="widget-palette">
         <h3>图表组件库</h3>
         <p class="panel-tip">点击添加；画布中可拖拽排序，右下角可拖拽调整尺寸。</p>
         <button v-for="w in widgetTypes" :key="w.code" class="widget-btn" @click="openWidgetDialog(w)">
@@ -166,15 +165,19 @@
 
       <main class="canvas">
         <div class="canvas-head">
-          <div><h3>{{ dashboard?.dashboardName || '动态报表画布' }}</h3><p>配置保存后会刷新模板、报表数据并定位到刚保存的图表。</p></div>
+          <div><h3>{{ dashboard?.dashboardName || '动态报表画布' }}</h3>
+            <p v-if="isBuiltinBoard">内置看板：顺序与内容按「结论优先」固定，不可原地修改。要定制请在上方切换到自己模板，或用「看板设置 → 另存为」另起一份。</p>
+            <p v-else>配置保存后会刷新模板、报表数据并定位到刚保存的图表。</p>
+          </div>
           <div class="canvas-actions">
-            <el-tag type="success">P1 动态配置</el-tag>
+            <el-tag :type="isBuiltinBoard ? 'info' : 'success'">{{ isBuiltinBoard ? '内置看板' : 'P1 动态配置' }}</el-tag>
             <el-button size="small" type="warning" plain :disabled="!visibleWidgets.length" @click="openPresentation()">大屏展示</el-button>
-            <el-button size="small" type="primary" plain @click="openWidgetDialog()">新增图表</el-button>
-            <el-button size="small" plain :disabled="!dashboard" @click="openDashboardCopyDialog('copy')">复制模板</el-button>
-            <el-button size="small" plain :disabled="!dashboard" @click="openDashboardCopyDialog('saveAs')">另存为</el-button>
-            <el-button size="small" plain @click="refreshDashboard">刷新模板</el-button>
-            <el-button size="small" type="danger" plain :disabled="!dashboard || Number(dashboard.isDefault) === 1" @click="removeDashboard(dashboard)">删除模板</el-button>
+            <el-button v-if="isBuiltinBoard" size="small" type="primary" plain @click="openDashboardDialog()">新建自己的模板</el-button>
+            <el-button v-if="!isBuiltinBoard" size="small" type="primary" plain @click="openWidgetDialog()">新增图表</el-button>
+            <el-button v-if="!isBuiltinBoard" size="small" plain :disabled="!dashboard" @click="openDashboardCopyDialog('copy')">复制模板</el-button>
+            <el-button v-if="!isBuiltinBoard" size="small" plain :disabled="!dashboard" @click="openDashboardCopyDialog('saveAs')">另存为</el-button>
+            <el-button size="small" plain @click="refreshDashboard">刷新</el-button>
+            <el-button v-if="!isBuiltinBoard" size="small" type="danger" plain :disabled="!dashboard" @click="removeDashboard(dashboard)">删除模板</el-button>
           </div>
         </div>
 
@@ -185,7 +188,7 @@
             class="chart-card"
             :class="widgetCardClass(w)"
             :style="widgetCardStyle(w)"
-            draggable="true"
+            :draggable="!isBuiltinBoard"
             @dragstart="handleDragStart(w)"
             @dragover.prevent
             @drop.prevent="handleDrop(w)"
@@ -194,8 +197,8 @@
             <div class="card-head">
               <div><h4>{{ w.widgetName }}</h4><span>{{ widgetSubtitle(w) }}</span></div>
               <div class="card-actions" @click.stop>
-                <el-button size="small" type="primary" plain @click="editWidget(w)">编辑</el-button>
-                <el-button size="small" type="danger" plain @click="removeWidget(w)">删除</el-button>
+                <el-button size="small" type="primary" plain :disabled="isBuiltinBoard" @click="editWidget(w)">编辑</el-button>
+                <el-button size="small" type="danger" plain :disabled="isBuiltinBoard" @click="removeWidget(w)">删除</el-button>
                 <el-dropdown trigger="click" @command="cmd => handleWidgetCommand(cmd, w)">
                   <el-button size="small" plain>更多</el-button>
                   <template #dropdown>
@@ -203,10 +206,10 @@
                       <el-dropdown-item command="present">最大化展示</el-dropdown-item>
                       <el-dropdown-item command="exportImage">导出图片</el-dropdown-item>
                       <el-dropdown-item command="exportExcel">导出Excel</el-dropdown-item>
-                      <el-dropdown-item divided command="narrow">缩小宽度</el-dropdown-item>
-                      <el-dropdown-item command="wide">放大宽度</el-dropdown-item>
-                      <el-dropdown-item command="higher">增加高度</el-dropdown-item>
-                      <el-dropdown-item command="lower">降低高度</el-dropdown-item>
+                      <el-dropdown-item divided command="narrow" :disabled="isBuiltinBoard">缩小宽度</el-dropdown-item>
+                      <el-dropdown-item command="wide" :disabled="isBuiltinBoard">放大宽度</el-dropdown-item>
+                      <el-dropdown-item command="higher" :disabled="isBuiltinBoard">增加高度</el-dropdown-item>
+                      <el-dropdown-item command="lower" :disabled="isBuiltinBoard">降低高度</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
@@ -266,7 +269,7 @@
         </EmptyState>
       </main>
 
-      <aside class="config-panel">
+      <aside v-if="!isBuiltinBoard" class="config-panel">
         <div class="panel-title-row">
           <h3>当前图表</h3>
           <el-tag size="small" type="info">配置说明</el-tag>
@@ -298,6 +301,41 @@
           <el-tag v-for="d in dimensions" :key="d.code" class="dim-tag">{{ d.name }}</el-tag>
         </div>
       </aside>
+    </section>
+
+    <section class="ops-card aggregation-card">
+      <div class="aggregation-copy">
+        <div class="ops-title-row">
+          <h3>性能加速：日聚合</h3>
+          <el-tag :type="summary.aggregationLevel === 'DAY' ? 'warning' : 'info'">
+            当前：{{ summary.aggregationLevel === 'DAY' ? '日聚合查询' : '30分钟聚合查询' }}
+          </el-tag>
+        </div>
+        <p>
+          日聚合把 <b>30 分钟聚合表（agg_quality_30m / agg_defect_type_30m）</b> 按天预汇总。
+          注意：现场设备走缺陷图片上报通道，<b>不写这两张 30 分钟表</b>，
+          因此对当前通道日聚合没有加速收益 —— 任务会如实记为
+          <b>SKIPPED</b>（而不是「成功 0 行」）。图片通道的真实加速来自
+          <code>capture_time</code> 索引 + 大跨度趋势按天分桶。
+        </p>
+        <div v-if="aggregationJobs.length" class="job-list">
+          <span v-for="job in aggregationJobs.slice(0,3)" :key="job.jobId" class="job-chip">
+            <b>#{{ job.jobId }}</b>
+            <em :class="'status-'+String(job.status||'').toLowerCase()">{{ job.status || '-' }}</em>
+            {{ aggregationJobText(job) }}
+          </span>
+        </div>
+        <div class="schedule-line">
+          夜间自动执行：
+          <b>{{ aggregationSchedule.enabled ? '已开启' : '已关闭' }}</b>
+          <span>{{ aggregationSchedule.scheduleTime || '02:00' }} 执行，补算最近 {{ aggregationSchedule.lookbackDays || 7 }} 天</span>
+        </div>
+      </div>
+      <div class="ops-actions">
+        <el-button type="primary" plain :loading="aggregationRunning" @click="runAggregation">执行当前时间范围日聚合</el-button>
+        <el-button plain @click="openAggregationTaskDialog">任务列表 / 定时配置</el-button>
+        <el-tag v-if="lastAggregationJob" :type="jobTagType(lastAggregationJob.status)">{{ lastAggregationJob.status }} · {{ lastAggregationJob.message || '-' }}</el-tag>
+      </div>
     </section>
 
     <el-dialog v-model="widgetDialogVisible" class="analytics-config-dialog" :title="editingWidgetId ? '编辑图表' : '新增图表'" width="920px" destroy-on-close @opened="renderPreviewChart" @closed="disposePreviewChart">
@@ -540,6 +578,8 @@ import { getDefectImageFilterOptions } from '@/api/camera'
 import EmptyState from '@/components/EmptyState.vue'
 
 const injectedFilters = inject('filterParams', ref({}))
+/** 顶部级联选中的名称（产线名/工位名）——用于「收起筛选」时的当前范围说明 */
+const injectedLabels = inject('filterLabels', ref({}))
 const loading = ref(false)
 const dashboardLoading = ref(false)
 const savingWidget = ref(false)
@@ -549,6 +589,109 @@ const aggregationRunning = ref(false)
 const dashboard = ref(null)
 const dashboardList = ref([])
 const currentDashboardId = ref(null)
+
+/**
+ * ★ 2026-11-17 首屏重构：内置「工厂质量看板」。
+ *
+ * 问题：原来首屏是「看板模板下拉 + 6 个筛选 + 5 个管理按钮」，等于把配置工具当首页，
+ * 用户要先选模板、再调筛选，最后才看到图 —— 厂长打开这一页应该直接看到结论。
+ *
+ * 做法：内置看板是**代码常量**（不可编辑、不可删除、不随上次选择漂移），
+ *      widget 顺序固定为「结论优先」：总览 → 趋势 → 谁最差 → 什么缺陷 → 什么时段。
+ *      用户自建模板仍在「切换看板」里，两者互不污染；想改就从下拉里选自己的模板，
+ *      或点「另存为」另起一份（内置看板本身不允许原地改，避免「默认看板被改坏」）。
+ */
+const BUILTIN_BOARD_ID = 'builtin-quality-board'
+const REMEMBER_BOARD_KEY = 'line-analytics:remember-board'
+const REMEMBER_BOARD_ID_KEY = 'line-analytics:board:id'
+const rememberBoard = ref(readRememberBoard())
+
+function readRememberBoard() {
+  try { return localStorage.getItem(REMEMBER_BOARD_KEY) === '1' } catch (e) { return false }
+}
+
+function builtinWidget(id, name, type, metric, dims, w, h, sort) {
+  return {
+    widgetId: id,
+    widgetName: name,
+    widgetType: type,
+    metricJson: JSON.stringify({ metric }),
+    dimensionJson: JSON.stringify(dims),
+    filterJson: '{}',
+    optionJson: '{}',
+    layoutJson: JSON.stringify({ w, h }),
+    followGlobalFilter: 1,
+    sortOrder: sort,
+    isEnabled: 1
+  }
+}
+
+const BUILTIN_DASHBOARD = {
+  dashboardId: BUILTIN_BOARD_ID,
+  dashboardName: '工厂质量看板（默认）',
+  isBuiltin: 1,
+  widgets: [
+    // ① 一页看清规模与风险
+    builtinWidget(-1, '工厂总览', 'PLANT_OVERVIEW', 'plantOverview', ['time'], 12, 1, 10),
+    // ② 趋势：在收敛还是恶化，且直接按产线拆开（跨线一眼比）
+    builtinWidget(-2, '缺陷量趋势（按产线）', 'LINE', 'defectTrend', ['time', 'line'], 12, 3, 20),
+    // ③ 谁最差：产线排行 + 相机定位左右并列
+    builtinWidget(-3, '产线缺陷排行', 'BAR', 'defectRanking', ['line'], 6, 3, 30),
+    builtinWidget(-4, '责任相机定位', 'BAR', 'cameraRanking', ['camera'], 6, 3, 40),
+    // ④ 什么缺陷 / 什么时段：帕累托 + 热力
+    builtinWidget(-5, '缺陷类型帕累托', 'PARETO', 'defectPareto', ['defectType'], 6, 3, 50),
+    builtinWidget(-6, '时段×类型热力', 'HEATMAP', 'defectHeatmap', ['time', 'defectType'], 6, 3, 60),
+    // ⑤ 近自然的节律，顺带看空档（疑似停线）
+    builtinWidget(-7, '缺陷日历（近 30 天）', 'CALENDAR', 'defectCalendar', ['time'], 12, 3, 70)
+  ]
+}
+
+const isBuiltinBoard = computed(() => dashboard.value?.isBuiltin === 1
+  || currentDashboardId.value === BUILTIN_BOARD_ID)
+
+/** 默认进入哪个看板：记住开关关闭时永远先看工厂质量看板（保证「默认可预期」） */
+function preferredBoardId() {
+  if (!rememberBoard.value) return BUILTIN_BOARD_ID
+  try {
+    const saved = localStorage.getItem(REMEMBER_BOARD_ID_KEY)
+    if (saved && dashboardList.value.some(d => String(d.dashboardId) === saved)) return saved
+  } catch (e) { /* 隐私模式忽略 */ }
+  return BUILTIN_BOARD_ID
+}
+
+function toggleRememberBoard() {
+  rememberBoard.value = !rememberBoard.value
+  try { localStorage.setItem(REMEMBER_BOARD_KEY, rememberBoard.value ? '1' : '0') } catch (e) { /* 忽略 */ }
+  ElMessage.success(rememberBoard.value
+    ? '已开启：下次进入沿用当前看板'
+    : '已关闭：每次进入先看工厂质量看板')
+}
+
+/** 高级筛选默认收起：首屏只留「时间范围」，其余进抽屉，减少「先配后看」 */
+const advancedFilters = ref(false)
+
+/** 收起状态下仍要让用户知道「当前按哪条产线在看」（产线来自顶部布局级联） */
+const injectedLineLabel = computed(() => {
+  // ★ 2026-11-17 复核修复：原实现用 metadata.cameras 找 lineName（相机对象里没有该字段）
+  //   → 永远退化成「产线 11」这种 ID 文案。改为取 Layout 提供的 filterLabels.lineNames。
+  const names = injectedLabels.value?.lineNames || []
+  if (!names.length) {
+    const ids = injectedFilters.value?.lineIds || []
+    return ids.length ? `产线 ${ids.join('、')}` : '全部产线'
+  }
+  return names.length === 1 ? `产线 ${names[0]}` : `${names.length} 条产线：${names.join('、')}`
+})
+
+/** 「看板设置」二级菜单：把 5 个管理按钮收进来，首屏只留切换 + 刷新 */
+function onBoardCommand(cmd) {
+  if (cmd === 'create') return openDashboardDialog()
+  if (cmd === 'edit') return openDashboardDialog(dashboard.value)
+  if (cmd === 'copy') return openDashboardCopyDialog('copy')
+  if (cmd === 'saveAs') return openDashboardCopyDialog('saveAs')
+  if (cmd === 'present') return openPresentation()
+  if (cmd === 'remember') return toggleRememberBoard()
+  if (cmd === 'delete') return removeDashboard(dashboard.value)
+}
 const widgets = ref([])
 const selectedWidget = ref(null)
 const widgetDialogVisible = ref(false)
@@ -723,11 +866,19 @@ const wizardDimHint = computed(() => {
   if (m === 'defectCalendar') return '日历图横轴固定为自然日，跨月会自动滚动展示。'
   return '该指标的维度暂不支持切换，图表按默认口径统计。'
 })
+/**
+ * ★ 2026-11-17 复核修复：候选相机必须覆盖**所有**所选产线/工位。
+ *   旧实现只取 lineIds[0] / stationIds[0] → 多选 ZK09+ZK06 时下拉里只有 ZK09 的相机，
+ *   若此前选过 ZK06 的相机，值会「悬空」（选项不存在）而请求仍带着它 → 统计恒为空。
+ */
 const filteredCameras = computed(() => {
   const f = injectedFilters.value || {}
-  const lineId = f.lineIds?.[0]
-  const workstationId = f.stationIds?.[0]
-  return metadata.cameras.filter(c => (!lineId || String(c.lineId) === String(lineId)) && (!workstationId || String(c.workstationId) === String(workstationId)))
+  const lineIds = (f.lineIds || []).map(String)
+  const stationIds = (f.stationIds || []).map(String)
+  return metadata.cameras.filter(c =>
+    (!lineIds.length || lineIds.includes(String(c.lineId))) &&
+    (!stationIds.length || stationIds.includes(String(c.workstationId)))
+  )
 })
 const filteredDefectTypes = computed(() => metadata.defectTypes.filter(d => !filters.productId || !d.productId || String(d.productId) === String(filters.productId)))
 const visibleWidgets = computed(() => widgets.value.filter(w => Number(w.isEnabled ?? 1) === 1).slice().sort(widgetSort))
@@ -737,7 +888,31 @@ const presentationSubtitle = computed(() => presentationWidget.value ? widgetSub
 const lastAggregationJob = computed(() => aggregationJobs.value[0] || null)
 const previewWidget = computed(() => ({ widgetId: '__preview', widgetName: widgetForm.widgetName || '预览图表', widgetType: widgetForm.widgetType, metricJson: { metric: widgetForm.metric }, layoutJson: { w: widgetForm.width, h: widgetForm.height }, followGlobalFilter: 1, sortOrder: widgetForm.sortOrder, isEnabled: 1 }))
 
-watch(() => injectedFilters.value, async () => { currentDashboardId.value = null; await loadDashboards(); await loadDashboard(); await loadData() }, { deep: true })
+/**
+ * ★ 2026-11-17 复核修复：
+ *   ① 切产线/工位后，已选相机可能已不属于新范围 → 请求 (lineId=新线, cameraId=旧线相机) 恒空。
+ *      这是现场「多选几次产线数据就空了」的第二个根因（第一个是多选参数只取第一条）。
+ *      这里在筛选变化时主动清除悬空相机并提示一次，避免用户对着空页面猜。
+ *   ② 只有**工厂**变化才重置看板模板；切产线不该把用户自己选的模板丢掉。
+ */
+watch(() => injectedFilters.value, async (next, prev) => {
+  pruneStaleCameraFilter()
+  if (String(next?.factoryId || '') !== String(prev?.factoryId || '')) currentDashboardId.value = null
+  await loadDashboards(); await loadDashboard(); await loadData()
+}, { deep: true })
+
+let staleCameraNoticeAt = 0
+function pruneStaleCameraFilter() {
+  if (!filters.cameraId || !metadata.cameras.length) return
+  if (filteredCameras.value.some(c => String(c.cameraId) === String(filters.cameraId))) return
+  const cam = metadata.cameras.find(c => String(c.cameraId) === String(filters.cameraId))
+  const label = cam?.cameraName || cam?.cameraCode || filters.cameraId
+  filters.cameraId = null
+  if (Date.now() - staleCameraNoticeAt > 10000) {
+    staleCameraNoticeAt = Date.now()
+    ElMessage.warning('已清除相机筛选「' + label + '」：该相机不属于当前所选产线/工位，保留会让统计恒为空')
+  }
+}
 watch([visibleWidgets, () => summary.trend, () => summary.defectRanking, () => summary.defectPareto, () => summary.severityDistribution, () => summary.defectTrend, () => summary.stationRanking, () => summary.cameraRanking, () => summary.defectPivot, () => summary.hourlyHeatmap, () => summary.shiftCompare, () => summary.dailyCalendar], () => renderAllCharts(), { deep: true })
 watch([() => widgetDialogVisible.value, () => widgetForm.widgetType, () => widgetForm.metric, () => widgetForm.width, () => widgetForm.height, () => summary.trend, () => summary.defectRanking, () => summary.defectPareto, () => summary.severityDistribution, () => summary.defectTrend, () => summary.stationRanking, () => summary.cameraRanking, () => summary.dailyCalendar], () => renderPreviewChart(), { deep: true })
 
@@ -747,19 +922,52 @@ onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); wind
 async function loadMetadata(){ try{ const data=(await getAnalyticsMetadata()).data?.data||{}; Object.assign(metadata,{products:data.products||[],defectTypes:data.defectTypes||[],positions:data.positions||[],cameras:data.cameras||[],shifts:data.shifts||[],widgetTypes:data.widgetTypes||[],dimensions:data.dimensions||[]}) }catch(e){ ElMessage.error('加载统计元数据失败：'+errorMessage(e)) } }
 /** 现场实际类型选项（带图片数）。失败置空不阻塞 —— 选项为空时下拉只是没有候选项 */
 async function loadDefectTypeOptions(){ try{ const data=(await getDefectImageFilterOptions()).data?.data||{}; defectTypeOptions.value=data.defectTypes||[] }catch{ defectTypeOptions.value=[] } }
-async function loadDashboards(){ const f=injectedFilters.value||{}; dashboardList.value=(await getDashboards({factoryId:f.factoryId||undefined})).data?.data||[] }
-async function loadDashboard(){ dashboardLoading.value=true; try{ const f=injectedFilters.value||{}; const res=currentDashboardId.value?await getDashboard(currentDashboardId.value):await getDefaultDashboard({factoryId:f.factoryId||undefined}); const data=res.data?.data||{}; dashboard.value=data; currentDashboardId.value=data.dashboardId||null; widgets.value=data.widgets||[]; selectedWidget.value=widgets.value[0]||null; await nextTick(); await loadWidgetData(); renderAllCharts() }catch(e){ widgets.value=[]; ElMessage.error('加载动态看板失败：'+errorMessage(e)) }finally{ dashboardLoading.value=false } }
+async function loadDashboards(){ const f=injectedFilters.value||{}; let remote=[]; try{ remote=(await getDashboards({factoryId:f.factoryId||undefined})).data?.data||[] }catch(e){ remote=[]; ElMessage.warning('看板模板列表加载失败，已回退到内置「工厂质量看板（默认）」：'+errorMessage(e)) } dashboardList.value=[{dashboardId:BUILTIN_BOARD_ID,dashboardName:'工厂质量看板（默认）'},...remote]; if(!currentDashboardId.value) currentDashboardId.value=preferredBoardId() }
+async function loadDashboard(){ dashboardLoading.value=true; try{ let data; if(currentDashboardId.value===BUILTIN_BOARD_ID){ data=JSON.parse(JSON.stringify(BUILTIN_DASHBOARD)) } else { const f=injectedFilters.value||{}; const res=currentDashboardId.value?await getDashboard(currentDashboardId.value):await getDefaultDashboard({factoryId:f.factoryId||undefined}); data=res.data?.data||{} } dashboard.value=data; currentDashboardId.value=data.dashboardId||null; widgets.value=data.widgets||[]; selectedWidget.value=widgets.value[0]||null; if(rememberBoard.value&&data.dashboardId){ try{ localStorage.setItem(REMEMBER_BOARD_ID_KEY,String(data.dashboardId)) }catch(e){ /* 忽略 */ } } await nextTick(); await loadWidgetData(); renderAllCharts() }catch(e){ widgets.value=[]; ElMessage.error('加载动态看板失败：'+errorMessage(e)) }finally{ dashboardLoading.value=false } }
 async function loadDashboardById(id){ currentDashboardId.value=id; await loadDashboard() }
 async function refreshDashboard(){ await loadDashboards(); await loadDashboard() }
-async function loadData(){ loading.value=true; try{ const data=(await getLineAnalyticsSummary(globalParams())).data?.data||{}; Object.assign(summary,normalizeSummary(data)); await loadWidgetData(); await nextTick(); renderAllCharts() }catch(e){ Object.assign(summary,normalizeSummary({})); ElMessage.error('加载产线统计失败：'+errorMessage(e)) }finally{ loading.value=false } }
-async function loadWidgetData(){ const independent=visibleWidgets.value.filter(w=>Number(w.followGlobalFilter??1)!==1||!!splitDimOf(w)); const alive=new Set(independent.map(w=>String(w.widgetId))); Object.keys(widgetData).forEach(k=>{if(!alive.has(k)) delete widgetData[k]}); await Promise.all(independent.map(async w=>{ try{ widgetData[w.widgetId]=normalizeSummary((await getLineAnalyticsSummary(widgetParams(w))).data?.data||{}) }catch{ widgetData[w.widgetId]=normalizeSummary({}) } })) }
+/**
+ * ★ 2026-11-17 连续切换筛选的竞态守卫。
+ * 现场实测：快速切换产线几次后页面全空 —— 旧请求（无筛选/上一条产线）响应比新请求晚到，
+ * 把新数据覆盖回旧结果（甚至清空）。用单调递增序号标记「最新一次加载」，
+ * 过期响应一律丢弃，不写 summary / widgetData / loading。
+ */
+let dataSeq = 0
+async function loadData(){ const seq=++dataSeq; loading.value=true; try{ const data=(await getLineAnalyticsSummary(globalParams())).data?.data||{}; if(seq!==dataSeq) return; Object.assign(summary,normalizeSummary(data)); await loadWidgetData(seq); if(seq!==dataSeq) return; await nextTick(); renderAllCharts() }catch(e){ if(seq!==dataSeq) return; Object.assign(summary,normalizeSummary({})); ElMessage.error('加载产线统计失败：'+errorMessage(e)) }finally{ if(seq===dataSeq) loading.value=false } }
+/** @param seq 竞态守卫：调用方传入本次加载的序号，过期响应不写 widgetData */
+async function loadWidgetData(seq=dataSeq){ const independent=visibleWidgets.value.filter(w=>Number(w.followGlobalFilter??1)!==1||!!splitDimOf(w)); const alive=new Set(independent.map(w=>String(w.widgetId))); if(seq===dataSeq){ Object.keys(widgetData).forEach(k=>{if(!alive.has(k)) delete widgetData[k]}) } await Promise.all(independent.map(async w=>{ try{ const d=normalizeSummary((await getLineAnalyticsSummary(widgetParams(w))).data?.data||{}); if(seq!==dataSeq) return; widgetData[w.widgetId]=d }catch{ if(seq!==dataSeq) return; widgetData[w.widgetId]=normalizeSummary({}) } })) }
 function normalizeSummary(data){ return {aggregationLevel:data.aggregationLevel||'30M',aggregationMessage:data.aggregationMessage||'',aggregationThresholdDays:data.aggregationThresholdDays||3,dataSource:data.dataSource||'AGGREGATION',dataSourceMessage:data.dataSourceMessage||'',ignoredFilters:data.ignoredFilters||[],ignoredFilterMessage:data.ignoredFilterMessage||'',trendGranularity:data.trendGranularity||'HOUR',kpi:data.kpi||{},trend:data.trend||[],defectRanking:data.defectRanking||[],stationRanking:data.stationRanking||[],cameraRanking:data.cameraRanking||[],defectPivot:data.defectPivot||[],mappingExceptions:data.mappingExceptions||[],severityDistribution:data.severityDistribution||[],defectPareto:data.defectPareto||[],plantOverview:data.plantOverview||{},defectTrend:data.defectTrend||[],hourlyHeatmap:data.hourlyHeatmap||[],shiftCompare:data.shiftCompare||[],dailyCalendar:data.dailyCalendar||[],shiftNames:data.shiftNames||{}} }
 const isDefectImageSource = computed(() => summary.dataSource === 'DEFECT_IMAGE')
+/**
+ * 空结果说明（返回空串表示不提示）。
+ * 只有「确实查出 0 条」才提示 —— 加载中、首屏未请求、接口报错都不提示，避免误报。
+ */
+const zeroResultTip = computed(() => {
+  if (loading.value) return ''
+  if (Number(summary.kpi?.totalCount || 0) > 0) return ''
+  if (!summary.dataSource) return ''
+  const range = [timeRange.value?.[0], timeRange.value?.[1]].filter(Boolean).map(t => String(t).slice(0, 16)).join(' ~ ')
+  const scope = injectedLineLabel.value
+  const cam = filters.cameraId ? '（含相机筛选）' : ''
+  return `时间范围 ${range || '未设置'}，${scope}${cam}。若刚切换过产线，可先看「近7天」；仍有疑问请核对顶部产线/工位选择。`
+})
 function plantOverviewFor(w){ const d=summaryFor(w); return d.plantOverview||{} }
 /** 环比格（plantOverview widget）：缺陷上升红、下降绿、不可计算灰 */
 function plantCompareFor(w){ const d=summaryFor(w).plantOverview||{}; const v=d.dayOverDayRate; if(v===null||v===undefined) return {text:'—',cls:''}; const n=Number(v); return {text:(n>0?'+':'')+Number(n.toFixed(2))+'%',cls:n>0?'ng':'ok'} }
-function globalParams(){ const f=injectedFilters.value||{}; return {startTime:timeRange.value?.[0],endTime:timeRange.value?.[1],factoryId:f.factoryId||undefined,lineId:f.lineIds?.[0],workstationId:f.stationIds?.[0],productId:filters.productId||undefined,shiftId:filters.shiftId||undefined,cameraId:filters.cameraId||undefined,defectType:filters.defectType||undefined,severity:filters.severity||undefined} }
-function widgetParams(w){ const f=parseJsonField(w?.filterJson,{}); return {startTime:timeRange.value?.[0],endTime:timeRange.value?.[1],factoryId:f.factoryId||undefined,lineId:f.lineId||undefined,workstationId:f.workstationId||undefined,productId:f.productId||undefined,shiftId:f.shiftId||undefined,cameraId:f.cameraId||undefined,defectType:f.defectType||undefined,severity:f.severity||undefined,dim:splitDimOf(w)||undefined} }
+/**
+ * ★ 2026-11-17 多产线：顶部级联可多选产线，旧实现只取 lineIds[0]
+ *   →「选了 ZK09+ZK06，相机排行只有 ZK09」。多选时改传 lineIds（逗号分隔，
+ *   后端 2026-11-17 起按 line_id IN 汇总）；单选保持 lineId，口径不变。
+ */
+function globalParams(){ const f=injectedFilters.value||{}; const lineIds=f.lineIds||[]; const stationIds=f.stationIds||[]; return {startTime:timeRange.value?.[0],endTime:timeRange.value?.[1],factoryId:f.factoryId||undefined,lineId:lineIds[0]||undefined,lineIds:lineIds.length>1?lineIds.join(','):undefined,workstationId:stationIds[0]||undefined,workstationIds:stationIds.length>1?stationIds.join(','):undefined,productId:filters.productId||undefined,shiftId:filters.shiftId||undefined,cameraId:filters.cameraId||undefined,defectType:filters.defectType||undefined,severity:filters.severity||undefined} }
+/**
+ * ★ 2026-11-17 修复「带拆分维的图表无视顶部产线筛选」：
+ *   内置「产线缺陷排行」「缺陷量趋势（按产线）」走独立请求，旧 widgetParams
+ *   只读图表自身 filterJson（内置看板恒为 '{}'）→ 选了 ZK09 它仍画全部产线，
+ *   与旁边遵守筛选的图表自相矛盾，看起来像「选产线后数据丢了」。
+ *   现在以注入的全局筛选为基线，图表独立筛选（filterJson）非空时覆盖。
+ */
+function widgetParams(w){ const f=parseJsonField(w?.filterJson,{}); const inj=injectedFilters.value||{}; const injLineIds=inj.lineIds||[]; const injStationIds=inj.stationIds||[]; const baseLineId=f.lineId||injLineIds[0]||undefined; const baseStationId=f.workstationId||injStationIds[0]||undefined; return {startTime:timeRange.value?.[0],endTime:timeRange.value?.[1],factoryId:f.factoryId||inj.factoryId||undefined,lineId:baseLineId,lineIds:(!f.lineId&&injLineIds.length>1)?injLineIds.join(','):undefined,workstationId:baseStationId,workstationIds:(!f.workstationId&&injStationIds.length>1)?injStationIds.join(','):undefined,productId:f.productId||undefined,shiftId:f.shiftId||undefined,cameraId:f.cameraId||undefined,defectType:f.defectType||undefined,severity:f.severity||undefined,dim:splitDimOf(w)||undefined} }
 /**
  * ★ 2026-11-14 维度生效：从 dimensionJson 推导拆分维度（dim 参数）。
  * 趋势类指标：第一个非时间维 = 序列拆分依据（不选 = 单序列，与旧版一致）。
@@ -873,7 +1081,7 @@ function openDashboardDialog(item){ editingDashboardId.value=item?.dashboardId||
 async function saveDashboard(){ if(!String(dashboardForm.dashboardName||'').trim()) return ElMessage.warning('请填写模板名称'); savingDashboard.value=true; try{ const f=injectedFilters.value||{}; const payload={dashboardName:dashboardForm.dashboardName.trim(),factoryId:f.factoryId||null,ownerUserId:null,scopeType:dashboardForm.scopeType,isDefault:dashboardForm.isDefault?1:0,layoutJson:{cols:12,rowHeight:120}}; const res=editingDashboardId.value?await updateDashboard(editingDashboardId.value,payload):await createDashboard(payload); assertSuccess(res); currentDashboardId.value=res.data?.data?.dashboardId||editingDashboardId.value; dashboardDialogVisible.value=false; await loadDashboards(); await loadDashboard(); ElMessage.success('看板模板已保存') }catch(e){ ElMessage.error('保存模板失败：'+errorMessage(e)) }finally{ savingDashboard.value=false } }
 function openDashboardCopyDialog(mode='copy'){ if(!dashboard.value?.dashboardId) return ElMessage.warning('请先选择看板模板'); dashboardCopyMode.value=mode; Object.assign(dashboardCopyForm,{dashboardName:(dashboard.value.dashboardName||'看板模板')+(mode==='saveAs'?' 另存':' 副本'),scopeType:dashboard.value.scopeType||'FACTORY',isDefault:false}); dashboardCopyDialogVisible.value=true }
 async function saveDashboardCopy(){ if(!dashboard.value?.dashboardId) return; if(!String(dashboardCopyForm.dashboardName||'').trim()) return ElMessage.warning('请填写模板名称'); savingDashboard.value=true; try{ const f=injectedFilters.value||{}; const payload={dashboardName:dashboardCopyForm.dashboardName.trim(),factoryId:f.factoryId||dashboard.value.factoryId||null,ownerUserId:null,scopeType:dashboardCopyForm.scopeType,isDefault:dashboardCopyForm.isDefault?1:0}; const res=await copyDashboard(dashboard.value.dashboardId,payload); assertSuccess(res); currentDashboardId.value=res.data?.data?.dashboardId||null; dashboardCopyDialogVisible.value=false; await loadDashboards(); await loadDashboard(); ElMessage.success(dashboardCopyMode.value==='saveAs'?'模板已另存为':'模板已复制') }catch(e){ ElMessage.error('复制模板失败：'+errorMessage(e)) }finally{ savingDashboard.value=false } }
-async function removeDashboard(item){ if(!item?.dashboardId) return; try{ await ElMessageBox.confirm('确认删除看板模板“'+item.dashboardName+'”吗？下属图表配置会同步删除，历史检测数据不受影响。','删除模板',{type:'warning',confirmButtonText:'确认删除',cancelButtonText:'取消'}); assertSuccess(await deleteDashboard(item.dashboardId)); currentDashboardId.value=null; await loadDashboards(); await loadDashboard(); ElMessage.success('模板已删除') }catch(e){ if(e!=='cancel'&&e!=='close') ElMessage.error('删除模板失败：'+errorMessage(e)) } }
+async function removeDashboard(item){ if(!item?.dashboardId) return; const isDefaultBoard=Number(item.isDefault)===1; try{ await ElMessageBox.confirm('确认删除看板模板“'+item.dashboardName+'”吗？'+(isDefaultBoard?'该模板当前是默认模板，删除后进入页面时系统会按需自动重建一份默认模板。':'')+'下属图表配置会同步删除，历史检测数据不受影响。','删除模板',{type:'warning',confirmButtonText:'确认删除',cancelButtonText:'取消'}); assertSuccess(await deleteDashboard(item.dashboardId)); if(Number(currentDashboardId.value)===Number(item.dashboardId)) currentDashboardId.value=null; await loadDashboards(); await loadDashboard(); ElMessage.success('模板已删除') }catch(e){ if(e!=='cancel'&&e!=='close') ElMessage.error('删除模板失败：'+errorMessage(e)) } }
 
 function openPresentation(w=null){ presentationWidget.value=w; presentationVisible.value=true; nextTick(renderPresentationCharts) }
 async function runAggregation(){ aggregationRunning.value=true; try{ const f=injectedFilters.value||{}; const res=await runDailyAggregation({startDate:String(timeRange.value?.[0]||'').slice(0,10),endDate:String(timeRange.value?.[1]||'').slice(0,10),factoryId:f.factoryId||undefined,lineId:f.lineIds?.[0]}); assertSuccess(res); aggregationJobs.value=[res.data.data,...aggregationJobs.value]; ElMessage.success('日聚合任务已提交'); window.setTimeout(loadAggregationJobs,1600) }catch(e){ ElMessage.error('提交日聚合失败：'+errorMessage(e)) }finally{ aggregationRunning.value=false } }
@@ -914,9 +1122,9 @@ function safeSetOption(ins,option,label){
   try{ ins.setOption(option,true) }
   catch(e){ window.setTimeout(()=>{ try{ ins.setOption(option,true) }catch(e2){ console.warn('[chart] 渲染失败：',label,e2&&e2.message) } },120) }
 }
-function renderChart(w){ const el=chartRefs.get(String(w.widgetId)); if(!el||!hasChartData(w)) return; const id=String(w.widgetId); const ins=chartInstances.get(id)||echarts.init(el); chartInstances.set(id,ins); safeSetOption(ins,chartOption(w),w.widgetName||id); ins.resize() }
+function renderChart(w){ const id=String(w.widgetId); const el=chartRefs.get(id); if(!el||!hasChartData(w)){ const stale=chartInstances.get(id); if(stale){ stale.dispose(); chartInstances.delete(id) } return } const ins=chartInstances.get(id)||echarts.init(el); chartInstances.set(id,ins); safeSetOption(ins,chartOption(w),w.widgetName||id); ins.resize() }
 function renderPresentationCharts(){ nextTick(()=>presentationWidgets.value.filter(isChartWidget).forEach(renderPresentationChart)) }
-function renderPresentationChart(w){ const el=presentationChartRefs.get(String(w.widgetId)); if(!el||!hasChartData(w)) return; const id=String(w.widgetId); const ins=presentationChartInstances.get(id)||echarts.init(el); presentationChartInstances.set(id,ins); safeSetOption(ins,chartOption(w),w.widgetName||id); ins.resize() }
+function renderPresentationChart(w){ const id=String(w.widgetId); const el=presentationChartRefs.get(id); if(!el||!hasChartData(w)){ const stale=presentationChartInstances.get(id); if(stale){ stale.dispose(); presentationChartInstances.delete(id) } return } const ins=presentationChartInstances.get(id)||echarts.init(el); presentationChartInstances.set(id,ins); safeSetOption(ins,chartOption(w),w.widgetName||id); ins.resize() }
 /**
  * ★ 2026-11-15：预览图**每次都重建实例**。
  *
@@ -1221,4 +1429,9 @@ function triggerSourceText(s){ return {MANUAL:'手动执行',SCHEDULE:'夜间自
 .preset-btn b { display: block; color: var(--color-text); font-size: 13px; margin-bottom: 4px; }
 .preset-btn small { color: var(--color-text-secondary); line-height: 1.5; }
 @media (max-width: 1100px) { .wizard-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* 2026-11-17：内置工厂质量看板 —— 隐藏两侧配置栏后画布占满宽度 */
+.builder-layout.builtin-layout{grid-template-columns:minmax(0,1fr)}
+/* 高级筛选收起时的状态提示（当前产线 + 数据源），替代一排下拉占满一行 */
+.filter-inline-note{font-size:12px;color:var(--color-text-secondary);margin-left:4px}
 </style>
