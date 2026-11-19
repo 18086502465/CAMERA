@@ -49,6 +49,9 @@ public class SchemaInitializer {
     @Autowired
     private com.wms.analytics.infra.repository.DailyReportRepository dailyReportRepository;
 
+    @Autowired
+    private com.wms.analytics.infra.repository.AnomalyAlertRepository anomalyAlertRepository;
+
     /**
      * 启动期按域依次保证表结构就绪。顺序无依赖（各 ensure 幂等），
      * 仅按「设置 → 缺陷图片 → 统计聚合」的业务链排列便于阅读日志。
@@ -91,6 +94,10 @@ public class SchemaInitializer {
             analyticsAggregationRepository.ensureAggregationJobTable();
             // 2026-11-17：产线统计日报快照表（幂等，07_daily_report.sql 同构）
             dailyReportRepository.ensureTable();
+            // 2026-11-19 评审 P1-3：告警正文列扩到 varchar(2000)（幂等自愈）。
+            //   原 varchar(500) 时正文超长会让整条告警写不进库，而异常被 catch 掉
+            //   → 告警静默丢失（现场实测新告警正文 ~700 字直接写库失败）。
+            anomalyAlertRepository.ensureMessageColumnWidth();
         } catch (Exception e) {
             log.error("[SchemaInitializer] analytics 域聚合表保证失败（服务继续启动，聚合任务会自行重试建表）: {}",
                     e.getMessage(), e);

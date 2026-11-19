@@ -5,11 +5,13 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.wms.device.api.dto.CameraHeartbeatResponseDTO;
 import com.wms.device.api.dto.CameraStatusHeartbeatDTO;
+import com.wms.device.domain.CameraNotConfiguredException;
 import com.wms.device.domain.model.CameraStatus;
 import com.wms.device.infra.mapper.CameraStatusMapper;
 import com.wms.device.infra.repository.CameraDirectoryRepository;
 import com.wms.device.app.ICameraStatusService;
 import com.wms.device.app.event.CameraAlertEvent;
+import com.wms.shared.util.LogThrottle;
 import org.springframework.context.ApplicationEventPublisher;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,6 +40,14 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final DateTimeFormatter MILLIS_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
     private static final String CONFIG_VERSION = "v1.0.0";
+
+    /**
+     * 心跳校验失败日志的节流间隔（毫秒）。
+     *
+     * <p>★ 2026-11-19 评审 P0-2：未登记设备的心跳每 5 秒一次，
+     * 不节流会占业务日志 80.5%、把真实告警淹没。10 分钟一条足够定位问题。
+     */
+    private static final long HEARTBEAT_LOG_THROTTLE_MS = 10 * 60 * 1000L;
 
     @Autowired
     private CameraStatusMapper cameraStatusMapper;
@@ -110,7 +120,20 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
             checkAndAlert(dto, deviceId);
             return buildResponse();
         } catch (IllegalArgumentException e) {
-            log.warn("参数校验失败: {}", e.getMessage());
+            // ★ 2026-11-19 评审 P0-2：心跳是 5 秒/台的高频链路，这条日志**必须节流**。
+            //   现场实测：5 台未登记设备每 5 秒打一次心跳（被拒后继续），
+            //   日志量占业务日志 80.5%、WARN 7 天 26 万条（ERROR 才 1560 条），
+            //   **真正的告警被彻底淹没**。
+            //   同时这里是**唯一的记录点** —— Controller 层原来会 catch 同一个异常
+            //   再记一条内容完全相同的 WARN（同一件事记两遍，实测成对出现）。
+            //   Controller 层已改为不再重复记录（见 CameraStatusHeartbeatController）。
+            //
+            //   节流按 deviceId 分键：某台设备首次（或超 10 分钟）才记一条，
+            //   其它设备各自独立 —— 不会出现"一台设备的噪音压制其它设备"的情况。
+            //   key 前缀带场景名，避免与其它 LogThrottle 用途互相压制。
+            if (LogThrottle.allow("heartbeat-invalid:" + deviceId, HEARTBEAT_LOG_THROTTLE_MS)) {
+                log.warn("参数校验失败: {}", e.getMessage());
+            }
             throw e;
         } catch (Exception e) {
             log.error("处理心跳异常", e);
@@ -198,7 +221,9 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
             }
             cameraStatusMapper.updateById(status);
         } else {
-            throw new IllegalArgumentException("设备未在系统配置中维护: " + deviceId);
+            // ★ 2026-11-19 评审 P0-2：改用自定义异常，让"未登记设备"成为类型信息，
+            //   处理方可以精确分流（Controller 据此不重复记日志）。
+            throw new CameraNotConfiguredException(deviceId);
         }
     }
 

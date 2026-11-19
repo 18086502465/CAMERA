@@ -17,6 +17,9 @@ import java.util.List;
 @Repository
 public class AnomalyAlertRepository {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(AnomalyAlertRepository.class);
+
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
@@ -69,15 +72,87 @@ public class AnomalyAlertRepository {
                     java.sql.Statement.RETURN_GENERATED_KEYS);
             ps.setObject(1, lineIdKey);
             ps.setObject(2, workstationIdKey);
-            ps.setString(3, alertType);
-            ps.setString(4, alertLevel);
-            ps.setString(5, alertTitle);
-            ps.setString(6, alertMessage);
-            ps.setString(7, alertMessage);   // message 列（NOT NULL）
+            ps.setString(3, truncate(alertType, 50));
+            ps.setString(4, truncate(alertLevel, 20));
+            ps.setString(5, truncate(alertTitle, 200));
+            // ★ 2026-11-19 评审 P1-3（由 P1-1 端到端验证发现）：
+            //   alert_message / message 两列都是 **varchar(500)**，
+            //   正文一旦超长 → MySQL 抛 `ERROR 1406 Data too long` → **整条告警写不进去**。
+            //   而调用方普遍把异常 catch 掉 → **告警静默丢失**，运维完全看不到。
+            //   现场实测：新加的 SCHEMA_INDEX_MISSING 告警（正文 ~700 字）写库失败，
+            //   只在日志里留下一条 WARN；现有最长告警已 428 字，离上限只有一步之遥。
+            //   现在**统一在这里截断** —— 所有调用方都受益，不必各自记得截。
+            String body = truncate(alertMessage, ALERT_MESSAGE_MAX_LEN);
+            ps.setString(6, body);
+            ps.setString(7, body);   // message 列（NOT NULL）
             return ps;
         }, keyHolder);
         Number key = keyHolder.getKey();
         return key == null ? null : key.longValue();
+    }
+
+    /**
+     * 告警正文的最大长度。
+     *
+     * <p>2026-11-19 起 {@code fact_anomaly_alert.alert_message / message} 由
+     * varchar(500) 扩到 <b>varchar(2000)</b>（现场 ALTER 已执行，INPLACE 不重建表）。
+     * 原来的 500 太紧 —— 现场实测新告警正文 ~700 字直接写库失败
+     * （{@code ERROR 1406 Data too long}），而异常被 catch 掉 → <b>告警静默丢失</b>。
+     * 现有最长告警已达 428 字，扩容前已到上限边缘。
+     */
+    private static final int ALERT_MESSAGE_MAX_LEN = 2000;
+
+    /**
+     * 幂等扩宽告警正文列（启动期调用）。
+     *
+     * <p>★ 2026-11-19 评审 P1-3：{@code alert_message / message} 原本是 varchar(500)，
+     * 正文超长 → MySQL 抛 {@code ERROR 1406 Data too long} → <b>整条告警写不进去</b>，
+     * 而调用方普遍 catch 掉异常 → <b>告警静默丢失</b>。
+     * 现场已用 {@code ALTER TABLE ... ALGORITHM=INPLACE, LOCK=NONE} 扩到 varchar(2000)
+     * （INPLACE 不重建表、不阻塞读写）；这里做<b>幂等自愈</b>，
+     * 保证其它环境（新库 / 备份恢复出来的库）也能自动到位。
+     *
+     * <p>失败只记 WARN，不阻断启动 —— 列宽不够只是告警正文会被截断，不是致命问题。
+     */
+    public void ensureMessageColumnWidth() {
+        try {
+            List<String> current = jdbcTemplate.queryForList(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS " +
+                            " WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'fact_anomaly_alert' " +
+                            "   AND COLUMN_NAME IN ('alert_message','message')",
+                    String.class);
+            if (current.isEmpty()) {
+                return;
+            }
+            for (String col : current) {
+                if ("alert_message".equals(col)) {
+                    jdbcTemplate.execute("ALTER TABLE fact_anomaly_alert " +
+                            "MODIFY COLUMN alert_message VARCHAR(2000) NULL COMMENT '告警正文'");
+                } else {
+                    jdbcTemplate.execute("ALTER TABLE fact_anomaly_alert " +
+                            "MODIFY COLUMN message VARCHAR(2000) NOT NULL COMMENT '告警内容'");
+                }
+            }
+            log.info("fact_anomaly_alert 告警正文列已扩到 varchar(2000)（评审 P1-3）");
+        } catch (Exception e) {
+            log.warn("扩宽 fact_anomaly_alert 正文列失败（不影响启动，告警正文会被截断到 500 字）: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 按列长度截断文本（超长时以省略号收尾）。
+     *
+     * <p>★ 2026-11-19 评审 P1-3：告警正文超长会让整条告警写不进库，
+     * 而异常通常被调用方 catch 掉 → <b>告警静默丢失</b>。统一在这里截断。
+     */
+    private static String truncate(String s, int max) {
+        if (s == null) {
+            return null;
+        }
+        if (s.length() <= max) {
+            return s;
+        }
+        return s.substring(0, max - 1) + "…";
     }
 
     /**

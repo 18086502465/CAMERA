@@ -1,6 +1,7 @@
 package com.wms.shared.web;
 
 import com.wms.shared.common.ResultVO;
+import com.wms.shared.util.LogThrottle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -32,6 +33,14 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /**
+     * 客户端断连日志的节流间隔（毫秒）。
+     *
+     * <p>★ 2026-11-19 评审 P1-2：客户端断连是设备端网络抖动的常态，
+     * 不节流会持续污染日志（现场近 24h 就有 10 条，且伴随大量 multipart 重试）。
+     */
+    private static final long CLIENT_ABORT_LOG_THROTTLE_MS = 10 * 60 * 1000L;
 
     /** 事件发布器（上传失败告警用；可为空 → 跳过发事件，不影响上传响应） */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -90,6 +99,37 @@ public class GlobalExceptionHandler {
                 .body(ResultVO.fail("上传失败，请重试该批次"));
     }
 
+    /**
+     * 客户端断连（{@code ClientAbortException: Broken pipe}）。
+     *
+     * <p>★ 2026-11-19 评审 P1-2：此前这条路径<b>完全没有告警</b> ——
+     * 客户端断连的异常走的是兜底 {@link #handleException}，而那里<b>只 log.error、没有发布事件</b>。
+     * 现场实测：近 24h 有 10 条 Broken pipe，而 {@code UPLOAD_FAILED} 告警只有 1 条
+     * （那 1 条来自 multipart 解析失败）—— 断连场景的告警**全丢**。
+     *
+     * <p><b>为什么不能像其它分支那样写响应</b>：客户端已经断开，
+     * 往 socket 写任何字节都必然再次抛 {@code Broken pipe}。
+     * 现场日志里那条 {@code Failure in @ExceptionHandler ... Broken pipe} 就是这么来的 ——
+     * 它有三重坏处：① <b>掩盖原始异常</b>（真正的原因被二次异常盖住）；
+     * ② 处理器返回值序列化再次失败，堆栈噪音；③ 打断处理链。
+     * 所以本方法<b>返回 void</b>（Spring 视作已处理，不再写 body）。
+     *
+     * <p><b>日志级别用 WARN 而非 ERROR</b>：客户端断连是设备端网络抖动的常态，
+     * 不是系统故障 —— 记 ERROR 会污染错误日志（现场 7 天 1560 条 ERROR 里它占相当比例）。
+     * 且按 deviceId 节流。
+     */
+    @ExceptionHandler(org.apache.catalina.connector.ClientAbortException.class)
+    public void handleClientAbort(org.apache.catalina.connector.ClientAbortException e,
+                                  javax.servlet.http.HttpServletRequest request) {
+        String deviceId = request == null ? null : request.getHeader("X-Device-Id");
+        if (LogThrottle.allow("client-abort:" + deviceId, CLIENT_ABORT_LOG_THROTTLE_MS)) {
+            log.warn("客户端断开连接（响应未能送达）: deviceId={} reason={}", deviceId, e.getMessage());
+        }
+        // ★ 发布事件 → 落 UPLOAD_FAILED 告警（此前这条路径没有告警）
+        publishUploadFailed(deviceId, "客户端断开连接: " + e.getMessage(), "ClientAbortException");
+        // ★ 不写响应：客户端已断连，写了也必然失败（见方法注释）
+    }
+
     /** 发布上传失败事件（发布失败不影响主流程 —— 原始异常已在 log.error 落盘） */
     private void publishUploadFailed(String deviceId, String reason, String errorType) {
         if (eventPublisher == null) {
@@ -111,8 +151,44 @@ public class GlobalExceptionHandler {
         if (e instanceof AccessDeniedException || e instanceof AuthenticationException) {
             throw e; // 交回 ExceptionTranslationFilter → 401/403 语义
         }
+        // ★ 2026-11-19 评审 P1-2：客户端断连可能被**包装**在别的异常里
+        //   （例如 IOException 套着 ClientAbortException），
+        //   此时上面的专用分支匹配不到 → 这里按 cause 链再判一次，
+        //   走同样的"记 WARN + 发告警事件 + 不写响应"路径。
+        if (isClientAbort(e)) {
+            handleClientAbort(asClientAbort(e), null);
+            return null;
+        }
         log.error("未处理异常: {}", e.getMessage(), e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ResultVO.fail("系统异常，请稍后重试或联系管理员"));
+    }
+
+    /** 判断异常链里是否有客户端断连 */
+    private boolean isClientAbort(Throwable e) {
+        Throwable cur = e;
+        int depth = 0;
+        while (cur != null && depth < 10) {
+            if (cur instanceof org.apache.catalina.connector.ClientAbortException) {
+                return true;
+            }
+            cur = cur.getCause();
+            depth++;
+        }
+        return false;
+    }
+
+    /** 从异常链里取出 ClientAbortException（isClientAbort 为 true 时必有） */
+    private org.apache.catalina.connector.ClientAbortException asClientAbort(Throwable e) {
+        Throwable cur = e;
+        int depth = 0;
+        while (cur != null && depth < 10) {
+            if (cur instanceof org.apache.catalina.connector.ClientAbortException) {
+                return (org.apache.catalina.connector.ClientAbortException) cur;
+            }
+            cur = cur.getCause();
+            depth++;
+        }
+        return new org.apache.catalina.connector.ClientAbortException("客户端断开连接");
     }
 }

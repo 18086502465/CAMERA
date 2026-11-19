@@ -56,6 +56,14 @@ public class DefectImageRepository {
 
     private final JdbcTemplate jdbcTemplate;
 
+    /**
+     * 事件发布器（唯一索引建失败时发告警事件用）。
+     *
+     * <p>可选注入 → 为空时跳过发事件，不影响启动与其它功能。
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
+
     /** 主表热数据天数（与 DefectImageArchiveTask 共用同一配置，保证路由边界与归档一致） */
     @Value("${app.archive.images.hot-days:31}")
     private int hotDays;
@@ -1128,7 +1136,8 @@ public class DefectImageRepository {
         //   ⚠️ 现场库里已有重复数据 → 建索引前必须先清理，否则 ALTER 会失败。
         //      清理脚本见 docs/scripts/purge_duplicate_images.sql。
         ensureIndex("defect_image_file", "uk_defect_file_camera_file_name",
-                "ALTER TABLE defect_image_file ADD UNIQUE INDEX uk_defect_file_camera_file_name(camera_id, file_name)");
+                "ALTER TABLE defect_image_file ADD UNIQUE INDEX uk_defect_file_camera_file_name(camera_id, file_name)",
+                true);
 
         ensureIndex("defect_image_file", "idx_defect_file_camera_id_capture_time",
                 "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_camera_id_capture_time(camera_id, capture_time)");
@@ -1141,6 +1150,25 @@ public class DefectImageRepository {
     }
 
     public void ensureIndex(String tableName, String indexName, String alterSql) {
+        ensureIndex(tableName, indexName, alterSql, false);
+    }
+
+    /**
+     * 幂等补建索引。
+     *
+     * <p>★ 2026-11-19 评审 P1-1：<b>唯一索引</b>建失败要<b>落告警</b>，普通索引只记 WARN。
+     * <ul>
+     *   <li>普通索引失败 = 性能问题，下次发版还能再建 → WARN 即可；</li>
+     *   <li><b>唯一索引失败 = 幂等的最后一道防线缺失</b> → 设备端重传会静默产生
+     *       重复数据（同一张图重复入库、缺陷框统计被同步放大），
+     *       而原实现只记一条 WARN 就放弃：<b>不重试、无告警</b>，
+     *       运维从日志里根本不会注意到 → 必须落告警。</li>
+     * </ul>
+     *
+     * <p>失败<b>不阻断启动</b>（保持原行为）—— 索引缺失不会让服务起不来，
+     * 但要让运维知道。事件走 shared → analytics 落库（跨域铁律①：不能直接调别的域的 Repository）。
+     */
+    public void ensureIndex(String tableName, String indexName, String alterSql, boolean uniqueIndex) {
         try {
             Integer count = jdbcTemplate.queryForObject(
                     "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?",
@@ -1150,6 +1178,26 @@ public class DefectImageRepository {
             }
         } catch (DataAccessException e) {
             log.warn("检查/新增索引失败 {}.{}: {}", tableName, indexName, e.getMessage());
+            if (uniqueIndex) {
+                publishIndexFailure(tableName, indexName, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 发布「唯一索引建失败」事件（供 analytics 域落告警）。
+     *
+     * <p>事件发布失败不影响启动 —— 原始异常已在上面记过 WARN。
+     */
+    private void publishIndexFailure(String tableName, String indexName, String reason) {
+        if (eventPublisher == null) {
+            return;
+        }
+        try {
+            eventPublisher.publishEvent(new com.wms.shared.common.event.SchemaIndexFailedEvent(
+                    tableName, indexName, true, reason));
+        } catch (Exception e) {
+            log.warn("发布索引失败告警事件异常（不影响启动）: {}", e.getMessage());
         }
     }
 

@@ -56,12 +56,18 @@ ALTER TABLE `fact_anomaly_alert` ADD COLUMN `detection_id` BIGINT NULL;
 ALTER TABLE `fact_anomaly_alert` ADD COLUMN `alert_type` VARCHAR(50) NULL;
 ALTER TABLE `fact_anomaly_alert` ADD COLUMN `alert_level` VARCHAR(20) NULL;
 ALTER TABLE `fact_anomaly_alert` ADD COLUMN `alert_title` VARCHAR(200) NULL;
-ALTER TABLE `fact_anomaly_alert` ADD COLUMN `alert_message` VARCHAR(500) NULL;
+-- ★ 2026-11-19 评审 P1-3：告警正文列由 500 扩到 2000。
+--   现场实测：正文超 500 字 → MySQL 抛 `ERROR 1406 Data too long` → **整条告警写不进去**；
+--   而调用方普遍 catch 掉异常 → **告警静默丢失**（只在日志留一条 WARN）。
+--   现场最长告警已达 428 字（贴上限），新告警正文 ~700 字直接写库失败。
+ALTER TABLE `fact_anomaly_alert` ADD COLUMN `alert_message` VARCHAR(2000) NULL;
 ALTER TABLE `fact_anomaly_alert` ADD COLUMN `is_resolved` TINYINT DEFAULT 0;
 ALTER TABLE `fact_anomaly_alert` ADD COLUMN `resolved_by` VARCHAR(100) NULL;
 ALTER TABLE `fact_anomaly_alert` ADD COLUMN `resolved_at` DATETIME NULL;
 ALTER TABLE `fact_anomaly_alert` ADD COLUMN `resolve_comment` VARCHAR(500) NULL;
 -- 实体映射 workstation_id / create_time / update_time，表中均无
+-- ★ 2026-11-19 评审 P1-3：message 兼容列同步扩容（NOT NULL，与 alert_message 同长）
+ALTER TABLE `fact_anomaly_alert` MODIFY COLUMN `message` VARCHAR(2000) NOT NULL COMMENT '告警内容';
 ALTER TABLE `fact_anomaly_alert` ADD COLUMN `workstation_id` INT NULL;
 ALTER TABLE `fact_anomaly_alert` ADD COLUMN `create_time` DATETIME NULL;
 ALTER TABLE `fact_anomaly_alert` ADD COLUMN `update_time` DATETIME NULL;

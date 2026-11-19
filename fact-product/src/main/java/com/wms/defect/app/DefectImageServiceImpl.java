@@ -9,6 +9,7 @@ import com.wms.device.infra.mapper.CameraImageMapper;
 import com.wms.device.infra.mapper.CameraStatusMapper;
 import com.wms.defect.app.IDefectImageService;
 import com.wms.defect.infra.repository.DefectImageRepository;
+import com.wms.shared.util.LogThrottle;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -46,6 +47,14 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 public class DefectImageServiceImpl implements IDefectImageService {
+
+    /**
+     * 「图片来自未配置相机」日志的节流间隔（毫秒）。
+     *
+     * <p>★ 2026-11-19 评审 P0-2：与心跳路径同源 —— 未登记设备每 5 秒一次，
+     * 不节流一天就能打出几万条 WARN，把真实告警淹没。
+     */
+    private static final long UPLOAD_LOG_THROTTLE_MS = 10 * 60 * 1000L;
 
     private static final DateTimeFormatter SECOND_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final DateTimeFormatter MILLIS_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
@@ -759,8 +768,14 @@ public class DefectImageServiceImpl implements IDefectImageService {
                 }
                 cameraStatusMapper.updateById(existing);
             } else {
-                log.warn("缺陷图片来自未配置相机，跳过写入相机配置表: cameraId={}, deviceId={}, cameraName={}",
-                        cameraId, deviceId, cameraName);
+                // ★ 2026-11-19 评审 P0-2：与心跳路径同源的问题（未登记设备），
+                //   同样每 5 秒一次 → 必须按 deviceId 节流，否则单这一条路径
+                //   一天就能打出几万条 WARN。
+                if (LogThrottle.allow("upload-unknown-camera:" + firstNotBlank(cameraId, deviceId),
+                        UPLOAD_LOG_THROTTLE_MS)) {
+                    log.warn("缺陷图片来自未配置相机，跳过写入相机配置表: cameraId={}, deviceId={}, cameraName={}",
+                            cameraId, deviceId, cameraName);
+                }
             }
         } catch (Exception e) {
             log.warn("更新相机最新图片失败: {}", e.getMessage());

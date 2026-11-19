@@ -4,6 +4,7 @@ import com.wms.device.api.dto.CameraHeartbeatResponseDTO;
 import com.wms.device.api.dto.CameraStatusHeartbeatDTO;
 import com.wms.device.app.CameraTokenVerifier;
 import com.wms.device.app.ICameraStatusService;
+import com.wms.device.domain.CameraNotConfiguredException;
 import com.wms.shared.common.ResultVO;
 import com.wms.shared.util.LogThrottle;
 import lombok.extern.slf4j.Slf4j;
@@ -92,8 +93,21 @@ public class CameraStatusHeartbeatController {
             // 7. 返回成功响应
             return ResultVO.success(response, "状态已更新");
 
+        } catch (CameraNotConfiguredException e) {
+            // ★ 2026-11-19 评审 P0-2：这一分支**不再记日志**。
+            //   原来这里 catch 住同一个 IllegalArgumentException 又记了一条
+            //   内容完全相同的 WARN —— 与 Service 层构成"同一件事记两遍"
+            //   （现场实测成对出现、数量完全相等）。
+            //   现在 Service 层是**唯一记录点**，且已按 deviceId 节流
+            //   （每设备 10 分钟一条）—— 未登记设备每 5 秒一次心跳，
+            //   不节流会占业务日志 80.5%，把真实告警彻底淹没。
+            //
+            //   这里保留 debug 级别，便于排查时用 DEBUG 级别看每次拒绝。
+            log.debug("心跳被拒（相机未在系统配置中维护）: deviceId={}", e.getDeviceId());
+            return ResultVO.fail(e.getMessage());
         } catch (IllegalArgumentException e) {
-            log.warn("参数校验失败: {}", e.getMessage());
+            // 其它参数校验失败（Service 层已记 WARN 并按 deviceId 节流，这里不重复记）
+            log.debug("心跳参数校验失败: {}", e.getMessage());
             return ResultVO.fail(e.getMessage());
         } catch (Exception e) {
             log.error("心跳处理异常", e);

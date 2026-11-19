@@ -63,7 +63,12 @@ public class FactAnomalyAlertController {
                     // 2026-11-18：设备图片上传失败（multipart 解析异常 / 客户端断流）。
                     // 评审 M-04：此前这类失败只进 journald —— 失败的图既没入库也没告警，
                     // 现场完全无感知（近 24h 实测 39 条 multipart 失败 + 19 条 Broken pipe）。
-                    "UPLOAD_FAILED")));
+                    "UPLOAD_FAILED",
+                    // 2026-11-19：启动期补建**唯一索引**失败（评审 P1-1）。
+                    // 唯一索引 uk_defect_file_camera_file_name 是「上传幂等」的最后一道防线，
+                    // 缺失时设备端重传会静默产生重复数据、缺陷框统计被放大。
+                    // 原实现只记一条 WARN 就放弃 —— 不重试、无告警，运维不会注意到。
+                    "SCHEMA_INDEX_MISSING")));
 
     /** 运维类告警最多返回条数（低频，20 条足够覆盖全部历史积压）。 */
     private static final int OPS_LIMIT = 20;
