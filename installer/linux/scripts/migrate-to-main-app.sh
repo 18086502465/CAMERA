@@ -475,7 +475,21 @@ write_config() {
 # 产线缺陷在线AI检测系统 —— 运行参数（2026-11 统一布局，迁移于 ${STAMP}）
 # 改这个文件即可，无需改 systemd unit。改完执行：systemctl restart ${SERVICE}
 
-JAVA_OPTS="${old_opts:--Xms512m -Xmx1024m}"
+# ★ 2026-11-19：JVM 参数改由 jvm-opts.sh 单一真源生成。
+#   旧值 old_opts 只在它**本身就是新式参数**（含 G1GC）时才沿用 ——
+#   否则按本机内存重新生成（原来的 -Xmx1024m 上限对 16GB 机器偏小）。
+_migrate_java_opts="$old_opts"
+if [[ -z "$_migrate_java_opts" ]] || [[ "$_migrate_java_opts" != *"UseG1GC"* ]]; then
+  _migrate_jvm_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/jvm-opts.sh"
+  if [[ -f "$_migrate_jvm_file" ]]; then
+    # shellcheck source=/dev/null
+    . "$_migrate_jvm_file"
+    _migrate_java_opts="$(jvm_opts_for_memory "$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)" | tr '\n' ' ')"
+  else
+    _migrate_java_opts="-Xms1024m -Xmx2048m"
+  fi
+fi
+JAVA_OPTS="${_migrate_java_opts}"
 JAVA_HOME=${old_java:-/usr/lib/jvm/java-8-openjdk-amd64}
 
 # ---- 统一布局根 ----

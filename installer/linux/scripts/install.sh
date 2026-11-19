@@ -263,14 +263,25 @@ if [[ -z "${MYSQL_PASSWORD:-}" ]]; then
   log "警告：未获得数据库口令，清理与备份脚本需手工补 MYSQL_PASSWORD"
 fi
 
+# ★ 2026-11-19：JVM 参数按本机内存生成（单一真源 jvm-opts.sh）。
+#   现场 16GB → 堆约 3.9G + G1GC + GC 日志 + 堆外上限 + OOM dump。
+INSTALL_JAVA_OPTS=""
+if [[ -f "${SCRIPT_DIR}/jvm-opts.sh" ]]; then
+  # shellcheck source=/dev/null
+  . "${SCRIPT_DIR}/jvm-opts.sh"
+  INSTALL_JAVA_OPTS="$(jvm_opts_for_memory "$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)" | tr '\n' ' ')"
+fi
+[[ -z "$INSTALL_JAVA_OPTS" ]] && INSTALL_JAVA_OPTS="-Xms1024m -Xmx2048m"
+
 cat > "$DEFAULT_CONFIG_TMP" <<EOF
 # 产线缺陷在线AI检测系统 —— 运行参数
 # 改这个文件即可，无需改 systemd unit。改完执行：systemctl restart ${SERVICE_NAME}
 
-# JVM 堆（按服务器内存调整：堆 + 元空间 + 线程栈 建议不超过物理内存的 70%）
-# 必须带引号：run.sh 会用 bash source 本文件，不加引号时空格会截断成两个词，
-# 导致 "-Xmx1024m: command not found" 而启动失败。
-JAVA_OPTS="-Xms512m -Xmx1024m"
+# JVM 参数（G1GC / GC 日志 / 堆外上限 / OOM dump 路径等）
+# ★ 2026-11-19：由 jvm-opts.sh 按本机内存统一生成（单一真源，不再各处手写）。
+#   必须带引号：run.sh 会用 bash source 本文件，不加引号时空格会截断成两个词，
+#   导致 "-Xmx1024m: command not found" 而启动失败。
+JAVA_OPTS="${INSTALL_JAVA_OPTS:--Xms1024m -Xmx2048m}"
 
 # ---- 统一布局（2026-11：全部产品文件收敛到 ${BASE} 一个根）----
 # 改这里等于整体搬迁；改完 systemctl restart camera-detection（并同步 unit 的 ReadWritePaths）

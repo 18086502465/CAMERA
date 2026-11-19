@@ -20,7 +20,7 @@ WORK_DIR="${WORK_DIR:-/main/app}"
 CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config/application.yml}"
 JAR_FILE="${JAR_FILE:-${INSTALL_DIR}/app/time-bucket-demo.jar}"
 JAVA_HOME="${JAVA_HOME:-}"
-JAVA_OPTS="${JAVA_OPTS:--Xms512m -Xmx1024m}"
+JAVA_OPTS="${JAVA_OPTS:--Xms1024m -Xmx2048m -XX:+UseG1GC -XX:MaxGCPauseMillis=200}"
 APP_HOME="${APP_HOME:-${WORK_DIR}}"
 
 # 允许用 /etc/default/camera-detection 覆盖上面任何一项
@@ -47,7 +47,7 @@ WORK_DIR="${WORK_DIR:-/main/app}"
 CONFIG_FILE="${CONFIG_FILE:-${INSTALL_DIR}/config/application.yml}"
 JAR_FILE="${JAR_FILE:-${INSTALL_DIR}/app/time-bucket-demo.jar}"
 JAVA_HOME="${JAVA_HOME:-}"
-JAVA_OPTS="${JAVA_OPTS:--Xms512m -Xmx1024m}"
+JAVA_OPTS="${JAVA_OPTS:--Xms1024m -Xmx2048m -XX:+UseG1GC -XX:MaxGCPauseMillis=200}"
 APP_HOME="${APP_HOME:-${WORK_DIR}}"
 
 log() { printf '[run.sh] %s\n' "$*" >&2; }

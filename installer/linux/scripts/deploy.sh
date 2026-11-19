@@ -616,11 +616,26 @@ stage_p7() {
   [[ -f "${DEFAULT_CFG}" ]]                      || die "缺少 ${DEFAULT_CFG}，请先跑 --from p5"
   [[ -f /etc/systemd/system/camera-detection.service ]] || die "缺少 systemd unit，请先跑 --from p5"
 
-  local mem_kb heap_mb
-  mem_kb="$(awk '/MemTotal/{print $2}' /proc/meminfo)"
-  heap_mb=$(( mem_kb / 1024 / 4 ))
-  [[ "$heap_mb" -gt 2048 ]] && heap_mb=2048
-  [[ "$heap_mb" -lt 512 ]] && heap_mb=512
+  local mem_mb heap_mb
+  mem_mb="$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)"
+  # ★ 2026-11-19：堆参数改由 **jvm-opts.sh 单一真源** 生成
+  #   （原先这里是硬编码 -Xms512m/-Xmx1024m 上限 2048 的独立实现，
+  #    与 install.sh / run.sh / migrate-to-main-app.sh 各写一份 → 改一处漏一处）。
+  #   现场 16GB 机器原先只能用到 2GB 堆，实测稳态 RSS 已达 2.37GB（堆贴着 Xmx）。
+  local jvm_opts_file
+  jvm_opts_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/jvm-opts.sh"
+  if [[ -f "$jvm_opts_file" ]]; then
+    # shellcheck source=/dev/null
+    . "$jvm_opts_file"
+    local jvm_opts
+    jvm_opts="$(jvm_opts_for_memory "$mem_mb")"
+  else
+    heap_mb=$(( mem_mb / 4 ))
+    [[ "$heap_mb" -gt 2048 ]] && heap_mb=2048
+    [[ "$heap_mb" -lt 512 ]] && heap_mb=512
+    jvm_opts="-Xms512m -Xmx${heap_mb}m"
+    warn "未找到 jvm-opts.sh，退回旧版 JVM 参数（无 GC 日志 / 无堆外上限）"
+  fi
 
   # install.sh 在 /etc/default 里写死了 java-8-openjdk-amd64；
   # 若实际装的是 Temurin（Ubuntu 24.04+），必须改成真实路径，否则服务起不来。
@@ -638,13 +653,22 @@ stage_p7() {
   # run.sh 从环境读 JAVA_OPTS，systemd 通过 EnvironmentFile 注入本文件。
   # 值含空格必须加引号：不加引号时 systemd 能读，但 bash source 会把第二段当命令执行
   # （run.sh 注释里记录过的坑），verify.sh 也会报 "未找到命令"。
+  # ★ 2026-11-19：JAVA_OPTS 现在含 GC 日志 / 堆外上限 / dump 路径等多项。
+  #   **必须写成单行**（不能反斜杠续行）：systemd 的 EnvironmentFile 是**逐行解析**的，
+  #   不支持行尾反斜杠续行；而单行带引号两边都正确 ——
+  #     · systemd：引号内整段当作**一个**环境变量值 ✓
+  #     · run.sh 用 bash source 读：JAVA_OPTS 是一个含空格的长字符串，
+  #       `$JAVA_OPTS`（不加引号）按空格分词 → 正好是多个 JVM 参数 ✓
+  #   （原实现的坑是"不加引号时空格截断成两个词"，所以引号必须留着。）
+  local opts_one_line
+  opts_one_line="$(printf '%s\n' "$jvm_opts" | tr '\n' ' ')"
   if grep -q '^JAVA_OPTS=' "$DEFAULT_CFG" 2>/dev/null; then
-    sed -i "s|^JAVA_OPTS=.*|JAVA_OPTS=\"-Xms512m -Xmx${heap_mb}m\"|" "$DEFAULT_CFG"
+    sed -i "s|^JAVA_OPTS=.*|JAVA_OPTS=\"${opts_one_line}\"|" "$DEFAULT_CFG"
   else
-    printf 'JAVA_OPTS="-Xms512m -Xmx%sm"\n' "$heap_mb" >> "$DEFAULT_CFG"
+    printf 'JAVA_OPTS="%s"\n' "$opts_one_line" >> "$DEFAULT_CFG"
   fi
   grep -q '^JAVA_OPTS=' "$DEFAULT_CFG" || die "写入 JAVA_OPTS 失败"
-  ok "堆内存 -Xmx${heap_mb}m"
+  ok "JVM 参数已写入（堆 -Xmx$(printf '%s\n' "$jvm_opts" | grep -oE '\-Xmx[0-9]+m' | head -1 | tr -d '\-Xmxm')、G1GC、GC 日志、堆外上限）"
 
   systemctl reset-failed camera-detection 2>/dev/null || true
   systemctl restart camera-detection

@@ -154,7 +154,7 @@ fi
 # 程序与数据静默写进系统盘，重启或修好挂载后看起来"数据全丢"，且没有任何报错。
 # 因此这里把「挂载、unit 依赖、fstab、结构、图片白名单、跨盘副本」全部变成可验证项。
 # 只在 /etc/default 声明了 BASE 的机器上检查（老布局机器跳过 [3a] 这 6 项，
-# 因此老布局是 35 项、统一布局是 43 项；改动本文件的检查项数时两个数都要跟着改文档）。
+# 因此老布局是 35 项、统一布局是 45 项；改动本文件的检查项数时两个数都要跟着改文档）。
 LAYOUT_ENABLED=0
 grep -q '^BASE=' /etc/default/camera-detection 2>/dev/null && LAYOUT_ENABLED=1
 
@@ -438,7 +438,41 @@ if [[ -d "$IMAGES_DST" ]]; then
   fi
 fi
 
-# --- 3b. logrotate 遗留配置（2026-11-19 评审 N-03 新增）----------------------
+# --- 3b. JVM 调优参数（2026-11-19 评审新增）----------------------------------
+# 背景：服务 `PrivateTmp=true`（安全加固）→ 外部 jstat/jcmd **attach 不上**
+#   （服务私有 /tmp 命名空间）→ 没有 GC 日志就等于**完全没有堆诊断能力**。
+#   现场实测：jstat 报 "not found"，堆长期贴着 Xmx（RSS 2.37GB vs Xmx 2GB）却无从分析。
+# 本检查项保证关键参数不丢：GC 日志、G1GC、堆外上限、OOM dump。
+JVM_OPTS_RAW="$(sed -n 's/^JAVA_OPTS="\(.*\)"$/\1/p' /etc/default/camera-detection 2>/dev/null | head -1)"
+if [[ -n "$JVM_OPTS_RAW" ]]; then
+  jvm_missing=""
+  [[ "$JVM_OPTS_RAW" == *"UseG1GC"* ]]            || jvm_missing="${jvm_missing} G1GC"
+  [[ "$JVM_OPTS_RAW" == *"PrintGCDetails"* ]]        || jvm_missing="${jvm_missing} GC日志"
+  [[ "$JVM_OPTS_RAW" == *"MaxMetaspaceSize"* ]]      || jvm_missing="${jvm_missing} 元空间上限"
+  [[ "$JVM_OPTS_RAW" == *"HeapDumpOnOutOfMemoryError"* ]] || jvm_missing="${jvm_missing} OOM转储"
+  [[ "$JVM_OPTS_RAW" == *"ReservedCodeCacheSize"* ]] || jvm_missing="${jvm_missing} 代码缓存上限"
+  if [[ -z "$jvm_missing" ]]; then
+    jvm_heap="$(printf '%s' "$JVM_OPTS_RAW" | grep -oE '\-Xmx[0-9]+m' | head -1)"
+    check "JVM 调优参数" true "G1GC / GC 日志 / 堆外上限 / OOM 转储 齐备（${jvm_heap}）"
+  else
+    check "JVM 调优参数" false "缺少：${jvm_missing}（PrivateTmp=true 时无 GC 日志=无法诊断堆）"
+  fi
+  # GC 日志目录必须可写（服务以 cdsys 运行）
+  gc_log_dir="$(printf '%s' "$JVM_OPTS_RAW" | grep -oE '\-Xloggc:[^ ]+' | head -1 | cut -d: -f2 | xargs -r dirname)"
+  if [[ -n "$gc_log_dir" && -d "$gc_log_dir" ]]; then
+    if [[ -w "$gc_log_dir" ]]; then
+      check "GC 日志目录" true "${gc_log_dir}"
+    else
+      check "GC 日志目录" false "${gc_log_dir} 不可写（服务用户 cdsys 写不进 → GC 日志会丢失）"
+    fi
+  else
+    check "GC 日志目录" false "未配置 -Xloggc 或目录不存在 → 无堆诊断能力"
+  fi
+else
+  check "JVM 调优参数" false "/etc/default/camera-detection 里没有 JAVA_OPTS"
+fi
+
+# --- 3c. logrotate 遗留配置（2026-11-19 评审 N-03 新增）----------------------
 # 背景：logrotate 会加载 /etc/logrotate.d/ 下的**所有**文件（不只主配置）。
 # 人工备份留下的 camera-detection.bak-20261107 仍指向旧布局，它的通配符 *.log
 # 会匹配到 root 拥有的 cleanup 日志，配合 `su cdsys` + `copytruncate`（需写权限）
