@@ -928,6 +928,30 @@ public class DefectImageRepository {
     }
 
     /** 插入图片记录，返回 image_id */
+    /**
+     * 按 {@code (camera_id, file_name)} 查已入库的图片（幂等去重用）。
+     *
+     * <p><b>用途</b>（2026-11-19 评审 N-01 修正版）：设备端重传会让**同一张图**重复入库。
+     * 实测：近 24h 现场有 <b>570 组 / 845 行</b>同 {@code (camera_id, file_name)} 重复
+     * （{@code create_time} 间隔 0~16 秒），根因是设备上传后**未收到响应**（Broken pipe）
+     * 就重传，而服务端没有幂等判断 —— 每张重复图都真实占库、占磁盘、
+     * <b>并被计入缺陷框统计</b>（每条重复行的 {@code defect_image_box} 也重复插了一份）。
+     *
+     * <p>注意：<b>不能用 {@code capture_time} 判重</b> —— 现场同相机同秒会连拍多张
+     * （文件名不同，是合法数据，实测 6047 组）。判重键必须是设备端的原始文件名。
+     *
+     * @return 已存在的 image_id；不存在返回 null
+     */
+    public Long findImageIdByCameraAndFileName(String cameraId, String fileName) {
+        if (cameraId == null || fileName == null) {
+            return null;
+        }
+        List<Long> ids = jdbcTemplate.query(
+                "SELECT image_id FROM defect_image_file WHERE camera_id = ? AND file_name = ? LIMIT 1",
+                (rs, i) -> rs.getLong(1), cameraId, fileName);
+        return ids.isEmpty() ? null : ids.get(0);
+    }
+
     public Long insertImageFile(Long batchId, String cameraId, String cameraName,
                                 String fileName, String originalFileName, String absolutePath, String imageUrl,
                                 LocalDateTime captureTime, LocalDateTime uploadTime,
@@ -1097,6 +1121,15 @@ public class DefectImageRepository {
         //   rows=3592 / filtered=8.03%（多扫 12 倍）。
         //   补 (camera_id, capture_time)：只定位相机 + 精确范围扫描。
         //   ⚠️ 不改既有索引 —— create_time 有其它查询在用（listHistoryPage 按它排序）。
+        // ★ 2026-11-19 评审 N-01 修正版：上传幂等 —— 同一张图不允许重复入库。
+        //   设备端未收到响应会重传（现场实测 570 组 / 845 行重复），此前每张重复图
+        //   都真实占库占盘并被计入缺陷框统计。唯一索引是最后防线，
+        //   应用层已有「先查后插」的快速路径（findImageIdByCameraAndFileName）。
+        //   ⚠️ 现场库里已有重复数据 → 建索引前必须先清理，否则 ALTER 会失败。
+        //      清理脚本见 docs/scripts/purge_duplicate_images.sql。
+        ensureIndex("defect_image_file", "uk_defect_file_camera_file_name",
+                "ALTER TABLE defect_image_file ADD UNIQUE INDEX uk_defect_file_camera_file_name(camera_id, file_name)");
+
         ensureIndex("defect_image_file", "idx_defect_file_camera_id_capture_time",
                 "ALTER TABLE defect_image_file ADD INDEX idx_defect_file_camera_id_capture_time(camera_id, capture_time)");
         ensureIndex("defect_image_box", "idx_defect_box_type",

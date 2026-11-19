@@ -38,5 +38,13 @@ public class DefectImageUploadResultDTO implements Serializable {
         private String message;
         private String failureReason;
         private String handlingAdvice;
+        /**
+         * 是否为「设备重传同一张图」而被幂等跳过（2026-11-19 评审 N-01 修正版）。
+         *
+         * <p>设备端上传后未收到响应会重传同一批图 —— 此时本张图此前已入库，
+         * 服务端跳过重复写入并删除刚保存的磁盘副本。
+         * 该标记让设备端/运维能区分「首次上传成功」与「重传已幂等处理」。
+         */
+        private Boolean duplicate;
     }
 }

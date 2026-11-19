@@ -10,6 +10,17 @@
 --   * 缺陷率分母 = 检测图片数（H1 拍板），分子 = SUM(defect_image_file.defect_count)，
 --     单位为「每千张」（D2 拍板）；
 --   * line_id = 0 的行是厂级汇总行，line_id > 0 为产线行；
+--
+-- ★★ 防「直接 SUM 翻倍」（2026-11-19 评审 N-07）★★
+--   本表**同时存厂级行（line_id=0）与产线行（line_id>0）**，两套是同一份数据的
+--   两种视角，**不是可加的两部分**。直接 SUM 会翻倍：
+--     实测 11-18：厂级行 detect_count=11377，6 行 SUM(detect_count)=22754 = 恰好 2 倍。
+--   正确用法（三选一，**不要混用**）：
+--     ① 只取厂级汇总 → WHERE line_id = 0
+--     ② 只取产线明细 → WHERE line_id > 0（可按产线 GROUP BY）
+--     ③ 用视图 v_daily_line_report_factory（= 视图①，已建）
+--   ❌ 绝不要 `SELECT SUM(detect_count) FROM fact_daily_line_report`（会翻倍）
+--   ❌ 绝不要 `WHERE line_id > 0` 后再套一层厂级行相加（同样翻倍）
 --   * 每天 00:05 由 DailyReportGenerationTask 物化前一天（快照），重跑幂等覆盖；
 --     当天的数据不入库，由查询端点实时计算（响应带 dataSource=REALTIME）。
 -- =====================================================================
@@ -44,4 +55,17 @@ CREATE TABLE IF NOT EXISTS fact_daily_line_report (
   PRIMARY KEY (id),
   UNIQUE KEY uk_report_date_line (report_date, line_id),
   KEY idx_report_date (report_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='产线统计日报快照（每天 00:05 物化前一天）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='产线统计日报快照（每天 00:05 物化前一天）。注意：含厂级行(line_id=0)与产线行(line_id>0)两套视角，直接 SUM 会翻倍 —— 详见文件头说明或用 v_daily_line_report_factory 视图';
+
+-- -----------------------------------------------------------------------------
+-- v_daily_line_report_factory：只含厂级汇总行的视图（2026-11-19 评审 N-07）
+--
+-- 用途：本表同时存厂级行与产线行，任何直接 SUM 的下游统计/报表都会翻倍
+--   （实测 11-18：SUM = 22754 = 实际 11377 × 2）。这个视图把"只取厂级"的口径
+--   固化下来，避免每个查询方各自记一份"记得加 WHERE line_id=0"的约定。
+--
+-- 语义：等同于 SELECT * FROM fact_daily_line_report WHERE line_id = 0
+-- 用法：SELECT SUM(detect_count) FROM v_daily_line_report_factory WHERE report_date BETWEEN ? AND ?
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE VIEW v_daily_line_report_factory AS
+SELECT * FROM fact_daily_line_report WHERE line_id = 0;

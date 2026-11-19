@@ -82,6 +82,33 @@ public class DailyReportRepository {
                 "KEY idx_report_date (report_date)" +
                 ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         ensureColumns();
+        ensureFactoryView();
+    }
+
+    /**
+     * 建「只含厂级汇总行」的视图（2026-11-19 评审 N-07）。
+     *
+     * <p><b>为什么需要</b>：本表同时存**厂级行（{@code line_id=0}）**与
+     * **产线行（{@code line_id>0}）** —— 两套是同一份数据的两种视角，
+     * <b>不是可加的两部分</b>。任何直接 {@code SUM} 的下游统计都会翻倍：
+     * 实测 11-18 厂级行 {@code detect_count=11377}，而 6 行
+     * {@code SUM(detect_count)=22754} = <b>恰好 2 倍</b>。
+     *
+     * <p>这个视图把"只取厂级"的口径<b>固化</b>下来，避免每个查询方各自记一份
+     * "记得加 {@code WHERE line_id=0}" 的口头约定 —— 约定一定会被忘。
+     *
+     * <p>{@code CREATE OR REPLACE VIEW} 是幂等的，重复启动安全。
+     */
+    private void ensureFactoryView() {
+        try {
+            jdbcTemplate.execute("CREATE OR REPLACE VIEW v_daily_line_report_factory AS " +
+                    "SELECT * FROM fact_daily_line_report WHERE line_id = 0");
+        } catch (Exception e) {
+            // 视图创建失败不应阻断应用启动 —— 它只是防「误 SUM 翻倍」的护栏，
+            // 不是功能必需（真实数据仍完整存在于表里）。
+            org.slf4j.LoggerFactory.getLogger(DailyReportRepository.class)
+                    .warn("创建 v_daily_line_report_factory 视图失败（不影响日报功能）: {}", e.getMessage());
+        }
     }
 
     /**

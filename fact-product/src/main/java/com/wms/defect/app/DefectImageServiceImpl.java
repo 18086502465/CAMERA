@@ -193,6 +193,40 @@ public class DefectImageServiceImpl implements IDefectImageService {
                 }
                 validateImageFile(file);
 
+                // ★ 2026-11-19 评审 N-01 修正版：上传幂等 —— 同一张图不重复入库。
+                //   设备端上传后若未收到响应（现场实测 Broken pipe 每天十几到上百次），
+                //   会重传同一批图。此前服务端每张都重新入库 + 重新落盘，
+                //   导致：① 库与磁盘被重复数据撑大；
+                //   ② **每条重复行的 defect_image_box 也重复插了一份** →
+                //      缺陷框统计被放大（现场实测 570 组 / 845 行重复）。
+                //   判重键用设备端原始文件名（camera_id + file_name）：
+                //   不用 capture_time —— 现场同相机同秒会连拍多张（文件名不同，是合法数据）。
+                Long existingImageId = defectImageRepository.findImageIdByCameraAndFileName(cameraId, imageMeta.getFileName());
+                if (existingImageId != null) {
+                    // 已入库过 → 跳过写库，并删掉刚保存的磁盘副本（避免占盘）
+                    saved = saveFile(file, cameraId, uploadTime);
+                    deleteSavedFileQuietly(saved);
+                    imageId = existingImageId;
+                    fileResult.setSuccess(true);
+                    fileResult.setImageId(imageId);
+                    fileResult.setMessage("已存在（幂等跳过，设备重传）");
+                    fileResult.setDuplicate(true);
+                    successCount++;
+                    DefectCounts dupCounts = countDefects(imageMeta.getDefects());
+                    defectCount += dupCounts.total;
+                    highCount += dupCounts.high;
+                    mediumCount += dupCounts.medium;
+                    lowCount += dupCounts.low;
+                    if (latestCaptureTime == null) {
+                        latestCaptureTime = parseTime(imageMeta.getCaptureTime(), uploadTime);
+                        latestImageUrl = saved.imageUrl;
+                    }
+                    log.info("缺陷图片幂等跳过（设备重传同一张图）: camera={} fileName={} imageId={}",
+                            cameraId, imageMeta.getFileName(), imageId);
+                    result.getResults().add(fileResult);
+                    continue;
+                }
+
                 saved = saveFile(file, cameraId, uploadTime);
                 LocalDateTime captureTime = parseTime(imageMeta.getCaptureTime(), uploadTime);
                 DefectCounts counts = countDefects(imageMeta.getDefects());
@@ -584,6 +618,22 @@ public class DefectImageServiceImpl implements IDefectImageService {
             insertLegacyCameraImage(cameraName, saved, captureTime);
             return imageId;
         });
+    }
+
+    /**
+     * 删除刚保存但未入库的磁盘文件（幂等跳过路径用）。
+     *
+     * <p>失败只记 WARN —— 文件残留只是占盘，不影响业务正确性。
+     */
+    private void deleteSavedFileQuietly(SavedImage saved) {
+        if (saved == null || !StringUtils.hasText(saved.absolutePath)) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(Paths.get(saved.absolutePath));
+        } catch (Exception e) {
+            log.warn("删除幂等跳过的磁盘副本失败: {}", e.getMessage());
+        }
     }
 
     /** 懒建 TransactionTemplate（避免字段注入顺序问题） */

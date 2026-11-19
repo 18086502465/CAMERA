@@ -84,6 +84,56 @@ class UploadFailedAlertTest {
     }
 
     @Test
+    @DisplayName("★ N-02：告警正文带失败频次 —— 运维能区分「偶发 1 次」与「常态失败上百次」")
+    void alertMessageCarriesFailureFrequency() {
+        // 同一设备连续失败 3 次
+        for (int i = 0; i < 3; i++) {
+            listener.onUploadFailed(new UploadFailedEvent("DA9299030", "EOFException", "MultipartException"));
+        }
+
+        ArgumentCaptor<String> msg = ArgumentCaptor.forClass(String.class);
+        verify(anomalyAlertRepository, org.mockito.Mockito.times(3)).insertCameraAlert(eq(0), eq(0),
+                eq("UPLOAD_FAILED"), eq("HIGH"), anyString(), msg.capture());
+
+        String last = msg.getValue();
+        assertTrue(last.contains("失败频次"), "告警正文应含失败频次段：" + last);
+        assertTrue(last.contains("最近 1 小时该设备失败 3 次"),
+                "应报出最近 1 小时失败 3 次（实际正文：" + last + "）");
+        assertTrue(last.contains("累计 3 次"), "应报出累计失败次数：" + last);
+    }
+
+    @Test
+    @DisplayName("★ N-02：不同设备的失败计数相互独立")
+    void failureCountsAreIndependentPerDevice() {
+        listener.onUploadFailed(new UploadFailedEvent("DA-A", "r", "MultipartException"));
+        listener.onUploadFailed(new UploadFailedEvent("DA-A", "r", "MultipartException"));
+        listener.onUploadFailed(new UploadFailedEvent("DA-B", "r", "MultipartException"));
+
+        ArgumentCaptor<String> msg = ArgumentCaptor.forClass(String.class);
+        verify(anomalyAlertRepository, org.mockito.Mockito.times(3)).insertCameraAlert(eq(0), eq(0),
+                eq("UPLOAD_FAILED"), eq("HIGH"), anyString(), msg.capture());
+
+        // 最后一条是 DA-B → 应为 1 次
+        assertTrue(msg.getValue().contains("该设备失败 1 次"),
+                "DA-B 应只计 1 次（实际正文：" + msg.getValue() + "）");
+    }
+
+    @Test
+    @DisplayName("★ N-02：高频失败（≥10 次/小时）应额外提示，避免被当成偶发")
+    void highFrequencyRaisesExtraHint() {
+        for (int i = 0; i < 12; i++) {
+            listener.onUploadFailed(new UploadFailedEvent("DA-HOT", "EOFException", "MultipartException"));
+        }
+
+        ArgumentCaptor<String> msg = ArgumentCaptor.forClass(String.class);
+        verify(anomalyAlertRepository, org.mockito.Mockito.times(12)).insertCameraAlert(eq(0), eq(0),
+                eq("UPLOAD_FAILED"), eq("HIGH"), anyString(), msg.capture());
+
+        assertTrue(msg.getValue().contains("频次较高"),
+                "高频失败应额外提示（实际正文：" + msg.getValue() + "）");
+    }
+
+    @Test
     @DisplayName("告警写入失败不影响其它（异常被吞，不向上抛）")
     void alertFailureDoesNotThrow() {
         org.mockito.Mockito.doThrow(new RuntimeException("db down"))

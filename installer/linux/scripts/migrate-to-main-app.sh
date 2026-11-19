@@ -601,6 +601,17 @@ ${LOG_BASE}/disk-alert.log {
     su root root
 }
 EOF
+    # ★ 2026-11-19 评审 N-03：清理同类遗留的 .bak-* 配置。
+    #   logrotate 会加载 /etc/logrotate.d/ 下**所有**文件 —— 人工备份留下的
+    #   .bak 仍指向旧布局，其通配符 + `su cdsys` + `copytruncate` 组合
+    #   会让 logrotate 每天 Permission denied 并 exit 1。
+    #   移到 /root 而不是直接删（留回滚可能）。
+    while IFS= read -r stale; do
+      [[ -f "$stale" ]] || continue
+      mv -f "$stale" "/root/$(basename "$stale").disabled" 2>/dev/null \
+        && log "已停用遗留 logrotate 配置: $(basename "$stale")（副本在 /root）" \
+        || log "[警告] 遗留 logrotate 配置清理失败: $stale"
+    done <<< "$(ls -1 /etc/logrotate.d/camera-detection.bak-* 2>/dev/null || true)"
     ok "logrotate 已指向 ${LOG_BASE}"
   else
     printf '  [dry-run] 重写 3 个 cron 与 logrotate（全部指向 %s）\n' "$INSTALL_DIR"

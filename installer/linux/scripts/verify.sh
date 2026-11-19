@@ -154,7 +154,7 @@ fi
 # 程序与数据静默写进系统盘，重启或修好挂载后看起来"数据全丢"，且没有任何报错。
 # 因此这里把「挂载、unit 依赖、fstab、结构、图片白名单、跨盘副本」全部变成可验证项。
 # 只在 /etc/default 声明了 BASE 的机器上检查（老布局机器跳过 [3a] 这 6 项，
-# 因此老布局是 35 项、统一布局是 42 项；改动本文件的检查项数时两个数都要跟着改文档）。
+# 因此老布局是 35 项、统一布局是 43 项；改动本文件的检查项数时两个数都要跟着改文档）。
 LAYOUT_ENABLED=0
 grep -q '^BASE=' /etc/default/camera-detection 2>/dev/null && LAYOUT_ENABLED=1
 
@@ -435,6 +435,21 @@ if [[ -d "$IMAGES_DST" ]]; then
     check "图片副本无 TEST 相机" false "副本 $(( _DST_KB / 1024 / 1024 ))GB 超过上限 ${IMAGES_MAX_GB}GB —— 总量回收未生效"
   else
     check "图片副本无 TEST 相机" true "已排除 ${_TEST_CODES//$'\n'/, }；副本 $(du -sh "$IMAGES_DST" 2>/dev/null | cut -f1) / 上限 ${IMAGES_MAX_GB}GB"
+  fi
+fi
+
+# --- 3b. logrotate 遗留配置（2026-11-19 评审 N-03 新增）----------------------
+# 背景：logrotate 会加载 /etc/logrotate.d/ 下的**所有**文件（不只主配置）。
+# 人工备份留下的 camera-detection.bak-20261107 仍指向旧布局，它的通配符 *.log
+# 会匹配到 root 拥有的 cleanup 日志，配合 `su cdsys` + `copytruncate`（需写权限）
+# → 每天 Permission denied，**logrotate 每天 exit 1**，systemd 报 Failed，
+# 反而掩盖了真正的轮转失败。这个检查项让这类问题在巡检时就能发现。
+if [[ -d /etc/logrotate.d ]]; then
+  stale_logrotate="$(ls -1 /etc/logrotate.d/camera-detection.bak-* 2>/dev/null || true)"
+  if [[ -z "$stale_logrotate" ]]; then
+    check "logrotate 遗留配置" true "无 camera-detection.bak-* 残留"
+  else
+    check "logrotate 遗留配置" false "存在 $(echo "$stale_logrotate" | tr '\n' ' ')—— 会被 logrotate 一并加载，导致每日 exit 1（移出该目录即可）"
   fi
 fi
 
