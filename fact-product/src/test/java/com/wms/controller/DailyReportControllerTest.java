@@ -127,7 +127,11 @@ class DailyReportControllerTest {
                 .andExpect(jsonPath("$.data.rows.length()").value(2))
                 .andExpect(jsonPath("$.data.rows[0].dataSource").value("SNAPSHOT"))
                 .andExpect(jsonPath("$.data.rows[0].defectRateKilo").value(30.9))
-                .andExpect(jsonPath("$.data.rows[0].dayOverDayRate").value(23.6))
+                // ★ 2026-11-19 评审 P1-4：环比口径由「缺陷率」改为「**缺陷框数**」。
+                //   旧口径用 defectRateKilo —— 图片通道「每图必带 1 框」→ 该比率**恒为 1000‰**
+                //   → 真实快照上环比**恒 0.0%**，整列无信息量。
+                //   新口径：缺陷框数 30 → 38 → (38-30)/30 = 26.67%（反映"缺陷量在变多还是变少"）。
+                .andExpect(jsonPath("$.data.rows[0].dayOverDayRate").value(26.67))
                 .andExpect(jsonPath("$.data.caliber.rateDenominator").value("检测总数日增（心跳累计计数差分）"));
     }
 

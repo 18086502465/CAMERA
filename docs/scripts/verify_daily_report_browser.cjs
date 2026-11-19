@@ -67,6 +67,15 @@ async function waitText(page, text, timeoutMs = 15000) {
 
     // ② 产线胶囊
     await waitText(page, '产线统计日报', 20000)
+    // ★ 2026-11-19：等 calendar 接口真正返回再断言 —— 产线胶囊与月历都来自它，
+    //   不等就会读到初始值（胶囊只有「全厂」、月历 0 格）→ 随机假红。
+    for (let i = 0; i < 40; i++) {
+      const ready = await page.evaluate(() =>
+        document.querySelectorAll('.scope-tab').length > 1
+        && document.querySelectorAll('.day-cell').length > 0)
+      if (ready) break
+      await sleep(500)
+    }
     let tabs = await page.evaluate(() =>
       [...document.querySelectorAll('.scope-tab')].map((b) => (b.textContent || '').trim()))
     check('② 产线胶囊 ≥2 个（全厂 + 产线）', tabs.length >= 2, tabs.join('/') || '无')
@@ -95,8 +104,13 @@ async function waitText(page, text, timeoutMs = 15000) {
     check('③c 有数据格带热力分档（lv1~lv4）', graded >= 1, `${graded} 格`)
 
     // ④ 点一格 → 当日维度
+    // ★ 2026-11-19：点**最后一个**有数据的格（最近的一天），而不是第一个。
+    //   原因：最早的几天可能**只有一条产线在上传**（实测 11-03 全厂检测数 854
+    //   与 ZK23 完全相同）→ 切产线后所有 KPI 都不变 → 断言必然误判。
+    //   最近的日期通常多产线同时上报，才能真正验证「lineId 透传」。
     await page.evaluate(() => {
-      const c = document.querySelector('.day-cell.hasdata')
+      const cells = [...document.querySelectorAll('.day-cell.hasdata')]
+      const c = cells.length ? cells[cells.length - 1] : null
       if (c) c.click()
     })
     await sleep(3000)
@@ -113,7 +127,23 @@ async function waitText(page, text, timeoutMs = 15000) {
       const t = cards.find((c) => (c.querySelector('.kpi-label')?.textContent || '').includes('在线相机'))
       return (t?.querySelector('.kpi-value')?.textContent || '').trim()
     })
+    // ★ 2026-11-19：新增「多指标快照」—— 断言不能只看「在线相机」一个指标。
+    //   实测某些日期（如 11-03）**当天只有 ZK23 在上传** → 全厂与 ZK23 的
+    //   在线相机数、检测图片数、缺陷数**全部相同** → 只比一个指标必然误判成
+    //   「lineId 没透传」。改为「任一指标不同即算透传成功」。
+    const readKpiSnapshot = () => page.evaluate(() => {
+      const out = {}
+      document.querySelectorAll('.kpi-card').forEach((c) => {
+        const label = (c.querySelector('.kpi-label')?.textContent || '').trim()
+        const value = (c.querySelector('.kpi-value')?.textContent || '').trim()
+        if (label) out[label] = value
+      })
+      return out
+    })
     const plantKpi = await readOnlineKpi()
+    // ★ 必须在**切产线之前**取全厂快照 —— 取晚了读到的是已切过去的产线值，
+    //   与切换后的值相同 → 永远判定为「没变化」。
+    const plantSnap = await readKpiSnapshot()
 
     // ⑤ 切到第一条真实产线（跳过「全厂」）
     const switched = await page.evaluate(() => {
@@ -124,13 +154,28 @@ async function waitText(page, text, timeoutMs = 15000) {
       target.click()
       return name
     })
-    await sleep(4000)
+    // ★ 2026-11-19：切产线后**轮询等待**接口刷新完成，而不是固定 sleep 4000 ——
+    //   固定等待会在接口慢时读到**切换前的旧值** → 误判成「lineId 没透传」
+    //   （实测踩过：全厂=2/18 与 ZK23=2/18 读的是同一份旧数据）。
+    //   现场实测切换后应变为 全厂=16/18、ZK23=0/2（ZK23 两台相机 11-16 已停产）。
+    let lineSnap = plantSnap
+    let changed = false
+    for (let i = 0; i < 20; i++) {
+      await sleep(600)
+      lineSnap = await readKpiSnapshot()
+      changed = Object.keys(plantSnap).some((k) => plantSnap[k] !== lineSnap[k])
+      if (changed) break
+    }
     const lineKpi = await readOnlineKpi()
     const activeName = await page.evaluate(() =>
       (document.querySelector('.scope-tab.active')?.textContent || '').trim())
     check('⑤ 切换产线生效（active 状态切换）', !!switched && activeName === switched, `${activeName}`)
-    check('⑤b 切产线后在线相机与全厂不同（lineId 真透传）',
-      !!switched && plantKpi !== lineKpi, `全厂=${plantKpi} / ${activeName}=${lineKpi}`)
+    // ★ 用「多指标任一变化」判定透传 —— 单指标会被「该产线当天恰好等于全厂」误伤
+    const diffKeys = Object.keys(plantSnap).filter((k) => plantSnap[k] !== lineSnap[k])
+    check('⑤b 切产线后 KPI 发生变化（lineId 真透传）',
+      !!switched && changed,
+      changed ? `变化字段=${diffKeys.join('/')}（全厂在线=${plantKpi} / ${activeName}=${lineKpi}）`
+              : `全厂与 ${activeName} 的所有 KPI 完全相同 —— 该日期该产线本就等于全厂（数据实况，非透传问题）`)
 
     // ⑥ 错误
     check('⑥ 无 JS 运行时错误', jsErrors.length === 0, jsErrors[0] || '')

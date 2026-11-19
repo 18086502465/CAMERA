@@ -60,6 +60,31 @@ public class GlobalExceptionHandler {
                 .body(ResultVO.fail("请求体格式错误"));
     }
 
+    /**
+     * 查询参数类型不匹配（2026-11-19 统计模块全面测试发现）。
+     *
+     * <p><b>现象</b>：数字型查询参数（{@code cameraId} / {@code workstationId} /
+     * {@code productId} / {@code shiftId} / {@code defectTypeId}）传了非数字值
+     * → Spring 抛 {@code MethodArgumentTypeMismatchException}
+     * → 落进兜底 {@link #handleException} → <b>HTTP 500「系统异常」</b>。
+     *
+     * <p><b>为什么错</b>：这是<b>调用方的参数错误</b>（400），不是服务端故障（500）。
+     * 返回 500 会让前端把「参数写错了」显示成「系统异常，请稍后重试」——
+     * 用户反复重试也永远不会好，而真实原因（传了非数字）被掩盖。
+     *
+     * <p>参考：{@code LineAnalyticsController.parseIds} 对逗号串里的非法 token 是
+     * 「忽略而不是 500」，本 handler 是同一原则在框架层的落地。
+     */
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ResultVO<Void>> handleTypeMismatch(
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException e) {
+        String name = e.getName();
+        String expected = e.getRequiredType() == null ? "合法值" : e.getRequiredType().getSimpleName();
+        log.warn("查询参数类型不匹配: {}={}（期望 {}）", name, e.getValue(), expected);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ResultVO.fail("参数 " + name + " 类型不正确，期望 " + expected + "，收到: " + e.getValue()));
+    }
+
     /** 必填参数缺失 / 类型错误 */
     @ExceptionHandler(org.springframework.web.bind.MissingServletRequestParameterException.class)
     public ResponseEntity<ResultVO<Void>> handleMissingParam(org.springframework.web.bind.MissingServletRequestParameterException e) {

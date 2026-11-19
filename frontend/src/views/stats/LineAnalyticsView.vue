@@ -297,8 +297,15 @@
         <EmptyState v-else title="未选择图表" text="点击画布中的任一图表，可在这里查看配置和快捷操作。" />
         <div class="config-box dimension-box">
           <label>新增图表可选维度</label>
-          <p>新增或编辑图表时，可围绕时间、产线、工位、相机、产品、班次、缺陷类型等维度组合分析。</p>
-          <el-tag v-for="d in dimensions" :key="d.code" class="dim-tag">{{ d.name }}</el-tag>
+          <p>新增或编辑图表时，可围绕时间、产线、工位、相机、班次、缺陷类型、严重度等维度组合分析。</p>
+          <!-- ★ 2026-11-19 评审 B-11：metadata 现在给每个维度带 supported 标记
+               （后端 resolveDimSplit 实际只支持 6 个维度）。
+               不支持的维度**明确标注**，避免"看着能选、传了却没反应"。 -->
+          <el-tag v-for="d in dimensions" :key="d.code" class="dim-tag"
+                  :class="{ 'dim-tag-unsupported': d.supported === false }"
+                  :title="d.supported === false ? '该维度目前不支持按此拆分（传了等同不传）' : ''">
+            {{ d.name }}<template v-if="d.supported === false">（暂不支持）</template>
+          </el-tag>
         </div>
       </aside>
     </section>

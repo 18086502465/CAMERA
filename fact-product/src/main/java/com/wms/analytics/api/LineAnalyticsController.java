@@ -66,7 +66,25 @@ public class LineAnalyticsController {
     @Autowired
     private AnalyticsAggregationRepository aggregationRepository;
 
-    private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    /**
+     * 时间格式解析器（严格模式）。
+     *
+     * <p>★ 2026-11-19 评审 B-5：原用默认的 {@code ResolverStyle.SMART}，
+     * 它会把**不存在的日期静默纠正到当月最后一天** ——
+     * {@code 2026-11-31} → {@code 2026-11-30}、{@code 2026-02-30} → {@code 2026-02-28}，
+     * 且<b>完全不报错</b>。后果：用户以为查的是 11-31，实际查的是 11-30
+     * → <b>在有数据的月份上会少算一天，且页面毫无异常表现</b>。
+     *
+     * <p>改用 {@code ResolverStyle.STRICT}：日期越界直接抛
+     * {@link java.time.format.DateTimeParseException} → 由 {@link #parseTime}
+     * 转成 {@link IllegalArgumentException} → HTTP 400。
+     *
+     * <p>★ 注意：STRICT 模式下<b>年必须写 {@code uuuu} 而不是 {@code yyyy}</b>
+     * （{@code yyyy} 是「年-of-era」，STRICT 下会被严格校验而失败）。
+     */
+    private static final DateTimeFormatter DT = DateTimeFormatter
+            .ofPattern("uuuu-MM-dd HH:mm:ss")
+            .withResolverStyle(java.time.format.ResolverStyle.STRICT);
     private static final int DAILY_AGGREGATION_THRESHOLD_DAYS = 3;
     /** 近期窗口自动刷新天数：必须覆盖「日聚合阈值」，否则 3 天窗查询会落到未物化的日期上 */
     private static final int RECENT_REFRESH_WINDOW_DAYS = DAILY_AGGREGATION_THRESHOLD_DAYS;
@@ -181,6 +199,22 @@ public class LineAnalyticsController {
         dimensions.add(item("defectType", "缺陷类型", "按标准缺陷配置统计"));
         dimensions.add(item("position", "缺陷位置", "按位置分析"));
         dimensions.add(item("severity", "严重度", "HIGH/MEDIUM/LOW"));
+        // ★ 2026-11-19 评审 B-11：metadata 原来**只声明维度名**，没说哪些真能拆分。
+        //   实测 resolveDimSplit 只支持 camera/workstation/line/defectType/severity/shift 六个，
+        //   而 metadata 声明了 10 个 → 界面上「工厂/产品/缺陷位置」看着可选，
+        //   传进去后端**静默忽略**（与不传完全等价）。
+        //   现在给每个维度加 `supported` 标记，前端据此标注，避免"看着能选其实没反应"。
+        //   · time：本身是趋势横轴、无需拆分（传了等价不传）→ 标 false 但保留声明
+        //   · factory：图片表有 factory_id，理论可拆，但**尚未在 resolveDimSplit 实现** → false
+        //   · product：图片表不记录产品（见 ignoredFilters 的 productId）→ false
+        //   · position：缺陷框的位置/面积列实测全 0（位置不可用）→ false
+        for (Map<String, Object> d : dimensions) {
+            String code = String.valueOf(d.get("code"));
+            boolean supported = "camera".equals(code) || "workstation".equals(code)
+                    || "line".equals(code) || "defectType".equals(code)
+                    || "severity".equals(code) || "shift".equals(code);
+            d.put("supported", supported);
+        }
         data.put("dimensions", dimensions);
 
         return ResultVO.success(data);
@@ -338,7 +372,7 @@ public class LineAnalyticsController {
         //   → **子集比全集还大**，用户完全无法理解。
         //   改为：**图片事实表优先**（它是现场真正在用的通道），聚合表仅在图片表无数据时兜底。
         Map<String, Object> imageData = buildDefectImageSummary(
-                start, end, factoryId, lineId, lineIds, workstationId, workstationIds, cameraId, productId, severity, defectType, shiftId, dim);
+                start, end, factoryId, lineId, lineIds, workstationId, workstationIds, cameraId, productId, severity, defectType, shiftId, defectTypeId, dim);
         if (longVal(map(imageData.get("kpi")).get("totalCount")) > 0) {
             Map<String, Object> data = new LinkedHashMap<>(imageData);
             data.put("aggregationLevel", daily ? "DAY" : "30M");
@@ -442,6 +476,19 @@ public class LineAnalyticsController {
         data.put("defectPareto", buildPareto(data.get("defectRanking")));
         data.put("plantOverview", buildPlantOverview(data));
         data.put("defectTrend", buildDefectTrend(data.get("trend")));
+        // ★ 2026-11-19 评审 B-6：**两个数据源分支必须返回同一套响应键**。
+        //   代码里一直写着这条不变量（P0-1 / NEW-06 的注释），
+        //   但后来新增 hourlyHeatmap / shiftCompare / shiftNames 时只加在图片分支，
+        //   聚合分支漏了 → 实测两个分支键数 25 vs 22。
+        //   后果：① 前端 `data.hourlyHeatmap||[]` 兜底 → 图表渲染成**空图**；
+        //        ② **导出**走 `listMap(summary.get(...))` → 导出**只有表头没有数据行**的 Excel，
+        //           用户会以为「这个时段真的没有缺陷」。
+        //   修法：直接复用 imageData 里已算好的这 3 块 ——
+        //   走到聚合分支的前提是「图片表 totalCount == 0」，此时图片表的热力图/班次对比
+        //   本来就必然为空 → 复用既保证键集一致，语义也正确，无需新写聚合表 SQL。
+        data.put("hourlyHeatmap", imageData.get("hourlyHeatmap"));
+        data.put("shiftCompare", imageData.get("shiftCompare"));
+        data.put("shiftNames", imageData.get("shiftNames"));
         return data;
     }
 
@@ -572,7 +619,8 @@ public class LineAnalyticsController {
                                                         Long factoryId, Long lineId, List<Long> lineIds,
                                                         Long workstationId, List<Long> workstationIds,
                                                         Long cameraId, Long productId, String severity,
-                                                        String defectType, Long shiftId, String dim) {
+                                                        String defectType, Long shiftId, Long defectTypeId,
+                                                        String dim) {
         Map<String, Object> data = new LinkedHashMap<>();
 
         // 图片表的 camera_id 存的是相机编号（camera_code），需经 dim_camera 关联出维度
@@ -596,13 +644,37 @@ public class LineAnalyticsController {
         // 旧行为是静默忽略 —— 用户选了「产品 A」却看到全部数据，只会怀疑系统坏了。
         // 现在改为：如实回传 ignoredFilters，前端在筛选区给出「该筛选不生效」提示。
         List<String> ignoredFilters = new ArrayList<>();
+        List<String> ignoredFilterNotes = new ArrayList<>();
         if (productId != null) {
             ignoredFilters.add("productId");
+            ignoredFilterNotes.add("产品筛选对缺陷图片通道不生效：图片事实表不记录产品"
+                    + "（camera_status.product_name 只是当前心跳快照，无历史）");
+        }
+        // ★ 2026-11-19 评审 B-1：defectTypeId 在图片通道**完全没有数据源**，
+        //   且此前**既不生效、也不上报** → 用户以为按类型筛了，实际看的是全量。
+        //   原因：dim_defect_type 的 15 个标准类型（P0_INNER_GLUE_SMALL 等）
+        //   与 defect_image_box.defect_type 的现场中文类型（接头/胶滴/污点）
+        //   **完全不相交**，按 ID 过滤在语义上本就无法命中；
+        //   而 buildDefectImageSummary 的形参里原本根本没有 defectTypeId。
+        //   修法：如实上报为「不生效」（与 productId 同一机制）。
+        //   要真正支持需先做「标准码 → 现场中文名」的映射，属独立需求。
+        if (defectTypeId != null) {
+            ignoredFilters.add("defectTypeId");
+            ignoredFilterNotes.add("缺陷类型 ID 筛选对缺陷图片通道不生效："
+                    + "标准类型编码与现场上报的缺陷类型名称不是同一套标识，无法直接匹配");
+        }
+        // ★ 2026-11-19 评审 B-2：severity 只进了 3 个块（缺陷排行 / 透视 / 严重度分布），
+        //   **KPI、趋势、工位/相机排行、热力图、班次对比都不受它约束**
+        //   → 用户选「高危」后 KPI 纹丝不动，却没有任何提示。
+        //   修法：如实上报为「仅部分生效」，并说明哪部分生效、哪部分不生效。
+        if (severity != null && !severity.trim().isEmpty()) {
+            ignoredFilters.add("severity(部分)");
+            ignoredFilterNotes.add("严重度筛选**只作用于缺陷类型排行 / 缺陷透视 / 严重度分布**；"
+                    + "KPI、趋势、工位与相机排行、时段热力图、班次对比按全部严重度统计");
         }
         data.put("ignoredFilters", ignoredFilters);
         if (!ignoredFilters.isEmpty()) {
-            data.put("ignoredFilterMessage",
-                    "产品筛选对缺陷图片通道不生效：图片事实表不记录产品（camera_status.product_name 只是当前心跳快照，无历史）。");
+            data.put("ignoredFilterMessage", String.join("；", ignoredFilterNotes) + "。");
         }
 
         Map<String, Object> kpi = new LinkedHashMap<>();
@@ -862,15 +934,39 @@ public class LineAnalyticsController {
         }
     }
 
-    /** 班次定义查询（带空值防御），dim_shift 主键查询 */
+    /**
+     * 班次定义查询（dim_shift 主键）。
+     *
+     * <p>★ 2026-11-19 评审 B-7：原实现查不到时返回<b>空 Map</b>，
+     * 而调用处 {@code if (!shift.isEmpty())} 判断「空 Map = 不加条件」
+     * → 传了一个**不存在的班次 ID**（如 {@code shiftId=99999}）时，
+     * 结果是**不加任何班次条件** → 返回**全量数据** ——
+     * 用户以为在看某个班次，实际看到的是全部班次。
+     *
+     * <p>而 {@code lineId} / {@code cameraId} 传不存在的值是返回**空集**（正确）——
+     * 只有班次这一路行为不一致。
+     *
+     * <p>现在：{@code shiftId != null} 但查不到定义 → 抛
+     * {@link IllegalArgumentException} → HTTP 400，明确告诉调用方「这个班次不存在」，
+     * 而不是悄悄返回全量。
+     *
+     * <p>注：SQL 异常仍按原样吞掉返回空 Map（那是**服务端故障**，
+     * 不该伪装成「班次不存在」），但这种情况由日志记录。
+     */
     private Map<String, Object> resolveShift(Long shiftId) {
         if (shiftId == null) {
             return new LinkedHashMap<>();
         }
         try {
             Map<String, Object> shift = queryRepository.findShiftById(shiftId);
-            return shift == null ? new LinkedHashMap<>() : shift;
+            if (shift == null || shift.isEmpty()) {
+                throw new IllegalArgumentException("班次不存在: shiftId=" + shiftId);
+            }
+            return shift;
+        } catch (IllegalArgumentException e) {
+            throw e;
         } catch (Exception ex) {
+            log.warn("查询班次定义失败（按不筛选班次处理）: shiftId={} err={}", shiftId, ex.getMessage());
             return new LinkedHashMap<>();
         }
     }
@@ -964,7 +1060,12 @@ public class LineAnalyticsController {
     @GetMapping("/dashboards/{id}")
     public ResultVO<Map<String, Object>> dashboardDetail(@PathVariable Long id) {
         Map<String, Object> dashboard = findDashboard(id);
-        if (dashboard == null) return ResultVO.fail("看板不存在");
+        // ★ 2026-11-19 评审 B-10：原来返回 `ResultVO.fail("看板不存在")`
+        //   → HTTP 200 + body.code=500（HTTP 说"成功"、业务码说"失败"，自相矛盾），
+        //   而相邻的 /dashboards/{id}/widgets 对同一事实返回「成功 + 空数组」——
+        //   **两个相邻接口对同一错误事实给出两种结论**。
+        //   现在统一为 HTTP 400 + 可读消息（项目既有约定：参数/资源错误用 400）。
+        if (dashboard == null) throw new IllegalArgumentException("看板不存在: id=" + id);
         dashboard.put("widgets", listWidgets(id));
         return ResultVO.success(dashboard);
     }
@@ -1013,6 +1114,9 @@ public class LineAnalyticsController {
 
     @GetMapping("/dashboards/{id}/widgets")
     public ResultVO<List<Map<String, Object>>> dashboardWidgets(@PathVariable Long id) {
+        // ★ B-10：与 /dashboards/{id} 保持一致 —— 看板不存在时**不能**返回「成功 + 空数组」
+        //   （前端会当成"这个看板没有组件"，而不是"看板不存在"）。
+        if (findDashboard(id) == null) throw new IllegalArgumentException("看板不存在: id=" + id);
         return ResultVO.success(listWidgets(id));
     }
 
@@ -1597,10 +1701,37 @@ public class LineAnalyticsController {
         }
     }
 
+    /**
+     * 解析用户传入的时间。
+     *
+     * <p>★ 2026-11-19 评审 B-3：原实现两种格式都失败时抛出的
+     * {@link java.time.format.DateTimeParseException} <b>不是</b>
+     * {@link IllegalArgumentException} 的子类（它继承 {@code DateTimeException}
+     * → {@code RuntimeException}）→ 绕过 {@code GlobalExceptionHandler} 的
+     * {@code IllegalArgumentException} 处理器 → 落进兜底 → <b>HTTP 500</b>。
+     *
+     * <p>这是<b>调用方的参数错误</b>，返回 500 会让前端当成服务端故障反复重试，
+     * 还会把这类错误计入 5xx 可用性告警 → 污染监控。
+     *
+     * <p>现在统一转成 {@link IllegalArgumentException} → <b>HTTP 400</b> + 可读提示。
+     *
+     * <p>★ B-5：{@link #DT} 已改严格模式，不存在的日期（如 {@code 2026-11-31}）
+     * 不再被静默纠正，而是走到这里报 400。
+     */
     private LocalDateTime parseTime(String value, LocalDateTime defaultValue) {
         if (value == null || value.trim().isEmpty()) return defaultValue;
-        try { return LocalDateTime.parse(value.trim(), DT); }
-        catch (Exception e) { return LocalDateTime.parse(value.trim()); }
+        String text = value.trim();
+        try {
+            return LocalDateTime.parse(text, DT);
+        } catch (java.time.format.DateTimeParseException e) {
+            // 退而求其次：ISO 格式（带 T / 带毫秒 / 带时区）
+            try {
+                return LocalDateTime.parse(text);
+            } catch (java.time.format.DateTimeParseException e2) {
+                throw new IllegalArgumentException(
+                        "时间格式错误，应为 yyyy-MM-dd HH:mm:ss，收到: " + value);
+            }
+        }
     }
 
     private LocalDate parseDate(String value, LocalDate defaultValue) {

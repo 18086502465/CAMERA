@@ -150,6 +150,19 @@ async function clearLines(page) {
     check('④ 清空后恢复全产线（≥ 并集）', allTotal >= multiTotal && allTotal > 0, `全集=${all['缺陷图片数']} / 并集=${multiTotal}`)
 
     // ---- ⑤ 快速连续切换（竞态守卫）：最后选择必须生效 ----
+    // ★ 2026-11-19：原断言**硬编码**「ZK09 当日 ~311 张」（写脚本那天的凌晨产量），
+    //   现场数据随时间增长（当日实测已到 1741 张）→ 断言必然假红。
+    //   改为测**这个用例的本意**（竞态守卫）：
+    //     ① 先稳定地单选 ZK09 → 记基准 finZ09
+    //     ② 快速切 2 轮（ZK06 → ZK09）→ 记 finFast
+    //     ③ 断言 finFast === finZ09 —— 若竞态没守住会停在 ZK06，值就不同。
+    //   不依赖任何硬编码数字 → 不会随数据增长而失效。
+    await clearLines(page)
+    await pickLines(page, ['ZK09'])
+    await sleep(3500)
+    const finZ09 = await readKpi(page)
+    const zk09Total = Number(String(finZ09['缺陷图片数']).replace(/,/g, ''))
+
     reqs.length = 0
     await clearLines(page)
     await pickLines(page, ['ZK06'])
@@ -159,9 +172,9 @@ async function clearLines(page) {
     await sleep(3500)
     const fin = await readKpi(page)
     const finTotal = Number(String(fin['缺陷图片数']).replace(/,/g, ''))
-    // ZK09 当日 ~311 张（凌晨夜班产量）；若竞态未守住会停在 ZK06（≈2500+）
-    const okFin = finTotal > 0 && Math.abs(finTotal - 311) <= 60
-    check('⑤ 快速切 2 轮，最终=最后选择的 ZK09', okFin, `缺陷图片数=${fin['缺陷图片数']}`)
+    const okFin = zk09Total > 0 && finTotal === zk09Total
+    check('⑤ 快速切 2 轮，最终=最后选择的 ZK09（竞态守卫）', okFin,
+      `稳定单选 ZK09=${zk09Total} / 快速切换后=${finTotal}`)
 
     check('⑥ 无 JS 运行时错误', jsErrors.length === 0, jsErrors.slice(0, 3).join(' | ') || '无')
 

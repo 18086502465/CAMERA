@@ -98,8 +98,18 @@ public class DailyReportController {
             // 快照行在这里统一 decorate（环比/样本标记/dataSource）；实时行在下面单独 decorate，
             // 不能最后统一 forEach —— 会把实时行的 REALTIME 覆盖成 SNAPSHOT
             for (Map<String, Object> row : dailyReportRepository.listRange(start, snapshotEnd, lineId)) {
-                decorate(row, toLocalDate(row.get("reportDate")), "SNAPSHOT");
-                rows.add(row);
+                // ★ 2026-11-19 评审 P0-1：原来 lineId 为 null 时**快照部分返回全部行**
+                //   （厂级行 line_id=0 + 各产线行，共 6 行/天），
+                //   而下面的实时部分只取厂级行（lineId==0）→
+                //   **同一个响应里历史日 6 行、今天 1 行**，结构不一致；
+                //   更糟：下游只要对返回行 SUM，就会**把厂级与产线行相加 → 翻倍**
+                //   （PRD D1 定的口径是「每天一行（厂级汇总）」）。
+                //   现在统一：lineId 为 null → 只返回厂级行；传了 lineId → 只返回该产线行。
+                if (lineId == null ? Integer.valueOf(0).equals(row.get("lineId"))
+                        : lineId.equals(((Number) row.get("lineId")).intValue())) {
+                    decorate(row, toLocalDate(row.get("reportDate")), "SNAPSHOT");
+                    rows.add(row);
+                }
             }
         }
         if (!end.isBefore(today)) {
@@ -356,7 +366,14 @@ public class DailyReportController {
      */
     @GetMapping("/{date}/breakdown")
     public ResultVO<Map<String, Object>> breakdown(@PathVariable String date,
-                                                   @RequestParam(required = false) Integer lineId) {
+                                                   @RequestParam(required = false) Integer lineId,
+                                                   // ★ 2026-11-19 评审 P2-4：这三个筛选参数此前**不存在**，
+                                                   //   前端若传了会被 Spring **静默忽略** → 用户以为筛了、实际没筛。
+                                                   //   现在显式接收并在响应里如实上报「不生效」，
+                                                   //   真正支持需改 DailyReportRepository 的明细 SQL（另行排期）。
+                                                   @RequestParam(required = false) Integer workstationId,
+                                                   @RequestParam(required = false) Integer cameraId,
+                                                   @RequestParam(required = false) String defectType) {
         LocalDate day = parseDate(date, null);
         if (day == null) {
             return ResultVO.fail("日期格式应为 yyyy-MM-dd");
@@ -413,6 +430,20 @@ public class DailyReportController {
         data.put("idleNote", "idleHours = 当日 0 上传的小时（当天只统计到当前小时）；"
                 + "0 上传可能停线/相机断网，也可能只是没排产，需现场确认");
         data.put("caliber", CALIBER);
+        // ★ 2026-11-19 评审 P2-4：如实上报「哪些筛选被忽略了」。
+        //   这三个参数此前**根本不存在**（Spring 会静默忽略未知参数），
+        //   前端若传了，用户以为筛了、实际明细是全量的 —— 与产线统计模块的
+        //   ignoredFilters 机制同一口径（诚实降级，不静默吞）。
+        List<String> ignored = new ArrayList<>();
+        if (workstationId != null) ignored.add("workstationId");
+        if (cameraId != null) ignored.add("cameraId");
+        if (defectType != null && !defectType.trim().isEmpty()) ignored.add("defectType");
+        data.put("ignoredFilters", ignored);
+        if (!ignored.isEmpty()) {
+            data.put("ignoredFilterMessage",
+                    "以下筛选对日报明细**不生效**（明细仅支持按产线 scope 统计）：" + String.join("、", ignored)
+                            + "。需要按工位/相机/缺陷类型看明细，请用「产线统计」页的对应图表。");
+        }
         return ResultVO.success(data);
     }
 
@@ -465,6 +496,12 @@ public class DailyReportController {
             for (Map<String, Object> row : dailyReportRepository.computeDay(today, true)) {
                 if (lineId == null ? Integer.valueOf(0).equals(row.get("lineId"))
                         : lineId.equals(((Number) row.get("lineId")).intValue())) {
+                    // ★ 2026-11-19 评审 P0-2：这里原先**漏了 decorate** —— 实时行没有
+                    //   reportDate 键 → 下面的 rows.sort(compareDateDesc) 取 a.get("reportDate")
+                    //   得到 null → db.compareTo(null) → **NPE → HTTP 500**。
+                    //   而「导出本月」这个区间**必然含今天** → **导出按钮 100% 失败**。
+                    //   修法：与 list() 端点一致 —— 实时行也走 decorate（补 reportDate / dataSource）。
+                    decorate(row, today, "REALTIME");
                     rows.add(row);
                 }
             }
@@ -472,7 +509,7 @@ public class DailyReportController {
         rows.sort((a, b) -> compareDateDesc(a, b));
 
         List<String> headers = Arrays.asList("日期", "产线", "检测总数(日增)", "缺陷数(日增)", "缺陷率‰(计数)",
-                "缺陷图片数(通道)", "较前日%", "在线相机", "相机总数", "温度告警", "TOP1缺陷类型", "数据源");
+                "缺陷图片数(通道)", "缺陷框数较前日%", "在线相机", "相机总数", "温度告警", "TOP1缺陷类型", "数据源");
         List<List<Object>> table = new ArrayList<>();
         for (Map<String, Object> r : rows) {
             decorate(r, toLocalDate(r.get("reportDate")),
@@ -484,7 +521,7 @@ public class DailyReportController {
                     r.get("ngDelta") == null ? "待积累" : r.get("ngDelta"),
                     r.get("counterRateKilo") == null ? "待积累" : r.get("counterRateKilo"),
                     r.get("detectCount"),
-                    dayOverDayPercent(r),
+                    dayOverDayPercent(r),   // ★ P1-4：口径已改为「缺陷框数环比」
                     r.get("cameraOnline"),
                     r.get("cameraTotal"),
                     r.get("tempAlarmCount"),
@@ -535,11 +572,19 @@ public class DailyReportController {
             }
             Object prevRate = prevRow == null ? null : prevRow.get("defectRateKilo");
             row.put("prevRateKilo", prevRate);
-            Object rate = row.get("defectRateKilo");
-            row.put("dayOverDayRate", rate instanceof Number && prevRate instanceof Number
-                    ? Math.round((((Number) rate).doubleValue() - ((Number) prevRate).doubleValue())
-                            * 10000.0 / ((Number) prevRate).doubleValue()) / 100.0
-                    : null);
+            // ★ 2026-11-19 评审 P1-4：原来用 **defectRateKilo**（图片口径缺陷率）算环比，
+            //   而图片通道「每张图必带 1 个缺陷框」→ 该口径**恒为 1000‰**
+            //   → 环比**恒 0.0%**，整列毫无信息量（实测 2026-11-18 与 11-17 都是 0.0%）。
+            //   改用**缺陷框数**的环比 → 反映「缺陷量在变多还是变少」，
+            //   这正是厂长的关注点（与 LineAnalyticsController.buildPlantOverview 的口径一致）。
+            Number curDefect = row.get("defectCount") instanceof Number ? (Number) row.get("defectCount") : null;
+            Number prevDefect = (prevRow == null || !(prevRow.get("defectCount") instanceof Number))
+                    ? null : (Number) prevRow.get("defectCount");
+            row.put("dayOverDayRate",
+                    (curDefect != null && prevDefect != null && prevDefect.doubleValue() > 0)
+                            ? Math.round((curDefect.doubleValue() - prevDefect.doubleValue())
+                                    * 10000.0 / prevDefect.doubleValue()) / 100.0
+                            : null);
 
             Long inspCum = longOrNull(row.get("inspTotalCum"));
             Long ngCum = longOrNull(row.get("ngTotalCum"));
@@ -607,25 +652,76 @@ public class DailyReportController {
     private static int compareDateDesc(Map<String, Object> a, Map<String, Object> b) {
         LocalDate da = toLocalDate(a.get("reportDate"));
         LocalDate db = toLocalDate(b.get("reportDate"));
+        // ★ 2026-11-19 评审 P0-2：补 null 防御 —— 缺 reportDate 的行（异常数据）
+        //   不应让整个排序抛 NPE。null 视为"最早"，排到末尾。
+        if (da == null && db == null) {
+            return Integer.compare(((Number) a.get("lineId")).intValue(),
+                    ((Number) b.get("lineId")).intValue());
+        }
+        if (da == null) return 1;
+        if (db == null) return -1;
         int byDate = db.compareTo(da);
         if (byDate != 0) return byDate;
         return Integer.compare(((Number) a.get("lineId")).intValue(),
                 ((Number) b.get("lineId")).intValue());
     }
 
+    /**
+     * 取日期（数据库行里的 reportDate）。
+     *
+     * <p>★ 2026-11-19 修正越界崩溃：原实现直接 {@code String.valueOf(value).substring(0, 10)}，
+     * 当 value 是长度不足 10 的字符串时抛 {@code StringIndexOutOfBoundsException}
+     * → 兜底 handler → **HTTP 500**。现改为<b>先判长度</b>，长度不足按无法解析处理（返回 null）。
+     */
     private static LocalDate toLocalDate(Object value) {
         if (value == null) return null;
         if (value instanceof java.sql.Date) return ((java.sql.Date) value).toLocalDate();
         if (value instanceof LocalDate) return (LocalDate) value;
-        return LocalDate.parse(String.valueOf(value).substring(0, 10));
+        String text = String.valueOf(value).trim();
+        if (text.length() < 10) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(text.substring(0, 10));
+        } catch (DateTimeParseException e) {
+            return null;
+        }
     }
 
+    /**
+     * 解析用户传入的日期。
+     *
+     * <p>★ 2026-11-19 修正（统计模块全面测试发现两个 500）：
+     * <ol>
+     *   <li><b>越界崩溃</b>：原实现 {@code value.trim().substring(0, 10)} 写在 try 里，
+     *       但长度不足 10 时抛的是 {@code StringIndexOutOfBoundsException}
+     *       —— <b>不是</b> {@code DateTimeParseException} → catch 不住 → <b>HTTP 500</b>。
+     *       例：{@code GET /daily-reports/abc}、{@code ?startDate=2026-1-1}。</li>
+     *   <li><b>静默 null → 后续 NPE</b>：长度够但格式非法（如 {@code 2026-13-45}）时
+     *       原来被 catch 住并<b>返回 fallback</b>；而 {@code parseDate(date, null)} 的
+     *       fallback 就是 null → 后续用 null 当日期用 → <b>NPE → HTTP 500</b>。</li>
+     * </ol>
+     *
+     * <p><b>现在的行为</b>：非法日期<b>抛 IllegalArgumentException</b> → 兜底
+     * {@code handleIllegalArgument} → <b>HTTP 400</b> + 可读提示。
+     * 这是<b>调用方的参数错误</b>，返回 500 会让用户以为是系统故障、反复重试。
+     *
+     * <p>参考实现：{@code LineAnalyticsController.parseDate}（1606 行）<b>先判长度</b>，
+     * 没有越界问题 —— 本次按同样思路修正，并额外把「格式非法」从静默兜底改为明确报错。
+     *
+     * <p>注：{@code parseTime} / {@code parseMonth} 的入参（{@code month} 等）长度不足时
+     * 已有保护，不受此问题影响。
+     */
     private static LocalDate parseDate(String value, LocalDate fallback) {
         if (value == null || value.trim().isEmpty()) return fallback;
+        String text = value.trim();
+        if (text.length() < 10) {
+            throw new IllegalArgumentException("日期格式应为 yyyy-MM-dd，收到: " + value);
+        }
         try {
-            return LocalDate.parse(value.trim().substring(0, 10));
+            return LocalDate.parse(text.substring(0, 10));
         } catch (DateTimeParseException e) {
-            return fallback;
+            throw new IllegalArgumentException("日期格式应为 yyyy-MM-dd，收到: " + value);
         }
     }
 

@@ -71,7 +71,12 @@ class P3Batch4ContractTest {
     private LineAnalyticsController controller;
 
     private MockMvc mvc() {
-        return MockMvcBuilders.standaloneSetup(controller).build();
+        // ★ 2026-11-19：注册全局异常处理器 —— 生产环境它是 @RestControllerAdvice（全局生效），
+        //   而 standaloneSetup 不会自动带上 advice → Controller 抛出的 IllegalArgumentException
+        //   会直接冒泡成 NestedServletException，测不出真实的 HTTP 400 行为。
+        return MockMvcBuilders.standaloneSetup(controller)
+                .setControllerAdvice(new com.wms.shared.web.GlobalExceptionHandler())
+                .build();
     }
 
     /** 空的 KPI（聚合表无数据） */
@@ -495,13 +500,17 @@ class P3Batch4ContractTest {
     @DisplayName("line-summary: 结束时间早于开始时间 → 抛 IllegalArgumentException 且不查库")
     void lineSummaryInvalidRange() throws Exception {
         MockMvc mvc = mvc();
-        // ★ 原有行为：Controller 未捕获该异常（全局异常处理器 P3 不接入，行为保持模式），
-        //   故此处断言"抛出"而非某个业务 code —— 语义下沉不应改变这一点。
-        org.junit.jupiter.api.Assertions.assertThrows(
-                org.springframework.web.util.NestedServletException.class,
-                () -> mvc.perform(get("/api/v1/analytics/line-summary")
+        // ★ 2026-11-19：断言由"抛 NestedServletException"改为 **HTTP 400**。
+        //   原断言固化的是**测试环境的假象** —— standaloneSetup 不带 @RestControllerAdvice，
+        //   而生产里 GlobalExceptionHandler 是全局 advice（线上实测：缺名称 → HTTP 400）。
+        //   「语义下沉不应改变这一点」仍然成立：请求**依然失败**，只是失败的表现形式
+        //   从"异常冒泡"变成"结构化的 400 响应"。
+        mvc.perform(get("/api/v1/analytics/line-summary")
                         .param("startTime", "2026-11-10 00:00:00")
-                        .param("endTime", "2026-11-01 00:00:00")));
+                        .param("endTime", "2026-11-01 00:00:00"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("结束时间不能早于开始时间")));
 
         verify(queryRepository, never()).queryKpi(anyString(), anyString(), any());
     }
@@ -527,11 +536,13 @@ class P3Batch4ContractTest {
         body.put("factoryId", 1);
 
         MockMvc mvc = mvc();
-        org.junit.jupiter.api.Assertions.assertThrows(
-                org.springframework.web.util.NestedServletException.class,
-                () -> mvc.perform(post("/api/v1/analytics/dashboards")
+        // ★ 2026-11-19：同 lineSummaryInvalidRange —— 生产是 HTTP 400（全局 advice 生效）。
+        mvc.perform(post("/api/v1/analytics/dashboards")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(body))));
+                        .content(om.writeValueAsString(body)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("看板名称不能为空")));
 
         verify(dashboardRepository, never()).insertDashboard(any(), any(), any(), any(), anyInt(), any());
     }
@@ -560,15 +571,33 @@ class P3Batch4ContractTest {
     }
 
     @Test
-    @DisplayName("dashboards/{id}: 看板不存在 → code=500")
+    @DisplayName("dashboards/{id}: 看板不存在 → HTTP 400（★ 2026-11-19 评审 B-10 改了契约）")
     void dashboardNotFound() throws Exception {
         when(lineAnalyticsRepository.findDashboard(999L)).thenReturn(null);
 
         MockMvc mvc = mvc();
+        // ★ 契约变更说明：
+        //   原行为是 `ResultVO.fail("看板不存在")` → HTTP 200 + body.code=500
+        //   （HTTP 说"成功"、业务码说"失败"，自相矛盾），
+        //   而相邻的 /dashboards/{id}/widgets 对同一事实返回「成功 + 空数组」
+        //   —— **两个相邻接口对同一错误事实给出两种结论**。
+        //   现统一为 HTTP 400 + 可读消息（项目既有约定：参数/资源错误用 400）。
         mvc.perform(get("/api/v1/analytics/dashboards/999"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(500))
-                .andExpect(jsonPath("$.message").value("看板不存在"));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("看板不存在")));
+    }
+
+    @Test
+    @DisplayName("dashboards/{id}/widgets: 看板不存在 → 与 detail 一致（HTTP 400，不再返回空数组）")
+    void dashboardWidgetsNotFound() throws Exception {
+        when(lineAnalyticsRepository.findDashboard(999L)).thenReturn(null);
+
+        MockMvc mvc = mvc();
+        // ★ B-10：原来这里返回「成功 + 空数组」→ 前端会当成"这个看板没有组件"，
+        //   而不是"看板不存在"。现在与 /dashboards/{id} 保持一致。
+        mvc.perform(get("/api/v1/analytics/dashboards/999/widgets"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("看板不存在")));
     }
 
     @Test
@@ -591,11 +620,13 @@ class P3Batch4ContractTest {
         body.put("widgetName", "ZZTEST图表");
 
         MockMvc mvc = mvc();
-        org.junit.jupiter.api.Assertions.assertThrows(
-                org.springframework.web.util.NestedServletException.class,
-                () -> mvc.perform(post("/api/v1/analytics/widgets")
+        // ★ 2026-11-19：同上（生产 HTTP 400）
+        mvc.perform(post("/api/v1/analytics/widgets")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(om.writeValueAsString(body))));
+                        .content(om.writeValueAsString(body)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("看板不能为空")));
 
         verify(dashboardRepository, never()).insertWidget(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), anyInt());
     }
