@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>三条铁律（与《重构方案-后端DDD拆分-20261104.md》一致）：</p>
  * <ol>
  *   <li><b>跨域只走 app 接口</b> —— 业务域类不得依赖其他域的 {@code infra} 层
- *       （Repository/Mapper 是各域私有实现）。存量 5 处已冻结在 FROZEN_CROSS_DOMAIN，
+ *       （Repository/Mapper 是各域私有实现）。存量 13 处已冻结在 FROZEN_CROSS_DOMAIN，
  *       <b>只允许清零、不允许新增</b>：任何新违规直接测试失败。</li>
  *   <li><b>shared 零业务依赖</b> —— 共享内核不得反向依赖任何业务域。</li>
  *   <li><b>domain/model 纯净</b> —— 实体层不得依赖 api/app/infra 层。</li>

@@ -42,6 +42,7 @@
 | `check_entity_vs_ddl.py` | **实体 ↔ 建库脚本列名对账**：`FactAnomalyAlert` 等实体字段 vs `01_init_schema_nodb.sql` 的列，找出「只靠 `04_align_entity_columns.sql` 裸 ALTER 补上」的差异。全新库能跑不代表现场库能跑 |
 | `probe_api_paths.sh` | 前端 `api/*.js` 路径与后端端点核对（曾发现 `/users` vs `/user` 404） |
 | `gen_api_doc.py` | 从 Controller 源码再生成《接口文档.md》（`python docs/scripts/gen_api_doc.py`） |
+| `purge_duplicate_images.sql` | **清理「设备重传同一张图」造成的重复数据**（2026-11-19 评审 N-01）。★ 背景：设备端未收到响应会重传同一批图，服务端无幂等 → 同一张图重复入库（现场实测 570 组 / 845 行），且每条重复行带一份重复的 `defect_image_box` → **缺陷框统计被放大**。默认只跑预览段（输出待删行数与样本，不删）；确认无误后去掉删除段的注释再执行。⚠️ **会删数据**，执行前确认已备份（脚本第 ① 段会建 `bak_defect_image_file_dup_YYYYMMDD` 备份表，保留 7 天以备回滚） |
 | `check_doc_links.py` | **文档一致性守卫**：校验全部相对链接 / 锚点是否有效、`docs/` 根是否混入历史稿、源目录是否放了 .md。提交前跑一遍（`python docs/scripts/check_doc_links.py`，失败退出码 1） |
 | `test_cleanup_protect_set.sh` | **清理脚本保护集合逻辑回归**：从真实脚本抽取代码段跑 6 个场景（两表各标/单表标记/运维加码/全误标/多台）。★ 起因：`printf '%s' \| tr` 输出的最后一行无换行 → `while read` 丢弃最后一个相机 → **真实相机被静默丢出保护集合**。本地跑，无需服务器 |
 | `verify_camera_type_guards.sh` | **实机验证三道防误删防线 + 正向清理**：造 ZZTEST 数据 → 验证被清 → 验证真实相机数据分毫不动 → 验证保护集合为空中止(3)/超阈值中止(4) → 自动还原。服务器上以 root 执行 |

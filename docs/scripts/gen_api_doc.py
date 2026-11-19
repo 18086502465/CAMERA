@@ -16,7 +16,11 @@ DOMAIN_TITLE = {
 }
 MAP_RE = re.compile(r'@(Get|Post|Put|Delete|Request)Mapping')
 ROLE_RE = re.compile(r'@PreAuthorize\("[^"]*(ADMIN|USER)[^"]*"\)')
-PUB_RE = re.compile(r'public\s+[\w<>,\s\[\].]+?\s+(\w+)\s*\(')
+# ★ 2026-11-19 修正：原正则的返回类型字符类不含 '?'，导致返回 ResultVO<?> 的端点
+#   （masterdata 的 DimFactory/DimProductionLine/DimWorkstation 三个 listAll）
+#   **方法名取不到**、在接口文档里显示成 '?' —— 读者无法从文档定位到代码里的方法。
+#   现补上 '?'（泛型通配符）。
+PUB_RE = re.compile(r'public\s+[\w<>,\s\[\].?]+?\s+(\w+)\s*\(')
 STR_RE = re.compile(r'"([^"]*)"')
 
 rows_by_domain = {}

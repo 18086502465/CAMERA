@@ -10,7 +10,7 @@
 > |---|---|
 > | 文档版本 | v1.0（2026-11-18） |
 > | 覆盖范围 | 全项目（设备接入 → 主数据 → 统计 → 看板 → 日报 → 告警 → 数据治理 → 部署运维 → 授权） |
-> | 现场基线 | 杭州临平二期，10.2.77.72；2 工厂 / 7 产线 / 35 工位 / 36 相机（REAL 21、TEST 15）/ 缺陷图 23,380 张 |
+> | 现场基线 | 杭州临平二期，10.2.77.72；2 工厂 / 6 产线 / 31 工位 / 32 相机（REAL 18、TEST 14）/ 缺陷图 41,176 张（2026-11-19 实测；相机数随现场接入变化，数字以实测为准） |
 > | 事实来源 | 现行 `docs/` 文档 + **代码实测**（Controller/端点/表结构/告警/任务/配置）+ `docs/archive/` 历史方案（已甄别真伪） |
 
 ---
@@ -42,7 +42,7 @@
 | **本文** | 需求总纲 + 追溯矩阵 | 想了解"这系统要什么、做到哪" |
 | [`架构说明.md`](架构说明.md) | 分层规则、依赖铁律、关键机制 | 改代码前 |
 | [`模块设计.md`](模块设计.md) | 每域类清单 | 找某个类干什么 |
-| [`接口文档.md`](接口文档.md) | 146 个端点（自动生成） | 查端点路径/权限 |
+| [`接口文档.md`](接口文档.md) | 148 个端点（自动生成） | 查端点路径/权限 |
 | [`踩坑速查.md`](踩坑速查.md) | 真实事故与根因（20 节） | **改任何东西之前** |
 | [`配置项清单.md`](配置项清单.md) | 配置分层与全部可调项 | 改配置 |
 | [`部署与运维手册.md`](部署与运维手册.md) | 安装/升级/备份/排障 | 上线与运维 |
@@ -410,7 +410,9 @@ C（批量上报）是冻结契约、D（单图上传）是调试端点 —— *
 
 - 单张图片均 **60 KB**（设计点取值）；DB 体积 = 张数 × 5.1 KB（索引已含）；
   binlog（ROW）约 0.1–0.5 GB/天。
-- **当前现场**：2 工厂 / 7 产线 / 35 工位 / 36 相机（REAL 21、TEST 15），缺陷图 23,380 张 / 缺陷框 23,526 个。
+- **当前现场**（2026-11-19 实测）：2 工厂 / 6 产线 / 31 工位 / 32 相机（REAL 18、TEST 14），
+  缺陷图 41,176 张 / 缺陷框 41,322 个。
+  ⚠️ 相机与产线数**随现场接入变化**（TEST 相机每小时清理，产线会调整），引用时以实测为准。
 - 硬件建议（200 台设计点）：8 vCPU / 16GB → **64GB ECC**（Java 堆 8GB + MySQL buffer pool 24GB + 页缓存 16GB + OS 16GB），
   DB 必须放 SSD（报表要跨主表与月表 `UNION ALL`，HDD 随机读成瓶颈）。
 
@@ -463,17 +465,17 @@ C（批量上报）是冻结契约、D（单图上传）是调试端点 —— *
 
 | 需求域 | 主要实现位置 | 后端验证 | 前端验证 |
 |---|---|---|---|
-| **DEV 心跳** | `device/api/CameraStatusHeartbeatController`（2 端点）、`device/app/CameraStatusServiceImpl`（心跳处理 + 告警判定） | `CameraStatusHeartbeatControllerTest`、`CameraHeartbeatCacheKeyTest`、`CameraAlertThrottleTest` | — |
-| **DEV 图片上传** | `defect/api/DefectImageController`（8 端点）、`defect/app/DefectImageServiceImpl`（上传解析/建表守卫）、`defect/infra/repository/DefectImageRepository` | `DefectImageControllerTest`、`DefectImageUploadValidationTest`、`DefectImageRepositoryCameraSummariesTest` | `docs/scripts/verify_camera_status_browser.cjs` |
+| **DEV 心跳** | `device/api/CameraStatusHeartbeatController`（1 端点）、`device/app/CameraStatusServiceImpl`（心跳处理 + 告警判定） | `CameraStatusHeartbeatControllerTest`、`CameraHeartbeatCacheKeyTest`、`CameraAlertThrottleTest` | — |
+| **DEV 图片上传** | `defect/api/DefectImageController`（7 端点）、`defect/app/DefectImageServiceImpl`（上传解析/建表守卫/**幂等去重**）、`defect/infra/repository/DefectImageRepository` | `DefectImageControllerTest`、`DefectImageUploadValidationTest`、`DefectImageRepositoryCameraSummariesTest`、`DefectImageUploadTokenTest`（令牌校验）、`DefectImageUploadIdempotentTest`（幂等去重） | `docs/scripts/verify_camera_status_browser.cjs` |
 | **DEV 批量上报** | `inspection/api/BatchUploadController`、`inspection/app/InspectionUploadService` | `BatchUploadControllerTest`、`InspectionUploadServiceTest` | — |
-| **CFG 主数据** | `masterdata/api/*`（38 端点）、`system/api/ConfigImportController`、`system/api/FinalConfigController` | `P3Batch2ContractTest`、`P3Batch3ContractTest` | `docs/scripts/verify_camera_type_browser.cjs` |
-| **STAT 统计/看板** | `analytics/api/LineAnalyticsController`（24 端点）、`analytics/api/CameraDashboardController`（8 端点）、`analytics/infra/repository/LineAnalyticsQueryRepository` | `P3Batch4ContractTest`、`P3Batch56ContractTest`、`LineSummaryLineIdsTest`、`LineSummaryMultiLineContractTest`、`DddBaselineContractTest` | `docs/scripts/verify_line_analytics_browser.cjs`、`docs/scripts/verify_line_multi_browser.cjs`、`docs/scripts/verify_board_ad_browser.cjs`、`docs/scripts/review_line_analytics.cjs` |
-| **RPT 日报** 🟠 | `analytics/api/DailyReportController`（7 端点）、`analytics/infra/repository/DailyReportRepository`、`analytics/infra/task/DailyReportGenerationTask`、`sql/deploy/07_daily_report.sql` | `DailyReportControllerTest` | `docs/scripts/verify_daily_report_browser.cjs` |
+| **CFG 主数据** | `masterdata/api/*`（30 端点）、`system/api/ConfigImportController`、`system/api/FinalConfigController` | `P3Batch2ContractTest`、`P3Batch3ContractTest`、`CameraTypeContractTest`（相机类型双表一致） | `docs/scripts/verify_camera_type_browser.cjs` |
+| **STAT 统计/看板** | `analytics/api/LineAnalyticsController`（23 端点）、`analytics/api/CameraDashboardController`（9 端点，含 `/options` 与 `/{id}`）、`analytics/infra/repository/LineAnalyticsQueryRepository`、`shared/common/PageParams`（分页上限） | `P3Batch4ContractTest`、`P3Batch56ContractTest`、`LineSummaryLineIdsTest`、`LineSummaryMultiLineContractTest`、`DddBaselineContractTest`、`PageParamsLimitContractTest`（分页上限保护） | `docs/scripts/verify_line_analytics_browser.cjs`、`docs/scripts/verify_line_multi_browser.cjs`、`docs/scripts/verify_board_ad_browser.cjs`、`docs/scripts/review_line_analytics.cjs` |
+| **RPT 日报** 🟠 | `analytics/api/DailyReportController`（6 端点）、`analytics/infra/repository/DailyReportRepository`（含 `v_daily_line_report_factory` 视图）、`analytics/infra/task/DailyReportGenerationTask`、`sql/deploy/07_daily_report.sql` | `DailyReportControllerTest` | `docs/scripts/verify_daily_report_browser.cjs` |
 | **IMG 图像记录** | `defect/api/DefectImageController`（history / camera-summaries / filter-options） | `DefectImageRepositoryCameraSummariesTest` | `docs/scripts/verify_camera_kpi_browser.cjs` |
-| **ALM 告警** | `device/app/event/CameraAlertEvent` → `analytics/api/FactAnomalyAlertController`（3 端点）、`analytics/infra/repository/AnomalyAlertRepository` | `CameraAlertEventListenerTest`、`AnomalyAlertDedupTest`、`ApiErrorCodeTest` | — |
+| **ALM 告警** | `device/app/event/CameraAlertEvent` → `analytics/api/FactAnomalyAlertController`（2 端点）、`analytics/infra/repository/AnomalyAlertRepository`、`analytics/app/listener/UploadFailedAlertListener`（上传失败告警 + 失败频次） | `CameraAlertEventListenerTest`、`AnomalyAlertDedupTest`、`ApiErrorCodeTest`、`UploadFailedAlertTest` | — |
 | **GOV 数据治理** | `defect/infra/task/DefectImageArchiveTask`、`system/infra/task/DataCleanupTask`、`installer/linux/scripts/cleanup-*.sh`、`backup-database.sh` | `DefectImageArchiveTest`、`DataCleanupTaskImageTest` | — |
-| **MON 服务器监控** | `device/app/ServerMetricsServiceImpl`、`device/api/ServerMetricsController`（2 端点） | `ServerMetricsServiceImplTest`、`ServerMetricsControllerTest` | — |
-| **LIC 授权** | `shared/license/*`、`system/api/LicenseController`（5 端点）、`installer/linux/scripts/gen_license.py` | `LicenseServiceTest`、`LicenseSignerTest`（GOLDEN） | `docs/scripts/verify_license_browser.cjs` |
+| **MON 服务器监控** | `device/app/ServerMetricsServiceImpl`、`device/api/ServerMetricsController`（1 端点） | `ServerMetricsServiceImplTest`、`ServerMetricsControllerTest` | — |
+| **LIC 授权** | `shared/license/*`、`system/api/LicenseController`（4 端点）、`installer/linux/scripts/gen_license.py` | `LicenseServiceTest`、`LicenseSignerTest`（GOLDEN） | `docs/scripts/verify_license_browser.cjs` |
 | **IAM 账号权限** | `iam/api/AuthController`、`iam/api/SysUserController`、`iam/api/SysOperationLogController`、`iam/infra/SecurityConfig` | `ClientIpResolverTest`、`LogThrottleTest` | `docs/scripts/verify_login_flow_browser.cjs` |
 | **架构守护** | — | `ArchitectureTest`（ArchUnit 三条铁律 + 13 处冻结清单） | — |
 | **缓存/工具** | — | `TtlCacheTest` | — |
