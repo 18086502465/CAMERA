@@ -51,6 +51,14 @@ import java.util.concurrent.atomic.AtomicLong;
 @RequestMapping("/api/v1/analytics")
 public class LineAnalyticsController {
 
+    /**
+     * 多选 ID（lineIds / workstationIds）的数量上限。
+     *
+     * <p>★ 2026-11-20 复测 R-4：超限时**明确报错**而非静默截断。
+     * 现场只有 6 条产线 / 6 个工位 → 传超 50 个几乎必然是调用方 bug。
+     */
+    private static final int MAX_MULTI_ID_COUNT = 50;
+
     private static final org.slf4j.Logger log =
             org.slf4j.LoggerFactory.getLogger(LineAnalyticsController.class);
 
@@ -256,6 +264,15 @@ public class LineAnalyticsController {
 
     /**
      * 解析逗号分隔的 ID 串（产线 lineIds / 工位 workstationIds 共用，2026-11-17）。
+     *
+     * <p>★ 2026-11-20 复测 R-4：原来超过 50 个时**静默截断**（{@code subList(0, 50)}），
+     * 用户传 60 个产线 → 实际只按前 50 个筛选，**且没有任何提示**
+     * → 「静默吞掉筛选是最伤信任的失败模式」（PRD 原文）。
+     * 现在改为**明确报错**（HTTP 400）—— 现场只有 6 条产线 / 6 个工位，
+     * 传超 50 个几乎一定是调用方 bug（如误传了原始 ID 列表），早报错比静默算错好。
+     *
+     * <p>非法 token 仍按既定语义**忽略**（与旧接口一致，不 500）——
+     * 但这一点在 R-3 里通过 {@code ignoredFilterNotes} 上报了。
      */
     static List<Long> parseIds(String ids) {
         if (ids == null || ids.trim().isEmpty()) {
@@ -268,12 +285,17 @@ public class LineAnalyticsController {
             try {
                 set.add(Long.parseLong(t));
             } catch (NumberFormatException ignore) {
-                // 与旧接口一致：非法值忽略而不是 500
+                // 与旧接口一致：非法值忽略而不是 500（R-3 已在上报区如实披露）
             }
         }
         if (set.isEmpty()) return null;
         List<Long> list = new ArrayList<>(set);
-        return list.size() > 50 ? list.subList(0, 50) : list;
+        if (list.size() > MAX_MULTI_ID_COUNT) {
+            throw new IllegalArgumentException(
+                    "多选 ID 数量超过上限 " + MAX_MULTI_ID_COUNT + " 个（实际 " + list.size()
+                            + " 个），请检查是否误传了完整 ID 列表");
+        }
+        return list;
     }
 
     /** 多产线 ID 集合 → 缓存键片段（null 返回空串） */
@@ -413,8 +435,22 @@ public class LineAnalyticsController {
         long total = longVal(kpi.get("totalCount"));
         long ok = longVal(kpi.get("okCount"));
         long ng = longVal(kpi.get("ngCount"));
-        kpi.put("yieldRate", total > 0 ? Math.round(ok * 10000.0 / total) / 100.0 : 0.0);
-        kpi.put("ngRate", total > 0 ? Math.round(ng * 10000.0 / total) / 100.0 : 0.0);
+        // ★ 2026-11-20 复测 R-6（无数据 ≠ 0）：原来 total==0 时良率/NG 率给 **0.0**，
+        //   前端 `percent(0)` → 显示「良率 0.00%」——
+        //   现场实测：切到今天没有上报的产线（ZK65 / lineId=9，11-20 至今 0 张图），
+        //   页面显示「检测总数 0 / OK数 0 / NG数 0 / **良率 0.00%**」，
+        //   用户会读成「这条线今天良率为 0、全是废品」，
+        //   而真相是「这条线**今天没有上报**，无法计算良率」。
+        //   违反项目铁律「无数据 ≠ 0」（图片通道已按此处理，聚合通道漏了）。
+        //   现在无数据时置 **null** + `yieldRateAvailable=false`，
+        //   前端显示「—（无数据）」而不是 0.00%。
+        boolean hasData = total > 0;
+        kpi.put("yieldRate", hasData ? Math.round(ok * 10000.0 / total) / 100.0 : null);
+        kpi.put("ngRate", hasData ? Math.round(ng * 10000.0 / total) / 100.0 : null);
+        kpi.put("yieldRateAvailable", hasData);
+        if (!hasData) {
+            kpi.put("noDataReason", "当前筛选范围内没有检测记录（该范围可能未上报），良率无法计算");
+        }
         data.put("kpi", kpi);
 
         data.put("trend", queryRepository.queryTrend(qualityTable, timeColumn, qualityWhere, qualityParams));
@@ -762,11 +798,31 @@ public class LineAnalyticsController {
         //   班次分桶窗口固定取班次定义（白班 08-20 / 夜班 20-08），
         //   与「筛选了某个班次」无关 —— 筛选只收窄数据范围，不改变分桶。
         List<Object> heatParams = new ArrayList<>(params);
-        data.put("hourlyHeatmap", queryRepository.queryDefectImageHourlyHeatmap(joinCam, where.toString(), heatParams));
+        List<Map<String, Object>> heatmap =
+                queryRepository.queryDefectImageHourlyHeatmap(joinCam, where.toString(), heatParams);
+        data.put("hourlyHeatmap", heatmap);
+        // ★ 2026-11-20 复测 R-1：热力图 SQL 是 LIMIT 360，现场实测完整组合数 422
+        //   → **静默丢 62 格（14.7%）**且无任何提示 → 用户以为看到的是完整热力图。
+        //   修法（诚实降级）：如实回传真实组合数与被截断的格数，由前端提示。
+        //   不改 LIMIT —— 完整 422 行本身不是大数据量，但把上限放大到不设限会让
+        //   极端筛选（多产线 + 长时间窗）下的查询量不可控。
+        int heatTotalCombos = queryRepository.countDefectImageHourlyHeatmapCombos(joinCam, where.toString(), heatParams);
+        data.put("hourlyHeatmapTotalCombos", heatTotalCombos);
+        data.put("hourlyHeatmapTruncated", heatTotalCombos > heatmap.size());
+        data.put("hourlyHeatmapTruncatedCount", Math.max(heatTotalCombos - heatmap.size(), 0));
+
         Map<String, Object> shiftWindows = resolveShiftWindows();
         List<Object> shiftParams = new ArrayList<>(params);
-        data.put("shiftCompare", queryRepository.queryDefectImageShiftCompare(joinCam, where.toString(),
-                shiftParams, (String) shiftWindows.get("dayStart"), (String) shiftWindows.get("dayEnd")));
+        List<Map<String, Object>> shiftCompare = queryRepository.queryDefectImageShiftCompare(joinCam, where.toString(),
+                shiftParams, (String) shiftWindows.get("dayStart"), (String) shiftWindows.get("dayEnd"));
+        data.put("shiftCompare", shiftCompare);
+        // ★ 2026-11-20 复测 R-2：班次对比 SQL 是 LIMIT 12，现场实测有 37 种缺陷类型
+        //   → **静默丢掉 25 种（67.6%）**，被截类型合计 10706 个缺陷框。
+        //   班次对比是「对比」场景，缺 2/3 的类型 → 对比结论直接失真。
+        int shiftTotalTypes = queryRepository.countDefectImageShiftCompareTypes(joinCam, where.toString(), shiftParams);
+        data.put("shiftCompareTotalTypes", shiftTotalTypes);
+        data.put("shiftCompareTruncated", shiftTotalTypes > shiftCompare.size());
+        data.put("shiftCompareTruncatedCount", Math.max(shiftTotalTypes - shiftCompare.size(), 0));
         data.put("shiftNames", shiftWindows);
 
         return data;

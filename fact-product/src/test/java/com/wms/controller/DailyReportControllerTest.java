@@ -66,7 +66,12 @@ class DailyReportControllerTest {
     private AnomalyAlertRepository anomalyAlertRepository;
 
     private MockMvc controllerMvc() {
-        return MockMvcBuilders.standaloneSetup(new DailyReportController(dailyReportRepository, generationTask)).build();
+        // ★ 2026-11-20：注册全局异常处理器 —— 生产环境它是 @RestControllerAdvice（全局生效），
+        //   而 standaloneSetup 不会自动带上 advice → Controller 抛出的 IllegalArgumentException
+        //   会直接冒泡成 NestedServletException，测不出真实的 HTTP 400 行为。
+        return MockMvcBuilders.standaloneSetup(new DailyReportController(dailyReportRepository, generationTask))
+                .setControllerAdvice(new com.wms.shared.web.GlobalExceptionHandler())
+                .build();
     }
 
     /** 厂级行快照（2026-11-16 现场实测口径：1230 张 / 38 框 / 30.9‰） */
@@ -154,12 +159,18 @@ class DailyReportControllerTest {
     }
 
     @Test
-    @DisplayName("列表：start > end 拒绝")
+    @DisplayName("列表：start > end 拒绝（★ 2026-11-20 复测：契约由 200+code500 改为 HTTP 400）")
     void listRejectsInvertedRange() throws Exception {
+        // ★ 契约变更说明：
+        //   原行为 `ResultVO.fail("开始日期不能晚于结束日期")` → **HTTP 200 + body.code=500**
+        //   （HTTP 说"成功"、业务码说"失败"，自相矛盾），而同一语义的 export 端点返回 400
+        //   —— **同一语义的两个端点两种结论**，第三方接入无法统一处理。
+        //   现统一为 HTTP 400 + 可读消息（项目既有约定：参数错误用 400）。
         controllerMvc().perform(get("/api/v1/analytics/daily-reports")
                         .param("startDate", "2026-11-16").param("endDate", "2026-11-15"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(500));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("开始日期不能晚于结束日期")));
         verify(dailyReportRepository, never()).listRange(any(), any(), any());
     }
 
@@ -210,9 +221,13 @@ class DailyReportControllerTest {
         // 2026-11-17 起：实时行也查前一天快照计算计数口径日增（counterRateKilo），
         // 所以 listRange 会被 decorate 调用 —— 不再断言 never()。
 
+        // ★ 2026-11-20 复测 D-8：契约由「HTTP 200 + code=500」改为 **HTTP 400**。
+        //   原来 HTTP 说"成功"、业务码说"失败"，自相矛盾；
+        //   而同一语义其它端点对参数错误返回 400 → 统一为 400 + 可读消息。
         controllerMvc().perform(get("/api/v1/analytics/daily-reports/2099-01-01"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(500));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(
+                        org.hamcrest.Matchers.containsString("不能查询未来日期")));
     }
 
     @Test

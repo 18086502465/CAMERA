@@ -8,6 +8,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -49,16 +50,34 @@ class LineSummaryLineIdsTest {
     }
 
     @Test
-    @DisplayName("超长输入截断到 50 个，防御异常长串拖垮 SQL")
-    void capsAtFifty() {
+    @DisplayName("★ 2026-11-20 复测 R-4：超长输入**明确报错**，不再静默截断")
+    void rejectsOverFiftyInsteadOfSilentTruncate() {
         StringBuilder sb = new StringBuilder();
         for (int i = 1; i <= 80; i++) {
+            if (i > 1) sb.append(',');
+            sb.append(i);
+        }
+        // ★ 契约变更说明：
+        //   原来超 50 个时**静默截断**（subList(0,50)）→ 用户传 80 个产线，
+        //   实际只按前 50 个筛选，**且没有任何提示**。
+        //   「静默吞掉筛选是最伤信任的失败模式」（PRD 原文）→ 改为明确报错（HTTP 400）。
+        //   现场只有 6 条产线 / 6 个工位，传超 50 个几乎必然是调用方 bug。
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> LineAnalyticsController.parseLineIds(sb.toString()));
+        assertTrue(ex.getMessage().contains("50"), "消息应说明上限，实际：" + ex.getMessage());
+    }
+
+    @Test
+    @DisplayName("恰好 50 个（上限边界）→ 正常放行")
+    void acceptsExactlyFifty() {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 1; i <= 50; i++) {
             if (i > 1) sb.append(',');
             sb.append(i);
         }
         List<Long> parsed = LineAnalyticsController.parseLineIds(sb.toString());
         assertEquals(50, parsed.size());
         assertEquals(1L, parsed.get(0));
-        assertTrue(parsed.get(49) == 50L);
+        assertEquals(50L, parsed.get(49));
     }
 }

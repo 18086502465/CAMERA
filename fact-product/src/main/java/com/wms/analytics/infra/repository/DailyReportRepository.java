@@ -303,7 +303,30 @@ public class DailyReportRepository {
         long detailDetect = 0;
         for (Map<String, Object> c : cameras) detailDetect += intVal(c.get("detectCount"), 0);
         result.put("detailsAvailable", !cameras.isEmpty() || !types.isEmpty());
+        // ★ 2026-11-20 复测 D-3：`detailDetectCount` 名为「明细合计」，实为
+        //   **TOP10 截断后的和**（SQL 是 LIMIT 10）。实测 2026-11-19：
+        //     kpi.detectCount      = 19812  （快照汇总）
+        //     detailDetectCount    = 16455  （TOP10 之和）
+        //     差 3357 张（16.9%）
+        //   → 页面上一边显示「检测图片数 19812」，下方相机明细条形图合计却是 16455，
+        //     **肉眼可见矛盾**，且字段名让人以为是当日总量。
+        //   修法（不动现有字段名，避免破坏前端）：新增两个字段把话说清楚：
+        //     · detailDetectCountTotal —— 全量相机检测数（不限 TOP10）
+        //     · detailCameraTotal      —— 当日有数据的相机台数（用于判断是否被截断）
+        //     · detailTruncated        —— 是否因 TOP10 上限被截断
+        //   同时 detailDetectCount 语义明确为「已列出的相机明细之和」。
+        Integer totalDetect = jdbcTemplate.queryForObject(
+                "SELECT COUNT(1) FROM defect_image_file f " + REAL_CAMERA_JOIN +
+                        " WHERE f.capture_time >= ? AND f.capture_time < ?" + lineWhere,
+                Integer.class, params.toArray());
+        Integer totalCameras = jdbcTemplate.queryForObject(
+                "SELECT COUNT(DISTINCT c.camera_code) FROM defect_image_file f " + REAL_CAMERA_JOIN +
+                        " WHERE f.capture_time >= ? AND f.capture_time < ?" + lineWhere,
+                Integer.class, params.toArray());
         result.put("detailDetectCount", (int) detailDetect);
+        result.put("detailDetectCountTotal", totalDetect == null ? 0 : totalDetect);
+        result.put("detailCameraTotal", totalCameras == null ? 0 : totalCameras);
+        result.put("detailTruncated", totalCameras != null && totalCameras > cameras.size());
         return result;
     }
 

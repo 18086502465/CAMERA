@@ -97,7 +97,9 @@
             <div class="kpi-card">
               <span class="kpi-label">缺陷率（‰ · 计数）</span>
               <strong class="kpi-value">{{ deltaText(kpi.counterRateKilo) }}</strong>
-              <small>NG 日增 / 检测日增 × 1000</small>
+              <!-- ★ 2026-11-20 复测 D-4：计数列为 null 时原来只显示「待积累」，
+                   用户会以为「这天没数据」。后端现在如实回传原因，这里显示出来。 -->
+              <small>{{ kpi.counterPendingReason || 'NG 日增 / 检测日增 × 1000' }}</small>
             </div>
             <div class="kpi-card">
               <span class="kpi-label">在线相机</span>
@@ -118,11 +120,27 @@
                 </div>
               </div>
               <div v-else class="mini-empty">{{ detailsAvailable ? '当天无缺陷框' : '明细已归档（仅保留汇总）' }}</div>
+              <!-- ★ D-3：TOP5 排行只列出前 5 种，这里补一句全量，
+                   避免把「列出的几根柱子之和」误当成当日总量。 -->
+              <div v-if="(breakdown.typeBreakdown || []).length" class="mini-foot">
+                全量 {{ fmt(breakdown.detailDetectCountTotal ?? 0) }} 张 /
+                {{ breakdown.detailCameraTotal ?? 0 }} 台相机有上传
+              </div>
             </div>
 
             <!-- 相机维度 -->
             <div class="mini-card">
-              <div class="mini-head">相机维度 TOP5<span class="mini-hint">按缺陷框数</span></div>
+              <div class="mini-head">相机维度 TOP5
+                <span class="mini-hint">
+                  <!-- ★ 2026-11-20 复测 D-3：TOP10 是有上限的，
+                       原来「明细合计」其实是 TOP10 之和，与上方「检测图片数」对不上
+                       （实测 19812 vs 16455，差 16.9%）。后端现在回传全量与截断标记。 -->
+                  <template v-if="breakdown.detailTruncated">
+                    已列 {{ (breakdown.cameraBreakdown || []).length }}/{{ breakdown.detailCameraTotal }} 台（明细上限截断）
+                  </template>
+                  <template v-else>按缺陷框数</template>
+                </span>
+              </div>
               <div v-if="(breakdown.cameraBreakdown || []).length" class="bar-list">
                 <div v-for="c in topCameras" :key="c.cameraCode" class="bar-item">
                   <span class="bar-name" :title="c.cameraName || c.cameraCode">{{ c.cameraName || c.cameraCode }}</span>
@@ -338,7 +356,7 @@ async function loadCalendar() {
     if (Array.isArray(data.lines) && data.lines.length) lines.value = data.lines
     ensureSelection()
   } catch (e) {
-    ElMessage.error('加载月历失败：' + errorMessage(e))
+    ElMessage.error('加载月历失败：' + (await errorMessage(e)))
   } finally { loading.value = false }
 }
 
@@ -364,7 +382,7 @@ async function loadBreakdown() {
     if (breakdown.value?.caliber) caliber.value = breakdown.value.caliber
   } catch (e) {
     breakdown.value = null
-    ElMessage.error('加载当日维度失败：' + errorMessage(e))
+    ElMessage.error('加载当日维度失败：' + (await errorMessage(e)))
   } finally { detailLoading.value = false }
 }
 
@@ -430,7 +448,7 @@ async function handleRegenerate() {
     ElMessage.success('补算完成')
     await loadAll()
   } catch (e) {
-    ElMessage.error('补算失败：' + errorMessage(e))
+    ElMessage.error('补算失败：' + (await errorMessage(e)))
   } finally { regenerating.value = false }
 }
 
@@ -451,11 +469,33 @@ async function handleExport() {
     URL.revokeObjectURL(url)
     ElMessage.success('导出成功')
   } catch (e) {
-    ElMessage.error('导出失败：' + errorMessage(e))
+    ElMessage.error('导出失败：' + (await errorMessage(e)))
   } finally { exporting.value = false }
 }
 
-function errorMessage(e) { return e.response?.data?.message || e.message || String(e) }
+/**
+ * 提取错误文案。
+ *
+ * ★ 2026-11-20 复测：导出用 `responseType: 'blob'` → **错误响应体也是 Blob**
+ *   （不是 JSON 对象）→ `e.response.data.message` 是 undefined
+ *   → 只能显示「未知错误」，用户完全不知道哪里错了。
+ *   现在对 Blob 类型先读出文本再解析 JSON，取出 message。
+ */
+async function errorMessage(e) {
+  const data = e?.response?.data
+  if (data instanceof Blob) {
+    try {
+      const text = await data.text()
+      const parsed = JSON.parse(text)
+      if (parsed?.message) return parsed.message
+      if (text && text.length < 200) return text
+    } catch (_) {
+      // 非 JSON（极少见），落下面的兜底
+    }
+    return e?.message || '未知错误'
+  }
+  return data?.message || e?.message || String(e)
+}
 
 // 顶部布局级联的产线是全局筛选，变化时跟随（页面内胶囊点击不回写级联，两者不打架）
 watch(() => (filterParams.value?.lineIds || []).join(','), (v, old) => {
@@ -559,6 +599,8 @@ onMounted(loadAll)
 .mini-card { border: 1px solid var(--color-border); border-radius: 8px; padding: 10px 12px; background: var(--color-bg-card); }
 .mini-head { font-size: 13px; font-weight: 600; color: var(--color-text); display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
 .mini-hint { font-size: 11px; font-weight: 400; color: var(--color-text-placeholder); }
+/* ★ D-3：明细全量脚注 */
+.mini-foot { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--color-border); color: var(--color-text-placeholder); font-size: 11px; line-height: 1.5; }
 .mini-empty { font-size: 12px; color: var(--color-text-placeholder); padding: 14px 0; text-align: center; }
 
 .bar-list { display: flex; flex-direction: column; gap: 7px; }

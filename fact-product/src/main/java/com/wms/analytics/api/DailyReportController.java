@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -86,8 +87,12 @@ public class DailyReportController {
                                               @RequestParam(required = false) Integer lineId) {
         LocalDate end = parseDate(endDate, LocalDate.now());
         LocalDate start = parseDate(startDate, end.minusDays(29));
+        // ★ 2026-11-20 复测：原来返回 `ResultVO.fail(...)` → **HTTP 200 + body.code=500**
+        //   （HTTP 说成功、业务码说失败，自相矛盾），而下面的 export 端点对同一事实返回 400
+        //   —— **同一语义的两个端点两种结论**，第三方接入无法统一处理。
+        //   现在统一为 HTTP 400 + 可读消息（项目既有约定：参数错误用 400）。
         if (start.isAfter(end)) {
-            return ResultVO.fail("开始日期不能晚于结束日期");
+            throw new IllegalArgumentException("开始日期不能晚于结束日期");
         }
         LocalDate today = LocalDate.now();
         // 快照只可能有历史日；区间与今天的交集部分实时算
@@ -115,8 +120,15 @@ public class DailyReportController {
         if (!end.isBefore(today)) {
             // 今天（或区间下界落在今天）实时算；只取需要的那天
             LocalDate liveFrom = start.isAfter(today) ? start : today;
-            for (LocalDate d = liveFrom; !d.isAfter(end); d = d.plusDays(1)) {
-                for (Map<String, Object> row : dailyReportRepository.computeDay(d, !d.isAfter(today))) {
+            // ★ 2026-11-20 复测 D-8：原来实时段会一直算到 **end**，
+            //   于是「查 11-01~11-30」时把 **11-21~11-30 这 10 个未来日**
+            //   也算成「实时行」（detectCount=0、dataSource=REALTIME）返回。
+            //   后果：① 列表多出 10 行全 0 的未来数据（用户以为那些天"检测了 0 张"）；
+            //        ② **列表行数（30）≠ 导出行数（20）** → 两个端点再次分裂。
+            //   现在实时段**只到今天为止**（未来日不返回行），
+            //   未来日改由 missingSnapshotDates 之外的信息表达（本就无数据）。
+            for (LocalDate d = liveFrom; !d.isAfter(today); d = d.plusDays(1)) {
+                for (Map<String, Object> row : dailyReportRepository.computeDay(d, true)) {
                     if (lineId == null ? Integer.valueOf(0).equals(row.get("lineId"))
                             : lineId.equals(((Number) row.get("lineId")).intValue())) {
                         decorate(row, d, "REALTIME");
@@ -130,7 +142,43 @@ public class DailyReportController {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("rows", rows);
         data.put("caliber", CALIBER);
+        // ★ 2026-11-20 复测 D-5：原来无快照日**静默返回 0 行**，
+        //   响应顶层只有 {caliber, rows} —— 调用方**无法区分**：
+        //     「这一天没有数据」 vs 「这一天没生成快照」 vs 「区间超出快照范围」
+        //   三种语义完全不同的状态，返回完全一样。
+        //   现在把缺失日期如实列出来（不伪造 0 行数据）。
+        List<String> missingDates = findMissingSnapshotDates(start, end, today, rows);
+        data.put("missingSnapshotDates", missingDates);
+        data.put("missingSnapshotMessage", missingDates.isEmpty() ? null
+                : ("以下日期尚无日报快照（服务上线前或生成失败），未出现在 rows 中："
+                        + String.join("、", missingDates)
+                        + "。可用管理员「补算」生成。"));
         return ResultVO.success(data);
+    }
+
+    /**
+     * 找出区间内**没有快照**的日期（排除今天 —— 今天本来就是实时算的）。
+     *
+     * <p>★ 2026-11-20 复测 D-5：让调用方能区分「无数据」与「无快照」。
+     */
+    private List<String> findMissingSnapshotDates(LocalDate start, LocalDate end, LocalDate today,
+                                                  List<Map<String, Object>> rows) {
+        java.util.Set<String> present = new java.util.HashSet<>();
+        for (Map<String, Object> r : rows) {
+            LocalDate d = toLocalDate(r.get("reportDate"));
+            if (d != null) present.add(d.toString());
+        }
+        List<String> missing = new ArrayList<>();
+        // 上限 400 天，防止有人传超大区间把内存撑爆
+        LocalDate cursor = start;
+        int guard = 0;
+        while (!cursor.isAfter(end) && guard++ < 400) {
+            if (cursor.isBefore(today) && !present.contains(cursor.toString())) {
+                missing.add(cursor.toString());
+            }
+            cursor = cursor.plusDays(1);
+        }
+        return missing;
     }
 
     // ==================== 详情（单日：厂级 + 产线分解） ====================
@@ -142,8 +190,12 @@ public class DailyReportController {
         if (day == null) {
             return ResultVO.fail("日期格式应为 yyyy-MM-dd");
         }
+        // ★ 2026-11-20 复测 D-8：原来返回 `ResultVO.fail("不能查询未来日期")`
+        //   → **HTTP 200 + body.code=500**（HTTP 说成功、业务码说失败，自相矛盾），
+        //   而同一语义的其它端点对参数错误返回 400。
+        //   现在统一为 HTTP 400 + 可读消息。
         if (day.isAfter(LocalDate.now())) {
-            return ResultVO.fail("不能查询未来日期");
+            throw new IllegalArgumentException("不能查询未来日期");
         }
         boolean realtime = day.equals(LocalDate.now());
         List<Map<String, Object>> rows;
@@ -378,8 +430,9 @@ public class DailyReportController {
         if (day == null) {
             return ResultVO.fail("日期格式应为 yyyy-MM-dd");
         }
+        // ★ D-8：与 detail 端点统一为 HTTP 400（原来 200 + code 500）
         if (day.isAfter(LocalDate.now())) {
-            return ResultVO.fail("不能查询未来日期");
+            throw new IllegalArgumentException("不能查询未来日期");
         }
         int scope = (lineId == null || lineId == 0) ? 0 : lineId;
         boolean realtime = day.equals(LocalDate.now());
@@ -414,7 +467,24 @@ public class DailyReportController {
         anomalies.put("idleHours", idle);
         int online = kpi == null ? 0 : ((Number) kpi.getOrDefault("cameraOnline", 0)).intValue();
         int total = kpi == null ? 0 : ((Number) kpi.getOrDefault("cameraTotal", 0)).intValue();
-        anomalies.put("offlineCameras", Math.max(total - online, 0));
+        // ★ 2026-11-20 复测 D-7：原来 kpi 为 null（无快照日）时 total=0 → offlineCameras=0，
+        //   但实测老日期返回的是 **18（全厂相机全离线）** —— 那是把「当日无上报」
+        //   当成了「18 台全部离线」，**异常摘要严重失真**：
+        //   页面会显示「18 台相机离线」，而真相是「这天没有数据，无法判断在线状态」。
+        //   现在：**无快照日不报离线数**（置 null + 说明），有快照但当日无上报时才报
+        //   「total 台当日未上报」。
+        if (kpi == null) {
+            anomalies.put("offlineCameras", null);
+            anomalies.put("offlineCamerasMessage", "无快照，无法判断相机在线状态");
+        } else {
+            // ★ 2026-11-20 复测 D-7：原来这里只给数字（18），页面显示「18 台相机离线」，
+            //   但老日期的真相是「这天有快照、但**一台相机都没上报**」
+            //   （心跳不在线 ≠ 相机离线，两者不是一回事）。
+            //   现在措辞改成「当日未上报」并附说明，避免被误读成设备故障。
+            anomalies.put("offlineCameras", Math.max(total - online, 0));
+            anomalies.put("offlineCamerasMessage", online < total
+                    ? (total - online) + " 台当日未上报（心跳无记录，非设备离线）" : null);
+        }
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("reportDate", day.toString());
@@ -483,14 +553,38 @@ public class DailyReportController {
                                          @RequestParam(required = false) Integer lineId) throws Exception {
         LocalDate end = parseDate(endDate, LocalDate.now());
         LocalDate start = parseDate(startDate, end.minusDays(29));
+        // ★ 2026-11-20 复测：原来返回 `ResponseEntity.badRequest().build()` → **空 body**
+        //   → 前端 `errorMessage(e)` 走 `e.response?.data?.message` 拿不到（undefined）
+        //   → 只能显示「未知错误」，用户完全不知道哪里错了。
+        //   现在返回结构化错误体（与其它端点同构：{code,message,data}）。
+        // 注：这里**不能**返回 ResponseEntity.badRequest().body(ResultVO.fail(...)) ——
+        //   端点返回类型是 ResponseEntity<byte[]>，body 类型被推导成 byte[] → 编译不过。
+        //   而且更根本的问题是：前端导出用 responseType:'blob'，
+        //   错误响应体也会被当成 blob 吞掉 → 前端拿不到 message。
+        //   抛 IllegalArgumentException 走全局 handler → 标准 JSON 错误体（HTTP 400）。
+        //   前端 errorMessage 对 blob 错误的兜底见 DailyReportView.vue（本次一并补）。
         if (start.isAfter(end)) {
-            return ResponseEntity.badRequest().build();
+            throw new IllegalArgumentException("开始日期不能晚于结束日期");
         }
         LocalDate today = LocalDate.now();
         LocalDate snapshotEnd = end.isBefore(today) ? end : today.minusDays(1);
         List<Map<String, Object>> rows = new ArrayList<>();
         if (!snapshotEnd.isBefore(start)) {
-            rows.addAll(dailyReportRepository.listRange(start, snapshotEnd, lineId));
+            // ★ 2026-11-20 复测（**昨天 P0-1 修复引入的回归**）：
+            //   昨天把 list() 端点改成「lineId 为 null → 只返回厂级行」，
+            //   但**导出端点这一处没同步改** —— listRange 传 lineId=null 时
+            //   会返回**全部行**（厂级 + 5 条产线 = 6 行/天）。
+            //   结果：同一个区间，**列表 10 行 / 导出 60 行**，
+            //   且导出把厂级行与产线行混在一起 → 拿去做 SUM 又会**翻倍**。
+            //   也与 PRD RPT-18「7 天区间 → 8 行」的验收口径不符（每天一行 + 表头）。
+            //   现在与 list() 端点**完全同口径**：lineId 为 null → 只导厂级行；
+            //   传了 lineId → 只导该产线行。导出行数 == 列表行数。
+            for (Map<String, Object> row : dailyReportRepository.listRange(start, snapshotEnd, lineId)) {
+                if (lineId == null ? Integer.valueOf(0).equals(row.get("lineId"))
+                        : lineId.equals(((Number) row.get("lineId")).intValue())) {
+                    rows.add(row);
+                }
+            }
         }
         if (!end.isBefore(today)) {
             for (Map<String, Object> row : dailyReportRepository.computeDay(today, true)) {
@@ -593,10 +687,18 @@ public class DailyReportController {
             if (inspCum != null && prevInsp != null && ngCum != null && prevNg != null) {
                 long inspDelta = inspCum - prevInsp;
                 long ngDelta = ngCum - prevNg;
+                // ★ 2026-11-20 复测 D-4：实时日（今天）的计数列**恒为 null**，
+                //   原因是「今天还没有日终快照」→ 前一天基线只能取快照表的日终值，
+                //   与「此刻」的累计值不同基准 → 差分无意义 → 保守置 null。
+                //   这个 null 是**设计如此**（PRD RPT-05：首日/基线不可信 → NULL），
+                //   但响应里**没有任何说明** → 调用方只能看到 null，
+                //   页面显示「待积累」，用户会以为「这天没数据」。
+                //   现在如实回传原因，让前端能显示「今日至今，率待日终」。
                 if (inspDelta >= 0 && ngDelta >= 0 && inspDelta > 0) {
                     row.put("inspDelta", inspDelta);
                     row.put("ngDelta", ngDelta);
                     row.put("counterRateKilo", Math.round(ngDelta * 100000.0 / inspDelta) / 100.0);
+                    row.put("counterPendingReason", null);
                 } else {
                     putCounterUnavailable(row);
                 }
@@ -611,10 +713,24 @@ public class DailyReportController {
         }
     }
 
+    /**
+     * 计数口径不可用时的统一处理（三个计数列置 null + 如实说明原因）。
+     *
+     * <p>★ 2026-11-20 复测 D-4：原来只置 null，**没有任何说明**
+     * → 页面显示「待积累」，用户以为「这天没数据」；
+     *   而实际是「实时日要等次日 00:05 的日终快照作差分基线」
+     *   （PRD RPT-05 的既定语义，属于**设计如此**，只是没说出来）。
+     *
+     * <p>现在如实回传原因，前端可显示「今日至今，率待日终」这类可读文案。
+     */
     private static void putCounterUnavailable(Map<String, Object> row) {
         row.put("inspDelta", null);
         row.put("ngDelta", null);
         row.put("counterRateKilo", null);
+        boolean realtime = "REALTIME".equals(row.get("dataSource"));
+        row.put("counterPendingReason", realtime
+                ? "实时日：需等次日 00:05 日终快照作为差分基线，今日至今的率待积累"
+                : "计数差分不可用（首日无前日基线，或相机计数器被重置）");
     }
 
     private static List<Map<String, Object>> parseTopTypes(Object json) {

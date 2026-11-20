@@ -28,6 +28,12 @@ import java.util.Map;
 @Repository
 public class LineAnalyticsQueryRepository {
 
+    /** 时段×类型热力图返回的最大组合数（超出部分会被截断，必须在响应里如实上报）。 */
+    public static final int HEATMAP_LIMIT = 360;
+
+    /** 班次对比返回的最大缺陷类型数（超出部分会被截断，必须在响应里如实上报）。 */
+    public static final int SHIFT_COMPARE_LIMIT = 12;
+
     private final JdbcTemplate jdbcTemplate;
 
     public LineAnalyticsQueryRepository(JdbcTemplate jdbcTemplate) {
@@ -211,8 +217,30 @@ public class LineAnalyticsQueryRepository {
                         "FROM defect_image_file f " + joinCam +
                         " JOIN defect_image_box b ON b.image_id = f.image_id " + where +
                         " GROUP BY HOUR(f.capture_time), b.defect_type " +
-                        " ORDER BY defectCount DESC, hourOfDay ASC LIMIT 360",
+                        " ORDER BY defectCount DESC, hourOfDay ASC LIMIT " + HEATMAP_LIMIT,
                 params.toArray());
+    }
+
+    /**
+     * 时段×类型热力图的**完整组合数**（不受 LIMIT 截断）。
+     *
+     * <p>★ 2026-11-20 复测 R-1：热力图 SQL 是 {@code LIMIT 360}，
+     * 而「小时(24) × 缺陷类型」的理论组合数在现场实测达 **422**
+     * → **静默丢掉 62 格**（14.7%），且响应里**没有任何提示**
+     * → 用户以为热力图就是完整的，实际有 1/7 的格子凭空消失。
+     *
+     * <p>修法（诚实降级，不改 LIMIT 以免大结果集拖慢查询）：
+     * 另跑一条只取 COUNT(DISTINCT ...) 的轻量查询，把真实组合数与
+     * 「被截断的组合数」如实回传，由前端提示。
+     */
+    public int countDefectImageHourlyHeatmapCombos(String joinCam, String where, List<Object> params) {
+        Integer total = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM (SELECT HOUR(f.capture_time) AS h, b.defect_type AS dt " +
+                        "FROM defect_image_file f " + joinCam +
+                        " JOIN defect_image_box b ON b.image_id = f.image_id " + where +
+                        " GROUP BY HOUR(f.capture_time), b.defect_type) t",
+                Integer.class, params.toArray());
+        return total == null ? 0 : total;
     }
 
     /**
@@ -276,8 +304,26 @@ public class LineAnalyticsQueryRepository {
                         "COUNT(1) AS totalCount " +
                         "FROM defect_image_file f " + joinCam +
                         " JOIN defect_image_box b ON b.image_id = f.image_id " + where +
-                        " GROUP BY b.defect_type ORDER BY totalCount DESC LIMIT 12",
+                        " GROUP BY b.defect_type ORDER BY totalCount DESC LIMIT " + SHIFT_COMPARE_LIMIT,
                 params.toArray());
+    }
+
+    /**
+     * 班次对比的**完整缺陷类型数**（不受 LIMIT 截断）。
+     *
+     * <p>★ 2026-11-20 复测 R-2：班次对比 SQL 是 {@code LIMIT 12}，
+     * 现场实测有 **37 种**缺陷类型 → **静默丢掉 25 种（67.6%）**，
+     * 而 "班次对比是**对比**场景" —— 缺了 2/3 的类型，对比结论直接失真
+     * （实测被截掉的类型合计 10706 个缺陷框）。
+     *
+     * <p>修法同 R-1：另跑一条轻量 COUNT(DISTINCT) 如实回传真实类型数与截断标记。
+     */
+    public int countDefectImageShiftCompareTypes(String joinCam, String where, List<Object> params) {
+        Integer total = jdbcTemplate.queryForObject(
+                "SELECT COUNT(DISTINCT b.defect_type) FROM defect_image_file f " + joinCam +
+                        " JOIN defect_image_box b ON b.image_id = f.image_id " + where,
+                Integer.class, params.toArray());
+        return total == null ? 0 : total;
     }
 
     /** 窗口图片计数（环比口径：当前时间窗 vs 等长前移窗口） */

@@ -112,7 +112,9 @@
         <div class="kpi-card"><span>检测总数</span><strong>{{ number(summary.kpi.totalCount) }}</strong><small>增量批次累计</small></div>
         <div class="kpi-card ok"><span>OK数</span><strong>{{ number(summary.kpi.okCount) }}</strong><small>良品数量</small></div>
         <div class="kpi-card ng"><span>NG数</span><strong>{{ number(summary.kpi.ngCount) }}</strong><small>异常数量</small></div>
-        <div class="kpi-card yield"><span>良率</span><strong>{{ percent(summary.kpi.yieldRate) }}</strong><small>OK / 检测总数</small></div>
+        <!-- ★ 2026-11-20 复测 R-6：无数据时良率显示「—」而不是 0.00%
+             （后端 yieldRate=null + yieldRateAvailable=false）。 -->
+        <div class="kpi-card yield"><span>良率</span><strong>{{ summary.kpi.yieldRateAvailable === false ? '—' : percent(summary.kpi.yieldRate) }}</strong><small>{{ summary.kpi.yieldRateAvailable === false ? (summary.kpi.noDataReason || '无数据') : 'OK / 检测总数' }}</small></div>
         <div class="kpi-card warn"><span>缺陷数</span><strong>{{ number(summary.kpi.defectCount) }}</strong><small>映射后的缺陷计数</small></div>
         <div class="kpi-card high"><span>高危缺陷</span><strong>{{ number(summary.kpi.highCount) }}</strong><small>HIGH 等级缺陷</small></div>
       </template>
@@ -217,6 +219,16 @@
             </div>
 
             <!--
+              ★ 2026-11-20 复测 R-1/R-2：热力图与班次对比的返回上限会**静默截断**
+              （热力图 LIMIT 360，现场实测完整 422 格 → 丢 62 格；班次对比 LIMIT 12，
+              实测 37 种类型 → 丢 25 种）。后端现在如实回传真实总量与截断标记，
+              这里明确提示，避免把被截断的图当成全量结论。
+            -->
+            <el-alert v-if="widgetTruncationHint(w)" type="warning" :closable="false" show-icon class="widget-truncation-hint">
+              {{ widgetTruncationHint(w) }}
+            </el-alert>
+
+            <!--
               ★ 2026-11-15 P1：老图表配置在「当前数据源下无意义」时给出原因，
               不要留一块看起来像故障的空白（比空白更伤信任的是「图在、数是假的」）。
             -->
@@ -236,7 +248,7 @@
               <div><span>检测总数</span><b>{{ number(summaryFor(w).kpi.totalCount) }}</b></div>
               <div><span>OK数</span><b class="ok">{{ number(summaryFor(w).kpi.okCount) }}</b></div>
               <div><span>NG数</span><b class="ng">{{ number(summaryFor(w).kpi.ngCount) }}</b></div>
-              <div><span>良率</span><b class="yield">{{ percent(summaryFor(w).kpi.yieldRate) }}</b></div>
+              <div><span>良率</span><b class="yield">{{ summaryFor(w).kpi.yieldRateAvailable === false ? '—' : percent(summaryFor(w).kpi.yieldRate) }}</b></div>
             </div>
             <div v-else-if="isChartWidget(w)" class="echart-wrap">
               <div v-if="hasChartData(w)" :ref="el=>setChartRef(w.widgetId,el)" class="echart-box"></div>
@@ -414,7 +426,7 @@
           <div><span>检测总数</span><b>{{ number(summary.kpi.totalCount) }}</b></div>
           <div><span>OK数</span><b class="ok">{{ number(summary.kpi.okCount) }}</b></div>
           <div><span>NG数</span><b class="ng">{{ number(summary.kpi.ngCount) }}</b></div>
-          <div><span>良率</span><b class="yield">{{ percent(summary.kpi.yieldRate) }}</b></div>
+          <div><span>良率</span><b class="yield">{{ summary.kpi.yieldRateAvailable === false ? '—' : percent(summary.kpi.yieldRate) }}</b></div>
         </div>
         <div v-else-if="isChartWidget(previewWidget)" class="preview-chart-wrap"><div v-if="hasChartData(previewWidget)" ref="previewChartRef" class="preview-chart"></div><EmptyState v-else title="暂无预览数据" text="当前筛选条件下没有可绘制的数据。" /></div>
         <div v-else-if="widgetMetric(previewWidget)==='defectPivot'" class="table-wrap preview-table">
@@ -557,13 +569,13 @@
           <div><p class="eyebrow">DASHBOARD PRESENTATION</p><h2>{{ presentationTitle }}</h2><p>{{ presentationSubtitle }}</p></div>
           <div class="presentation-actions"><el-button type="primary" plain :loading="loading" @click="loadData">刷新数据</el-button><el-button v-if="presentationWidget" plain @click="presentationWidget=null; renderPresentationCharts()">返回整屏</el-button><el-button type="danger" plain @click="presentationVisible=false">退出大屏</el-button></div>
         </header>
-        <section class="presentation-kpis"><div><span>检测总数</span><strong>{{ number(summary.kpi.totalCount) }}</strong></div><div><span>OK数</span><strong class="ok">{{ number(summary.kpi.okCount) }}</strong></div><div><span>NG数</span><strong class="ng">{{ number(summary.kpi.ngCount) }}</strong></div><div><span>良率</span><strong class="yield">{{ percent(summary.kpi.yieldRate) }}</strong></div><div><span>缺陷数</span><strong class="warn">{{ number(summary.kpi.defectCount) }}</strong></div></section>
+        <section class="presentation-kpis"><div><span>检测总数</span><strong>{{ number(summary.kpi.totalCount) }}</strong></div><div><span>OK数</span><strong class="ok">{{ number(summary.kpi.okCount) }}</strong></div><div><span>NG数</span><strong class="ng">{{ number(summary.kpi.ngCount) }}</strong></div><div><span>良率</span><strong class="yield">{{ summary.kpi.yieldRateAvailable === false ? '—' : percent(summary.kpi.yieldRate) }}</strong></div><div><span>缺陷数</span><strong class="warn">{{ number(summary.kpi.defectCount) }}</strong></div></section>
         <section v-if="presentationWidgets.length" class="presentation-grid" :class="{ single: presentationWidgets.length === 1 }">
           <article v-for="w in presentationWidgets" :key="'p-'+w.widgetId" class="presentation-card" :class="widgetCardClass(w)" :style="widgetCardStyle(w)">
             <div class="presentation-card-head"><div><h3>{{ w.widgetName }}</h3><p>{{ widgetSubtitle(w) }}</p></div><el-button v-if="!presentationWidget" size="small" text type="warning" @click="presentationWidget=w; renderPresentationCharts()">单图放大</el-button></div>
             <EmptyState v-if="metricUnavailableReason(widgetMetric(w))" title="该指标在当前数据源下无意义" :text="metricUnavailableReason(widgetMetric(w))" />
             <div v-else-if="widgetMetric(w)==='plantOverview'" class="presentation-quality-grid plant-overview-grid"><div><span>检测总量</span><b>{{ number(plantOverviewFor(w).detectionTotal) }}</b></div><div><span>缺陷总数</span><b class="ng">{{ number(plantOverviewFor(w).defectTotal) }}</b></div><div><span>高危缺陷</span><b class="high">{{ number(plantOverviewFor(w).highDefect) }}</b><small>占比 {{ percent(plantOverviewFor(w).highRate) }}</small></div><div><span>首要缺陷</span><b class="top">{{ plantOverviewFor(w).topDefectName || '—' }}</b><small>占比 {{ percent(plantOverviewFor(w).topDefectRate) }}</small></div><div><span>受影响工位</span><b>{{ number(plantOverviewFor(w).affectedWorkstation) }}</b></div><div><span>涉及相机</span><b>{{ number(plantOverviewFor(w).affectedCamera) }}</b></div><div><span>良率</span><b class="yield">{{ plantOverviewFor(w).yieldRateAvailable === false ? '—' : percent(plantOverviewFor(w).yieldRate) }}</b><small>{{ plantOverviewFor(w).yieldRateAvailable === false ? '无良品样本' : '' }}</small></div><div><span>较上一时段</span><b :class="plantCompareFor(w).cls">{{ plantCompareFor(w).text }}</b><small>{{ plantOverviewFor(w).dayOverDayLabel || '等长窗口环比' }}</small></div></div>
-            <div v-else-if="widgetMetric(w)==='quality'" class="presentation-quality-grid"><div><span>检测总数</span><b>{{ number(summaryFor(w).kpi.totalCount) }}</b></div><div><span>OK数</span><b class="ok">{{ number(summaryFor(w).kpi.okCount) }}</b></div><div><span>NG数</span><b class="ng">{{ number(summaryFor(w).kpi.ngCount) }}</b></div><div><span>良率</span><b class="yield">{{ percent(summaryFor(w).kpi.yieldRate) }}</b></div></div>
+            <div v-else-if="widgetMetric(w)==='quality'" class="presentation-quality-grid"><div><span>检测总数</span><b>{{ number(summaryFor(w).kpi.totalCount) }}</b></div><div><span>OK数</span><b class="ok">{{ number(summaryFor(w).kpi.okCount) }}</b></div><div><span>NG数</span><b class="ng">{{ number(summaryFor(w).kpi.ngCount) }}</b></div><div><span>良率</span><b class="yield">{{ summaryFor(w).kpi.yieldRateAvailable === false ? '—' : percent(summaryFor(w).kpi.yieldRate) }}</b></div></div>
             <div v-else-if="isChartWidget(w)" class="presentation-chart-wrap"><div v-if="hasChartData(w)" :ref="el=>setPresentationChartRef(w.widgetId,el)" class="presentation-echart"></div><EmptyState v-else title="暂无图表数据" text="当前筛选条件下没有可绘制的数据。" /></div>
             <div v-else-if="widgetMetric(w)==='defectPivot'" class="presentation-table-wrap"><el-table :data="pivotRowsFor(w)" size="small" border height="100%"><el-table-column prop="productName" label="产品" min-width="120" fixed="left" /><el-table-column v-for="c in pivotColumnsFor(w)" :key="c.defectTypeId" :prop="String(c.defectTypeId)" :label="c.defectName" min-width="130" align="center"><template #default="{ row }">{{ number(row[c.defectTypeId] || 0) }}</template></el-table-column></el-table></div>
             <div v-else-if="widgetMetric(w)==='mappingExceptions'" class="presentation-table-wrap"><el-table :data="summaryFor(w).mappingExceptions" size="small" border height="100%"><el-table-column prop="createTime" label="时间" width="170" /><el-table-column prop="cameraCode" label="相机编号" width="120" /><el-table-column prop="productName" label="产品" width="110" /><el-table-column prop="sourceCode" label="上报编码" width="100" /><el-table-column prop="exceptionType" label="异常类型" width="140" /><el-table-column prop="exceptionMessage" label="失败原因" min-width="220" show-overflow-tooltip /></el-table></div>
@@ -943,7 +955,7 @@ let dataSeq = 0
 async function loadData(){ const seq=++dataSeq; loading.value=true; try{ const data=(await getLineAnalyticsSummary(globalParams())).data?.data||{}; if(seq!==dataSeq) return; Object.assign(summary,normalizeSummary(data)); await loadWidgetData(seq); if(seq!==dataSeq) return; await nextTick(); renderAllCharts() }catch(e){ if(seq!==dataSeq) return; Object.assign(summary,normalizeSummary({})); ElMessage.error('加载产线统计失败：'+errorMessage(e)) }finally{ if(seq===dataSeq) loading.value=false } }
 /** @param seq 竞态守卫：调用方传入本次加载的序号，过期响应不写 widgetData */
 async function loadWidgetData(seq=dataSeq){ const independent=visibleWidgets.value.filter(w=>Number(w.followGlobalFilter??1)!==1||!!splitDimOf(w)); const alive=new Set(independent.map(w=>String(w.widgetId))); if(seq===dataSeq){ Object.keys(widgetData).forEach(k=>{if(!alive.has(k)) delete widgetData[k]}) } await Promise.all(independent.map(async w=>{ try{ const d=normalizeSummary((await getLineAnalyticsSummary(widgetParams(w))).data?.data||{}); if(seq!==dataSeq) return; widgetData[w.widgetId]=d }catch{ if(seq!==dataSeq) return; widgetData[w.widgetId]=normalizeSummary({}) } })) }
-function normalizeSummary(data){ return {aggregationLevel:data.aggregationLevel||'30M',aggregationMessage:data.aggregationMessage||'',aggregationThresholdDays:data.aggregationThresholdDays||3,dataSource:data.dataSource||'AGGREGATION',dataSourceMessage:data.dataSourceMessage||'',ignoredFilters:data.ignoredFilters||[],ignoredFilterMessage:data.ignoredFilterMessage||'',trendGranularity:data.trendGranularity||'HOUR',kpi:data.kpi||{},trend:data.trend||[],defectRanking:data.defectRanking||[],stationRanking:data.stationRanking||[],cameraRanking:data.cameraRanking||[],defectPivot:data.defectPivot||[],mappingExceptions:data.mappingExceptions||[],severityDistribution:data.severityDistribution||[],defectPareto:data.defectPareto||[],plantOverview:data.plantOverview||{},defectTrend:data.defectTrend||[],hourlyHeatmap:data.hourlyHeatmap||[],shiftCompare:data.shiftCompare||[],dailyCalendar:data.dailyCalendar||[],shiftNames:data.shiftNames||{}} }
+function normalizeSummary(data){ return {hourlyHeatmapTotalCombos:data.hourlyHeatmapTotalCombos||0,hourlyHeatmapTruncated:data.hourlyHeatmapTruncated===true,hourlyHeatmapTruncatedCount:data.hourlyHeatmapTruncatedCount||0,shiftCompareTotalTypes:data.shiftCompareTotalTypes||0,shiftCompareTruncated:data.shiftCompareTruncated===true,shiftCompareTruncatedCount:data.shiftCompareTruncatedCount||0,aggregationLevel:data.aggregationLevel||'30M',aggregationMessage:data.aggregationMessage||'',aggregationThresholdDays:data.aggregationThresholdDays||3,dataSource:data.dataSource||'AGGREGATION',dataSourceMessage:data.dataSourceMessage||'',ignoredFilters:data.ignoredFilters||[],ignoredFilterMessage:data.ignoredFilterMessage||'',trendGranularity:data.trendGranularity||'HOUR',kpi:data.kpi||{},trend:data.trend||[],defectRanking:data.defectRanking||[],stationRanking:data.stationRanking||[],cameraRanking:data.cameraRanking||[],defectPivot:data.defectPivot||[],mappingExceptions:data.mappingExceptions||[],severityDistribution:data.severityDistribution||[],defectPareto:data.defectPareto||[],plantOverview:data.plantOverview||{},defectTrend:data.defectTrend||[],hourlyHeatmap:data.hourlyHeatmap||[],shiftCompare:data.shiftCompare||[],dailyCalendar:data.dailyCalendar||[],shiftNames:data.shiftNames||{}} }
 const isDefectImageSource = computed(() => summary.dataSource === 'DEFECT_IMAGE')
 /**
  * 空结果说明（返回空串表示不提示）。
@@ -1362,6 +1374,24 @@ function widgetCardClass(w){ const l=widgetLayout(w); return {wide:Number(l.w||6
 function widgetCardStyle(w){ const h=Number(widgetLayout(w).h||3); return {'--chart-height': Math.max(220,h*110)+'px', minHeight: Math.max(260,h*120)+'px'} }
 function widgetSubtitle(w){ const typeName=widgetTypes.value.find(t=>t.code===w.widgetType)?.name||w.widgetType||'图表'; return typeName+' · '+metricLabel(widgetMetric(w))+' · '+(Number(w.followGlobalFilter??1)===1?'跟随全局筛选':'独立筛选') }
 function widgetTypeText(w){ return widgetTypes.value.find(t=>t.code===w?.widgetType)?.name||w?.widgetType||'图表' }
+/**
+ * 图表数据被截断时的提示文案（★ 2026-11-20 复测 R-1/R-2）。
+ *
+ * 后端对热力图（小时×类型）与班次对比（类型×班次）有返回上限，
+ * 超出的组合/类型会被丢掉。以前**没有任何提示** → 用户把被截断的图当全量结论。
+ * 现在后端回传真实总量与截断数量，这里如实告知。
+ */
+function widgetTruncationHint(w) {
+  const m = widgetMetric(w)
+  if (m === 'defectHeatmap' && summary.hourlyHeatmapTruncated) {
+    return `热力图有 ${summary.hourlyHeatmapTotalCombos} 个「时段×类型」组合，已显示前 ${summary.hourlyHeatmap.length} 个（另有 ${summary.hourlyHeatmapTruncatedCount} 个组合未显示）`
+  }
+  if (m === 'shiftCompare' && summary.shiftCompareTruncated) {
+    return `班次对比共 ${summary.shiftCompareTotalTypes} 种缺陷类型，已显示前 ${summary.shiftCompare.length} 种（另有 ${summary.shiftCompareTruncatedCount} 种未显示）`
+  }
+  return ''
+}
+
 function metricLabel(m){ return {plantOverview:'工厂总览（厂长视角）',quality:'核心质量指标',trend:'30分钟质量趋势',defectTrend:'缺陷发生趋势',defectPareto:'缺陷类型帕累托',defectRanking:'缺陷类型排行',severityDistribution:'缺陷严重度构成',stationRanking:'责任工位定位',cameraRanking:'责任相机定位',stackDefectBySeverity:'缺陷严重度堆叠',defectPivot:'产品缺陷透视表',mappingExceptions:'映射异常明细',defectHeatmap:'时段×缺陷类型热力图',shiftCompare:'班次缺陷对比',defectTypeShare:'缺陷类型占比',defectCalendar:'日缺陷日历'}[m]||'自定义指标' }
 function metricDescription(m){ return {quality:'适合负责人快速查看检测总数、OK、NG、良率等总体质量表现。',trend:'按时间观察产量、NG数和良率波动，适合班次复盘和异常追溯。',defectRanking:'按缺陷类型统计 Top 问题，适合定位产品质量主要矛盾。',stationRanking:'按工位统计异常数量，适合定位产线瓶颈。',cameraRanking:'按相机统计异常数量，适合排查设备或视角问题。',stackDefectBySeverity:'按严重度堆叠缺陷类型，适合区分高危/中危/低危问题。',defectPivot:'按产品动态生成缺陷列，适合产品维度横向对比。',mappingExceptions:'展示未能完成映射的数据，适合维护配置和接口联调。',defectHeatmap:'小时×缺陷类型的热力分布，一眼定位缺陷高发时段。',shiftCompare:'白班/夜班各缺陷类型对比，适合班组质量横向排名。',defectTypeShare:'缺陷类型构成占比（环形图），适合报周会一页看清主要矛盾。',defectCalendar:'按自然日的缺陷量日历热力图，看节律、看空档、找停机。'}[m]||'用于自定义统计口径，保存后在看板中生效。' }
 function defaultMetricByType(t){ return {KPI:'quality',LINE:'trend',BAR:'stationRanking',STACK_BAR:'stackDefectBySeverity',RANK:'defectRanking',PIVOT:'defectPivot',PLANT_OVERVIEW:'plantOverview',PARETO:'defectPareto',SEVERITY:'severityDistribution',HEATMAP:'defectHeatmap',PIE:'defectTypeShare',CALENDAR:'defectCalendar'}[t]||'trend' }
@@ -1413,6 +1443,9 @@ function triggerSourceText(s){ return {MANUAL:'手动执行',SCHEDULE:'夜间自
 .builder-layout{display:grid;grid-template-columns:220px minmax(0,1fr) 260px;gap:16px;align-items:start}.widget-palette,.config-panel,.canvas{border-radius:18px;background:var(--color-bg-card);border:1px solid var(--color-border);box-shadow:0 1px 4px rgba(15,23,42,.06)}.widget-palette,.config-panel{padding:16px;position:sticky;top:140px}.canvas{padding:16px;min-width:0}.widget-palette h3,.config-panel h3{margin:0 0 12px;font-size:16px;color:var(--color-text)}.panel-tip{margin:-4px 0 12px;color:var(--color-text-secondary);font-size:12px;line-height:1.6}
 .widget-btn{width:100%;border:1px solid var(--color-border);background:var(--color-bg-page);border-radius:14px;padding:12px;text-align:left;margin-bottom:10px;cursor:pointer;transition:.15s}.widget-btn:hover{border-color:#93c5fd;background:var(--color-primary-bg);transform:translateY(-1px)}.widget-btn b{display:block;color:var(--color-text);margin-bottom:4px}.widget-btn span{color:var(--color-text-secondary);font-size:12px;line-height:1.5}
 .canvas-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}.canvas-head h3{margin:0 0 4px;color:var(--color-text)}.canvas-head p{margin:0;color:var(--color-text-secondary);font-size:13px}.chart-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+/* ★ R-1/R-2：截断提示样式（暖色，提示"数据不完整"） */
+.widget-truncation-hint{margin:-4px 0 10px}
+.widget-truncation-hint :deep(.el-alert__content){font-size:12px;line-height:1.6}
 .chart-card{position:relative;border:1px solid var(--color-border);border-radius:16px;padding:14px;background:var(--color-bg-card);min-height:280px;transition:.15s;overflow:hidden;cursor:grab}.chart-card:hover{border-color:#bfdbfe;box-shadow:0 8px 20px rgba(37,99,235,.08)}.chart-card.selected{border-color:#60a5fa;box-shadow:0 0 0 3px rgba(96,165,250,.18)}.chart-card.wide{grid-column:span 2}.chart-card.tall{min-height:380px}
 .card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px}.card-head h4{margin:0;color:var(--color-text);font-size:15px}.card-head span{display:block;margin-top:4px;color:var(--color-text-placeholder);font-size:12px}.card-actions{justify-content:flex-end;gap:6px;flex-shrink:0;padding:4px;border-radius:12px;background:var(--color-bg-page);border:1px solid #eef2f7}.card-actions :deep(.el-button){margin-left:0}.echart-wrap,.table-wrap{min-height:220px}.echart-box{width:100%;height:var(--chart-height,260px)}
 .quality-mini-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.quality-mini-grid div{padding:14px 12px;border-radius:14px;background:var(--color-bg-page);border:1px solid #edf2f7}.quality-mini-grid span{display:block;color:var(--color-text-secondary);font-size:12px;margin-bottom:8px}.quality-mini-grid b{color:var(--color-text);font-size:22px}.quality-mini-grid b.ok{color:var(--color-success)}.quality-mini-grid b.ng{color:var(--color-error)}.quality-mini-grid b.yield{color:var(--color-primary)}
