@@ -69,6 +69,9 @@ class P3Batch3ContractTest {
     private IDimProductionLineService lineService;
     @Mock
     private CameraDirectory cameraDirectory;
+    /** ★ 2026-11-20：相机维度填充新增了工厂服务（工厂名展示） */
+    @Mock
+    private com.wms.masterdata.app.IDimFactoryService factoryService;
 
     @InjectMocks
     private CameraDashboardController cameraDashboardController;
@@ -317,8 +320,11 @@ class P3Batch3ContractTest {
         IPage<CameraStatus> page = new Page<>(1, 20, 0);
         page.setRecords(Collections.emptyList());
         when(cameraStatusService.pageQuery(anyInt(), anyInt(), any(), any(), any())).thenReturn(page);
-        when(workstationService.list()).thenReturn(Collections.emptyList());
-        when(lineService.list()).thenReturn(Collections.emptyList());
+        // ★ 2026-11-20：维度填充已抽到 enrichCameraDimensions，空 records 时**提前返回**
+        //   → 这两个 stub 在本用例里不会被调用 → 必须用 lenient()，
+        //   否则 Mockito 的 UnnecessaryStubbingException 会让本用例失败。
+        org.mockito.Mockito.lenient().when(workstationService.list()).thenReturn(Collections.emptyList());
+        org.mockito.Mockito.lenient().when(lineService.list()).thenReturn(Collections.emptyList());
 
         MockMvc mvc = mvc();
         mvc.perform(get("/api/cameras").param("page", "1").param("size", "20"))

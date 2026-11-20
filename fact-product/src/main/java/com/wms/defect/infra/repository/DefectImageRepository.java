@@ -447,6 +447,9 @@ public class DefectImageRepository {
                 .append("MAX(cs.line_id) line_id, MAX(cs.workstation_id) workstation_id, ")
                 .append("MAX(ws.station_name) station_name, MAX(ws.station_code) station_code, ")
                 .append("MAX(pl.line_name) line_name, MAX(pl.line_code) line_code, MAX(pl.factory_id) factory_id, ")
+                // ★ 2026-11-20：补工厂名（原先只返回 factory_id 数字，
+                //   相机卡片要展示「工厂」必须 join dim_factory）
+                .append("MAX(fac.factory_name) factory_name, ")
                 .append("agg.image_count image_count, agg.defect_count defect_count, agg.high_count high_count, ")
                 .append("agg.medium_count medium_count, agg.low_count low_count, agg.latest_time latest_time ")
                 .append("FROM (")
@@ -486,6 +489,8 @@ public class DefectImageRepository {
                 .append("LEFT JOIN camera_status cs ON cs.camera_code = agg.camera_id AND cs.is_active = 1 ")
                 .append("LEFT JOIN dim_workstation ws ON ws.workstation_id = cs.workstation_id ")
                 .append("LEFT JOIN dim_production_line pl ON pl.line_id = cs.line_id ")
+                // ★ 2026-11-20：工厂名（dim_production_line.factory_id → dim_factory.factory_name）
+                .append("LEFT JOIN dim_factory fac ON fac.factory_id = pl.factory_id AND fac.is_deleted = 0 ")
                 .append("WHERE 1=1 ");
         // 外层才有过 cs/ws/pl 别名 —— 维度过滤（工厂/产线/工位）放这里
         if (factoryId != null) {
@@ -519,6 +524,7 @@ public class DefectImageRepository {
             item.put("cameraCode", rs.getString("camera_code"));
             item.put("status", rs.getString("status"));
             item.put("factoryId", rs.getObject("factory_id"));
+            item.put("factoryName", rs.getString("factory_name"));
             item.put("lineId", rs.getObject("line_id"));
             item.put("lineName", rs.getString("line_name"));
             item.put("lineCode", rs.getString("line_code"));

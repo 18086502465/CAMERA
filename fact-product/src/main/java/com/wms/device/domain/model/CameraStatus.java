@@ -118,6 +118,16 @@ public class CameraStatus implements Serializable {
     @TableField(exist = false)
     private String lineCode;
 
+    /**
+     * 工厂名称（瞬态，由 dim_factory 关联填充）。
+     *
+     * <p>★ 2026-11-20：相机卡片要展示「工厂」，而 {@code camera_status} 表只存
+     * {@code factory_id}（数字），没有名字 —— 前端只能显示 ID 或留空。
+     * 工厂归属的真源是 {@code dim_production_line.factory_id → dim_factory.factory_name}。
+     */
+    @TableField(exist = false)
+    private String factoryName;
+
     // ========== Getter/Setter ==========
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
@@ -214,5 +224,8 @@ public class CameraStatus implements Serializable {
 
     public String getLineCode() { return lineCode; }
     public void setLineCode(String lineCode) { this.lineCode = lineCode; }
+
+    public String getFactoryName() { return factoryName; }
+    public void setFactoryName(String factoryName) { this.factoryName = factoryName; }
 }
 

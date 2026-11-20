@@ -123,13 +123,27 @@ async function readButtons(page) {
     // ==================== 一、产线统计页 ====================
     console.log('\n--- 一、产线统计页（/line-analytics）---')
     await page.goto(`${BASE}/line-analytics`, { waitUntil: 'networkidle2', timeout: 60000 })
-    // ★ 侧边栏是折叠菜单：展开状态下菜单项是 a/li，折叠时只有标题可见。
-    //   因此这里查**所有可能承载菜单文字的元素**，避免受展开状态影响。
-    const navTexts = await page.evaluate(() =>
-      [...document.querySelectorAll('a, li, .el-menu-item, .el-submenu__title, .el-menu-item-group__title')]
-        .map((a) => (a.textContent || '').trim()).filter(Boolean))
-    const navOk = navTexts.some((t) => t.includes('产线统计'))
-    check('① 导航含「产线统计」', navOk, navOk ? navTexts.filter(t => t.includes('产线')).join('/') : '未找到：' + navTexts.slice(0, 12).join('/'))
+    // ★ 2026-11-20 修 flaky（探查后确认根因）：本项目侧边栏是**图标折叠菜单**
+    //   （1600px 视口下只有 20px 图标条），**菜单项文字根本不在 DOM 里**
+    //   → 查「产线统计」文本必然时灵时不灵（偶尔展开状态命中 → flaky）。
+    //   这里改为断言**页面自身的标题标识**；「导航入口是否可达」由
+    //   ⑨ 的深链直达 + ⑮ 的实际点击跳转两项承担（那才是真正的导航验证）。
+    // ★ 用「遍历所有标题挑匹配的」而不是 querySelector 取第一个 ——
+    //   页面 header 里还有一个系统名 h2（「产线缺陷在线AI检测系统」），
+    //   querySelector 会先命中它 → 读不到真正的页面标题。
+    // ★ 同时**轮询等标题渲染完**（页面刚 goto 时标题还没挂上 → 读到空串 → flaky）。
+    let pageTitle = ''
+    for (let i = 0; i < 20; i++) {
+      pageTitle = await page.evaluate(() => {
+        const heads = [...document.querySelectorAll('h1, h2, h3')]
+          .map((e) => (e.textContent || '').trim()).filter(Boolean)
+        return heads.find((t) => t.includes('产线统计') && !t.includes('日报')) || heads[0] || ''
+      })
+      if (pageTitle.includes('产线统计')) break
+      await sleep(500)
+    }
+    const navOk = pageTitle.includes('产线统计')
+    check('① 页面标识为「产线统计」', navOk, navOk ? pageTitle : `标题=${pageTitle}`)
 
     // ★ 首屏加载较慢（实测需 ~8s），必须等 KPI 真的出现，不能固定 sleep
     const kpiAppeared = await waitFor(page,
@@ -240,13 +254,20 @@ async function readButtons(page) {
     // ==================== 二、统计日报页 ====================
     console.log('\n--- 二、统计日报页（/daily-report）---')
     await page.goto(`${BASE}/daily-report`, { waitUntil: 'networkidle2', timeout: 60000 })
-    // ★ 侧边栏是 el-submenu 折叠菜单，展开状态会变 → ①~⑭ 每次跑结果可能不同
-    //   （实测上一轮 ✓、这一轮 ✗）。因此这里查「菜单项是否存在」而不是「是否可见」，
-    //   可见性由 ⑮ 的实际点击跳转来验证。
-    const navDaily = await page.evaluate(() =>
-      [...document.querySelectorAll('a, .el-menu-item, .el-submenu__title')]
-        .some((a) => (a.textContent || '').includes('统计日报')))
-    check('⑧ 导航含「统计日报」入口', navDaily)
+    // ★ 同 ①：侧边栏是图标折叠菜单（菜单项文字不在 DOM 里）→ 不查菜单文本，
+    //   改为断言页面标识；导航可达性由深链直达 + 实际跳转验证。
+    let dailyTitle = ''
+    for (let i = 0; i < 20; i++) {
+      dailyTitle = await page.evaluate(() => {
+        const heads = [...document.querySelectorAll('h1, h2, h3')]
+          .map((e) => (e.textContent || '').trim()).filter(Boolean)
+        return heads.find((t) => t.includes('统计日报')) || heads[0] || ''
+      })
+      if (dailyTitle.includes('统计日报')) break
+      await sleep(500)
+    }
+    const navDaily = dailyTitle.includes('统计日报')
+    check('⑧ 页面标识为「统计日报」', navDaily, dailyTitle)
 
     await waitText(page, '产线统计日报', 20000)
     // ★ 产线胶囊来自 calendar 响应（异步）→ 必须等月历渲染完再读胶囊，

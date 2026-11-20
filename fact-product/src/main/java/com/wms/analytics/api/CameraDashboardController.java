@@ -29,6 +29,9 @@ import java.util.stream.Collectors;
 @RequestMapping("/api/cameras")
 public class CameraDashboardController {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(CameraDashboardController.class);
+
     /** 相机类型：真实产线相机（数据不参与定时清理） */
     private static final String CAMERA_TYPE_REAL = "REAL";
     /** 相机类型：测试相机（参与定时清理） */
@@ -40,6 +43,9 @@ public class CameraDashboardController {
     @Autowired private IDimProductionLineService lineService;
     @Autowired private CameraDirectory cameraDirectory;   // DDD P4：跨域只走 app 接口
     @Autowired private com.wms.system.app.LicenseService licenseService;  // 授权配额（跨域只走 app 层）
+    // ★ 2026-11-20：相机卡片要展示「工厂」名称 —— camera_status 只存 factory_id（数字），
+    //   工厂名在 dim_factory。跨域只走 app 层（ArchUnit 铁律①）。
+    @Autowired private com.wms.masterdata.app.IDimFactoryService factoryService;
 
     @GetMapping
     public ResultVO<IPage<CameraStatus>> pageQuery(
@@ -89,11 +95,43 @@ public class CameraDashboardController {
 
         IPage<CameraStatus> result = cameraStatusService.pageQuery(safePage, safeSize, keyword, status, wsIds);
 
+        // ★ 维度填充已抽到 enrichCameraDimensions（list 与 options 共用，避免再次分叉）
+        enrichCameraDimensions(result.getRecords());
+
+        return ResultVO.success(result);
+    }
+
+    /**
+     * 补齐相机的**维度展示字段**（工位名 / 工位编码 / 工位标签 / 产线名 / 产线编码 / 工厂 ID / 工厂名）。
+     *
+     * <p>★ 2026-11-20 修复：这些字段在 {@code CameraStatus} 上都是
+     * {@code @TableField(exist = false)} 的**瞬态字段**（{@code camera_status} 表里没有这些列），
+     * 必须由代码按 {@code dim_workstation} / {@code dim_production_line} / {@code dim_factory}
+     * 关联填充。
+     *
+     * <p><b>原缺陷</b>：只有 list 端点做了这个填充，而 {@code GET /cameras/options}
+     * 直接返回 {@code cameraStatusService.listAll()} 的原始实体 →
+     * {@code stationLabel} 等字段全为 null →
+     * 前端 {@code stationLabel(item)} 全部落空 → 页面显示「**未配置工位**」。
+     * 而 {@code /cameras/options} 被**图像记录 / 相机状态 / 首页看板 / 系统配置** 4 个页面使用，
+     * 全部中招（现场实测：CV7_Cam1 的工位其实是「产品正面胶污检测」，却显示"未配置工位"）。
+     *
+     * <p><b>修法</b>：把填充逻辑抽成本方法，list 与 options **共用** —— 杜绝再次分叉。
+     *
+     * <p>★ 主数据权威：工位归属以 {@code dim_camera → dim_workstation} 为准，
+     * 但 {@code camera_status} 的 line_id/workstation_id 由心跳同步而来，
+     * 现场两者一致；这里以快照值为准，缺失时用工位所属产线补（与原 list 逻辑一致）。
+     */
+    private void enrichCameraDimensions(List<CameraStatus> cameras) {
+        if (cameras == null || cameras.isEmpty()) {
+            return;
+        }
         Map<Integer, DimWorkstation> stationMap = workstationService.list().stream()
                 .collect(Collectors.toMap(DimWorkstation::getStationId, w -> w, (a, b) -> a));
         Map<Integer, DimProductionLine> lineMap = lineService.list().stream()
                 .collect(Collectors.toMap(DimProductionLine::getLineId, l -> l, (a, b) -> a));
-        for (CameraStatus cam : result.getRecords()) {
+        Map<Integer, String> factoryNameMap = factoryNameMap();
+        for (CameraStatus cam : cameras) {
             if (cam.getWorkstationId() != null) {
                 DimWorkstation station = stationMap.get(cam.getWorkstationId());
                 if (station != null) {
@@ -113,9 +151,31 @@ public class CameraDashboardController {
                     cam.setFactoryId(line.getFactoryId());
                 }
             }
+            // ★ 工厂名（camera_status 只存 factory_id 数字）
+            if (cam.getFactoryId() != null) {
+                cam.setFactoryName(factoryNameMap.get(cam.getFactoryId()));
+            }
         }
+    }
 
-        return ResultVO.success(result);
+    /** 工厂 ID → 工厂名（一次性取全量，避免逐相机查库） */
+    private Map<Integer, String> factoryNameMap() {
+        Map<Integer, String> map = new HashMap<>();
+        if (factoryService == null) {
+            // 防御：测试环境/裁剪部署下未注入工厂服务 → 只少了工厂名这一项展示
+            return map;
+        }
+        try {
+            for (com.wms.masterdata.domain.model.DimFactory f : factoryService.list()) {
+                if (f.getFactoryId() != null) {
+                    map.put(f.getFactoryId(), f.getFactoryName());
+                }
+            }
+        } catch (Exception e) {
+            // 工厂主数据取不到不影响主流程（只是少了工厂名这一项展示）
+            log.warn("读取工厂列表失败（相机卡片将不显示工厂名）: {}", e.getMessage());
+        }
+        return map;
     }
 
     private String buildStationLabel(String code, String name) {
@@ -162,17 +222,29 @@ public class CameraDashboardController {
      * （没有总数 COUNT 查询），只返回列表要用到的字段；相机数量级的数据量下
      * 载荷仅为全量实体的 1/3 左右。
      *
-     * <p><b>返回字段</b>：id / cameraCode / cameraName / lineId / workstationId /
-     * factoryId / status / cameraType / productName / totalCount / okCount /
-     * ngCount / lastHeartbeatAt / lastUploadAt / reportTime / stationLabel。
+     * <p><b>返回字段</b>：id / cameraCode / cameraName / lineId / lineName / lineCode /
+     * workstationId / stationName / stationCode / stationLabel / factoryId / factoryName /
+     * status / cameraType / productName / totalCount / okCount /
+     * ngCount / lastHeartbeatAt / lastUploadAt / reportTime。
+     *
+     * <p>★ 2026-11-20：补齐了**产线名 / 工位名 / 工厂名**三类维度字段 ——
+     *   本端点原先只返回数字 ID，且**没有做维度填充**（瞬态字段全 null），
+     *   导致图像记录页显示「未配置工位」。
      */
     @GetMapping("/options")
     public ResultVO<List<Map<String, Object>>> options(
             @RequestParam(required = false) Integer factoryId,
             @RequestParam(required = false) Integer lineId,
             @RequestParam(required = false) Integer workstationId) {
+        List<CameraStatus> all = cameraStatusService.listAll();
+        // ★ 2026-11-20：这里原来直接返回**原始实体**，没做维度填充
+        //   （stationLabel / stationName / stationCode / lineName / lineCode / factoryName
+        //   全是 @TableField(exist=false) 瞬态字段，camera_status 表里根本没有这些列）
+        //   → 前端 stationLabel() 全部落空 → 页面显示「未配置工位」。
+        //   现与 list 端点共用 enrichCameraDimensions。
+        enrichCameraDimensions(all);
         List<Map<String, Object>> rows = new ArrayList<>();
-        for (CameraStatus c : cameraStatusService.listAll()) {
+        for (CameraStatus c : all) {
             if (factoryId != null && !Objects.equals(factoryId, c.getFactoryId())) {
                 continue;
             }
@@ -187,8 +259,13 @@ public class CameraDashboardController {
             row.put("cameraCode", c.getCameraCode());
             row.put("cameraName", c.getCameraName());
             row.put("lineId", c.getLineId());
+            row.put("lineName", c.getLineName());
+            row.put("lineCode", c.getLineCode());
             row.put("workstationId", c.getWorkstationId());
+            row.put("stationName", c.getStationName());
+            row.put("stationCode", c.getStationCode());
             row.put("factoryId", c.getFactoryId());
+            row.put("factoryName", c.getFactoryName());
             row.put("status", c.getStatus());
             row.put("cameraType", c.getCameraType());
             row.put("productName", c.getProductName());
@@ -216,6 +293,9 @@ public class CameraDashboardController {
         if (c == null) {
             return ResultVO.fail("相机不存在: " + id);
         }
+        // ★ 2026-11-20：详情端点同样没做维度填充 —— stationLabel/stationName 等瞬态字段全 null
+        //   → 相机详情页显示「未配置工位」（与 /cameras/options 同一个 bug 的第三个实例）。
+        enrichCameraDimensions(java.util.Collections.singletonList(c));
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", c.getId());
         row.put("cameraCode", c.getCameraCode());
@@ -244,6 +324,10 @@ public class CameraDashboardController {
         row.put("stationName", c.getStationName());
         row.put("stationCode", c.getStationCode());
         row.put("stationLabel", c.getStationLabel());
+        // ★ 补产线与工厂的名称（原先只返回数字 ID，详情页无法展示）
+        row.put("lineName", c.getLineName());
+        row.put("lineCode", c.getLineCode());
+        row.put("factoryName", c.getFactoryName());
         return ResultVO.success(row);
     }
 
