@@ -661,9 +661,21 @@ public class LineAnalyticsController {
 
         // 图片表的 camera_id 存的是相机编号（camera_code），需经 dim_camera 关联出维度
         String joinCam = " LEFT JOIN dim_camera c ON c.camera_code = f.camera_id ";
+
+        // ★ 2026-11-21 评审 P1-4：若前端传了 defectTypeId，先经映射表解析为现场上报名称，
+        //   再叠加到 defectType 筛选。映射不存在时 names 为空 → 保持原 ignoredFilter 上报，
+        //   绝不静默吞（现场 source_code 目前是种子数据 p1/p2，未必等于上报名 → 落空属正常）。
+        String effectiveDefectType = defectType;
+        List<String> mappedNames = defectTypeId != null ? queryRepository.resolveDefectTypeNames(defectTypeId) : new ArrayList<>();
+        boolean defectTypeIdApplied = false;
+        if (mappedNames.size() == 1 && (effectiveDefectType == null || effectiveDefectType.trim().isEmpty())) {
+            effectiveDefectType = mappedNames.get(0);
+            defectTypeIdApplied = true;
+        }
+
         List<Object> params = new ArrayList<>();
         StringBuilder where = buildImageWhere(start, end, factoryId, lineId, lineIds, workstationId,
-                workstationIds, cameraId, defectType, shiftId, params);
+                workstationIds, cameraId, effectiveDefectType, shiftId, params);
         String sevWhere = "";
         if (severity != null && !severity.trim().isEmpty()) {
             sevWhere = " AND b.severity = ? ";
@@ -692,12 +704,12 @@ public class LineAnalyticsController {
         //   与 defect_image_box.defect_type 的现场中文类型（接头/胶滴/污点）
         //   **完全不相交**，按 ID 过滤在语义上本就无法命中；
         //   而 buildDefectImageSummary 的形参里原本根本没有 defectTypeId。
-        //   修法：如实上报为「不生效」（与 productId 同一机制）。
-        //   要真正支持需先做「标准码 → 现场中文名」的映射，属独立需求。
-        if (defectTypeId != null) {
+        //   修法（2026-11-21 P1-4）：先查 cfg_camera_defect_mapping 把标准 ID 解析为现场上报名，
+        //   命中则真正落进 defectType 筛选；未命中仍如实上报不生效（不静默吞）。
+        if (defectTypeId != null && !defectTypeIdApplied) {
             ignoredFilters.add("defectTypeId");
-            ignoredFilterNotes.add("缺陷类型 ID 筛选对缺陷图片通道不生效："
-                    + "标准类型编码与现场上报的缺陷类型名称不是同一套标识，无法直接匹配");
+            ignoredFilterNotes.add("缺陷类型 ID 筛选未命中任何现场上报名称映射："
+                    + "请在系统配置中维护「标准缺陷类型 → 设备上报名(source_code)」映射后重试");
         }
         // ★ 2026-11-19 评审 B-2：severity 只进了 3 个块（缺陷排行 / 透视 / 严重度分布），
         //   **KPI、趋势、工位/相机排行、热力图、班次对比都不受它约束**

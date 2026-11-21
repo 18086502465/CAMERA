@@ -226,16 +226,68 @@ public class DailyReportRepository {
      * @param lineId null 或 0 表示全厂
      */
     public Map<String, Object> computeBreakdownDetails(LocalDate date, Integer lineId) {
+        return computeBreakdownDetails(date, lineId, null, null, null);
+    }
+
+    /**
+     * 单日维度明细（可被工位 / 相机 / 缺陷类型进一步筛选）。
+     *
+     * <p>★ 2026-11-21 评审 P1-3：原来这三个筛选参数在 Controller 里被显式记为 ignored，
+     * 明细 SQL 完全不看 —— 用户选了「相机 X」却看到全厂排行。现在真正落进 SQL：
+     * <ul>
+     *   <li>所有四个查询（类型 / 相机 / 小时 / 全量计数）共用同一套 filterWhere，
+     *       避免「排行榜筛了、全量脚注没筛」的新不一致；</li>
+     *   <li>defectType 用 EXISTS 匹配 defect_image_box（与 buildImageWhere 同一口径，
+     *       现场中文缺陷类型按精确匹配，不用 LIKE）；</li>
+     *   <li>cameraId 是 dim_camera.camera_id（数值），与产线统计页一致。</li>
+     * </ul>
+     * 注意：KPI（汇总行）仍是 scope 级，不受这三个明细筛选影响 —— 响应里由
+     * Controller 回 detailFilterMessage 说清楚，避免「KPI 和排行对不上」的误读。
+     */
+    /** 旧 5 参重载（兼容既有测试与调用方），班次不筛选。 */
+    public Map<String, Object> computeBreakdownDetails(LocalDate date, Integer lineId,
+                                                        Integer workstationId, Long cameraId,
+                                                        String defectType) {
+        return computeBreakdownDetails(date, lineId, workstationId, cameraId, defectType, null);
+    }
+
+    /**
+     * 日报明细查询（G20）：工位 / 相机 / 缺陷类型 / 班次四类筛选共用同一 WHERE。
+     *
+     * <p>★ 班次口径与产线统计完全一致：事实表无 shift_id 列，只能从
+     * {@code dim_shift} 读时间窗后按 {@code TIME(f.capture_time)} 判断；
+     * 跨天班次（如夜班 20:00-08:00）用 OR。传了不存在的班次 ID 抛
+     * {@link IllegalArgumentException} → HTTP 400，绝不静默返回全量
+     * （与 LineAnalyticsController.resolveShift 同一处置，勿回退）。
+     */
+    public Map<String, Object> computeBreakdownDetails(LocalDate date, Integer lineId,
+                                                        Integer workstationId, Long cameraId,
+                                                        String defectType, Long shiftId) {
         Timestamp dayStart = Timestamp.valueOf(date.atStartOfDay());
         Timestamp dayEnd = Timestamp.valueOf(date.plusDays(1).atStartOfDay());
         List<Object> params = new ArrayList<>();
         params.add(dayStart);
         params.add(dayEnd);
-        String lineWhere = "";
+        StringBuilder filterWhere = new StringBuilder();
         if (lineId != null && lineId > 0) {
-            lineWhere = " AND c.line_id = ? ";
+            filterWhere.append(" AND c.line_id = ? ");
             params.add(lineId);
         }
+        if (workstationId != null && workstationId > 0) {
+            filterWhere.append(" AND c.workstation_id = ? ");
+            params.add(workstationId);
+        }
+        if (cameraId != null) {
+            filterWhere.append(" AND c.camera_id = ? ");
+            params.add(cameraId);
+        }
+        if (defectType != null && !defectType.trim().isEmpty()) {
+            filterWhere.append(" AND EXISTS (SELECT 1 FROM defect_image_box bt "
+                    + "WHERE bt.image_id = f.image_id AND bt.defect_type = ?) ");
+            params.add(defectType.trim());
+        }
+        filterWhere.append(resolveShiftWindow(shiftId));
+        String lineWhere = filterWhere.toString();
 
         Map<String, Object> result = new LinkedHashMap<>();
 
@@ -328,6 +380,41 @@ public class DailyReportRepository {
         result.put("detailCameraTotal", totalCameras == null ? 0 : totalCameras);
         result.put("detailTruncated", totalCameras != null && totalCameras > cameras.size());
         return result;
+    }
+
+    /**
+     * 班次时间窗 WHERE 片段，口径与产线统计 buildImageWhere 一致。
+     *
+     * <p>常量片段来自 dim_shift 的 Time（转 'HH:mm:ss' 字面量），无 SQL 注入面；
+     * 跨天班次用 OR（如夜班 20:00-08:00 → TIME>=20:00 OR TIME<08:00）。
+     */
+    private String resolveShiftWindow(Long shiftId) {
+        if (shiftId == null) {
+            return "";
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT start_time AS startTime, end_time AS endTime, cross_day AS crossDay "
+                        + "FROM dim_shift WHERE shift_id = ?", shiftId);
+        if (rows.isEmpty()) {
+            throw new IllegalArgumentException("班次不存在: shiftId=" + shiftId);
+        }
+        Map<String, Object> shift = rows.get(0);
+        String start = hhmmss(shift.get("startTime"));
+        String end = hhmmss(shift.get("endTime"));
+        boolean crossDay = shift.get("crossDay") instanceof Number
+                && ((Number) shift.get("crossDay")).longValue() == 1L;
+        return crossDay
+                ? " AND (TIME(f.capture_time) >= '" + start + "' OR TIME(f.capture_time) < '" + end + "') "
+                : " AND TIME(f.capture_time) >= '" + start + "' AND TIME(f.capture_time) < '" + end + "' ";
+    }
+
+    /** LocalTime/Time → 'HH:mm:ss' 字面量（与 LineAnalyticsController.hhmmss 同口径） */
+    private static String hhmmss(Object time) {
+        if (time == null) {
+            return "00:00:00";
+        }
+        String s = time.toString();
+        return s.length() == 5 ? s + ":00" : s;
     }
 
     // ==================== 计算（生成与当天实时共用同一套口径） ====================

@@ -50,4 +50,16 @@ public interface ICameraStatusService {
      * 获取识别统计数据
      */
     List<Map<String, Object>> getRecognizeStats();
+
+    /**
+     * 查询某相机近 N 小时的心跳历史采样（温度/状态/CPU/内存趋势）。
+     *
+     * <p>评审 P1-1：历史表此前无写入路径，本方法配合心跳节流采样后可用。
+     * 表缺失或无数据时返回空列表（降级，不抛异常）。
+     *
+     * @param cameraCode 相机编号（deviceId / camera_code）
+     * @param hours      回溯小时数（1~24，超出夹紧）
+     * @param limit      最多返回条数（10~500，超出夹紧）
+     */
+    List<Map<String, Object>> getHeartbeatTrend(String cameraCode, int hours, int limit);
 }

@@ -1,10 +1,12 @@
 package com.wms.analytics.api;
 
+import com.wms.analytics.infra.repository.AnomalyAlertRepository;
 import com.wms.analytics.infra.repository.DailyReportRepository;
 import com.wms.analytics.infra.task.DailyReportGenerationTask;
 import com.wms.shared.common.ResultVO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -57,11 +59,28 @@ public class DailyReportController {
 
     private final DailyReportRepository dailyReportRepository;
     private final DailyReportGenerationTask generationTask;
+    private final AnomalyAlertRepository anomalyAlertRepository;
 
+    /**
+     * 兼容旧测试的 2 参构造：无告警仓储时「异常全景」降级为空（不影响日报主指标）。
+     * 生产由 Spring 注入 3 参构造。
+     *
+     * <p>★ 2026-11-21 发版事故：两个构造都不带 @Autowired 时，Spring 找不到唯一注入构造
+     * → 退回无参构造 → 启动即崩「No default constructor found」。
+     * MockMvc 单测手动 new controller 绕过容器，测不出这个 —— 必须显式标 @Autowired。
+     */
     public DailyReportController(DailyReportRepository dailyReportRepository,
                                  DailyReportGenerationTask generationTask) {
+        this(dailyReportRepository, generationTask, null);
+    }
+
+    @Autowired
+    public DailyReportController(DailyReportRepository dailyReportRepository,
+                                 DailyReportGenerationTask generationTask,
+                                 AnomalyAlertRepository anomalyAlertRepository) {
         this.dailyReportRepository = dailyReportRepository;
         this.generationTask = generationTask;
+        this.anomalyAlertRepository = anomalyAlertRepository;
     }
 
     private static Map<String, String> buildCaliber() {
@@ -72,6 +91,14 @@ public class DailyReportController {
                 + "计数口径自第二份快照起可用，计数器被重置的当天显示「待积累」");
         caliber.put("cameraType", "REAL（TEST 与未登记相机不进日报）");
         caliber.put("rankMinSample", String.valueOf(DailyReportRepository.MIN_RANK_SAMPLE));
+        caliber.put("heartbeatPassNote", "直通率 = 心跳 OK 计数日增 / 检测计数日增（设备 correctCount 差分，"
+                + "语义为「识别正确」而非「终检良品」，现场校准前仅供参考，不等同良率）");
+        // ★ 2026-11-21 评审 G19：口径术语保留（准确性优先），另加「白话版」给厂长秒懂。
+        caliber.put("ratePlain", "白话：每 1000 张被检图片里，大约有多少张被判出问题。数字越小越好。");
+        caliber.put("passPlain", "白话：设备自己判「看对了」的比例。它不等于最终检验的良品率，"
+                + "现场校准前只能看趋势，不能当交付良率对外报。");
+        caliber.put("counterPlain", "白话：有些天数字显示「待积累」，是因为计数刚重置或当天还没攒够两天的账，"
+                + "不是那天没干活。");
         return caliber;
     }
 
@@ -425,7 +452,9 @@ public class DailyReportController {
                                                    //   真正支持需改 DailyReportRepository 的明细 SQL（另行排期）。
                                                    @RequestParam(required = false) Integer workstationId,
                                                    @RequestParam(required = false) Integer cameraId,
-                                                   @RequestParam(required = false) String defectType) {
+                                                   @RequestParam(required = false) String defectType,
+                                                   // ★ 2026-11-21 评审 G20：班次筛选（dim_shift 时间窗，与产线统计同口径）
+                                                   @RequestParam(required = false) Long shiftId) {
         LocalDate day = parseDate(date, null);
         if (day == null) {
             return ResultVO.fail("日期格式应为 yyyy-MM-dd");
@@ -458,7 +487,10 @@ public class DailyReportController {
             dataSource = "SNAPSHOT";
         }
 
-        Map<String, Object> details = dailyReportRepository.computeBreakdownDetails(day, scope);
+        // ★ 2026-11-21 评审 P1-3：工位 / 相机 / 缺陷类型筛选真正落进明细 SQL。
+        //   汇总 KPI 仍是 scope 级（不受这三个筛选影响），响应回 detailFilterMessage 说清楚。
+        Map<String, Object> details = dailyReportRepository.computeBreakdownDetails(
+                day, scope, workstationId, cameraId == null ? null : cameraId.longValue(), defectType, shiftId);
 
         Map<String, Object> anomalies = new LinkedHashMap<>();
         int tempAlarm = kpi == null ? 0 : ((Number) kpi.getOrDefault("tempAlarmCount", 0)).intValue();
@@ -495,6 +527,10 @@ public class DailyReportController {
         data.put("missing", kpi == null);
         data.putAll(details);
         data.put("anomalies", anomalies);
+        // ★ 2026-11-21 评审 P0-4：异常全景（五类相机告警按天分布 + 近 7 日趋势）。
+        //   只读聚合，失败只记 WARN 并给空数组 —— 日报主指标不受影响。
+        Map<String, Object> alertTrend = buildAlertTrend(day, scope);
+        data.put("alertTrend", alertTrend);
         // 图片通道没有设备状态上报，「这些小时 0 上传」是最接近「停线/断网」的代理指标，
         // 口径必须写清楚：0 上传 ≠ 停线（可能只是这段时间没排产）。
         data.put("idleNote", "idleHours = 当日 0 上传的小时（当天只统计到当前小时）；"
@@ -504,15 +540,20 @@ public class DailyReportController {
         //   这三个参数此前**根本不存在**（Spring 会静默忽略未知参数），
         //   前端若传了，用户以为筛了、实际明细是全量的 —— 与产线统计模块的
         //   ignoredFilters 机制同一口径（诚实降级，不静默吞）。
+        // ★ 2026-11-21 评审 P1-3：这三个筛选已真正生效于「四个明细块」，不再上报 ignored。
+        //   但汇总 KPI 仍按 scope 统计（与筛选无关），如实说明口径边界。
         List<String> ignored = new ArrayList<>();
-        if (workstationId != null) ignored.add("workstationId");
-        if (cameraId != null) ignored.add("cameraId");
-        if (defectType != null && !defectType.trim().isEmpty()) ignored.add("defectType");
         data.put("ignoredFilters", ignored);
-        if (!ignored.isEmpty()) {
-            data.put("ignoredFilterMessage",
-                    "以下筛选对日报明细**不生效**（明细仅支持按产线 scope 统计）：" + String.join("、", ignored)
-                            + "。需要按工位/相机/缺陷类型看明细，请用「产线统计」页的对应图表。");
+        List<String> applied = new ArrayList<>();
+        if (workstationId != null && workstationId > 0) applied.add("工位");
+        if (cameraId != null) applied.add("相机");
+        if (defectType != null && !defectType.trim().isEmpty()) applied.add("缺陷类型");
+        if (shiftId != null) applied.add("班次");
+        if (!applied.isEmpty()) {
+            data.put("detailFilterActive", true);
+            data.put("detailFilterNames", applied);
+            data.put("detailFilterMessage", "明细已按" + String.join("、", applied)
+                    + "筛选（TOP 排行 / 时段分布 / 全量计数均生效）；顶部汇总 KPI 与月历仍按所选产线整体统计，未随明细筛选变化。");
         }
         return ResultVO.success(data);
     }
@@ -699,8 +740,29 @@ public class DailyReportController {
                     row.put("ngDelta", ngDelta);
                     row.put("counterRateKilo", Math.round(ngDelta * 100000.0 / inspDelta) / 100.0);
                     row.put("counterPendingReason", null);
+                    // ★ 2026-11-21 评审 P1-2：心跳口径「直通率」（ok 计数日增 / 检测日增）。
+                    //   ok_total_cum 已在快照里采集（DailyReportRepository 落库），此前**从没被读**。
+                    //   口径诚实：这是设备心跳 correctCount 的差分，语义「识别正确」≠「终检良品」，
+                    //   现场校准前只作参考，前端必须标注「心跳口径·待现场校准」，绝不叫「良率」。
+                    Long okCum = longOrNull(row.get("okTotalCum"));
+                    Long prevOk = prevRow == null ? null : longOrNull(prevRow.get("okTotalCum"));
+                    if (okCum != null && prevOk != null) {
+                        long okDelta = okCum - prevOk;
+                        if (okDelta >= 0 && okDelta <= inspDelta) {
+                            row.put("okDelta", okDelta);
+                            row.put("heartbeatPassRate", Math.round(okDelta * 10000.0 / inspDelta) / 100.0);
+                        } else {
+                            row.put("okDelta", null);
+                            row.put("heartbeatPassRate", null);
+                        }
+                    } else {
+                        row.put("okDelta", null);
+                        row.put("heartbeatPassRate", null);
+                    }
                 } else {
                     putCounterUnavailable(row);
+                    row.put("okDelta", null);
+                    row.put("heartbeatPassRate", null);
                 }
             } else {
                 putCounterUnavailable(row);
@@ -727,10 +789,67 @@ public class DailyReportController {
         row.put("inspDelta", null);
         row.put("ngDelta", null);
         row.put("counterRateKilo", null);
+        row.put("okDelta", null);
+        row.put("heartbeatPassRate", null);
         boolean realtime = "REALTIME".equals(row.get("dataSource"));
         row.put("counterPendingReason", realtime
                 ? "实时日：需等次日 00:05 日终快照作为差分基线，今日至今的率待积累"
                 : "计数差分不可用（首日无前日基线，或相机计数器被重置）");
+    }
+
+    /**
+     * 组装近 7 日（含当日）五类相机告警的按天计数，供日报「异常全景」展示趋势。
+     *
+     * <p>返回 {@code days=yyyy-MM-dd[]}（升序、固定 7 天）+ {@code types=[{type,label,total,daily[]}]}
+     * （按 total 降序）。无数据时空数组填 0，前端可直接画趋势。
+     * <p>只读查询失败时返回空 days/types + 说明，不影响日报主流程。
+     */
+    private Map<String, Object> buildAlertTrend(LocalDate day, int scope) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        List<String> days = new ArrayList<>();
+        for (int i = 6; i >= 0; i--) days.add(day.minusDays(i).toString());
+        result.put("days", days);
+        String[] types = {"CAMERA_FAULT", "COUNT_MISMATCH", "CPU_HIGH", "MEMORY_HIGH", "TEMPERATURE_HIGH"};
+        String[] labels = {"相机故障", "计数异常", "CPU 过高", "内存过高", "温度过高"};
+
+        Map<String, Map<String, Integer>> byTypeDay = new java.util.HashMap<>();
+        if (anomalyAlertRepository != null) {
+            try {
+                for (Map<String, Object> row : anomalyAlertRepository.countCameraAlertsByDay(
+                        day.minusDays(6), day.plusDays(1), scope)) {
+                    String t = row.get("alertType") == null ? "" : String.valueOf(row.get("alertType"));
+                    String d = row.get("day") == null ? "" : String.valueOf(row.get("day"));
+                    int cnt = ((Number) row.getOrDefault("cnt", 0)).intValue();
+                    byTypeDay.computeIfAbsent(t, k -> new java.util.HashMap<>()).put(d, cnt);
+                }
+            } catch (Exception e) {
+                log.warn("[产线日报] 异常全景聚合失败（不影响主指标）: {}", e.getMessage());
+                result.put("note", "异常趋势数据暂不可用");
+            }
+        } else {
+            result.put("note", "异常趋势数据暂不可用");
+        }
+
+        List<Map<String, Object>> typeList = new ArrayList<>();
+        for (int i = 0; i < types.length; i++) {
+            Map<String, Integer> dayCounts = byTypeDay.getOrDefault(types[i], java.util.Collections.emptyMap());
+            List<Integer> daily = new ArrayList<>();
+            int total = 0;
+            for (String d : days) {
+                int c = dayCounts.getOrDefault(d, 0);
+                daily.add(c);
+                total += c;
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("type", types[i]);
+            item.put("label", labels[i]);
+            item.put("total", total);
+            item.put("daily", daily);
+            typeList.add(item);
+        }
+        typeList.sort((a, b) -> Integer.compare((Integer) b.get("total"), (Integer) a.get("total")));
+        result.put("types", typeList);
+        return result;
     }
 
     private static List<Map<String, Object>> parseTopTypes(Object json) {

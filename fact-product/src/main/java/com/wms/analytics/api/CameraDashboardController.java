@@ -211,6 +211,20 @@ public class CameraDashboardController {
     }
 
     /**
+     * 相机心跳历史趋势（评审 P1-1）：温度 / 状态 / CPU / 内存 近 N 小时采样。
+     *
+     * <p>历史表 02_final_schema_p0.sql 已在、此前无写入；心跳节流采样后本端点才有数据。
+     * 无数据返回空数组（不是 0，不伪造趋势）。
+     */
+    @GetMapping("/{cameraCode}/heartbeat-trend")
+    public ResultVO<List<Map<String, Object>>> getHeartbeatTrend(
+            @PathVariable String cameraCode,
+            @RequestParam(required = false, defaultValue = "24") int hours,
+            @RequestParam(required = false, defaultValue = "120") int limit) {
+        return ResultVO.success(cameraStatusService.getHeartbeatTrend(cameraCode, hours, limit));
+    }
+
+    /**
      * 相机**轻量全量列表**（不分页、不带计数大字段以外的冗余）。
      *
      * <p><b>用途</b>（2026-11-18 评审 M-02）：前端此前有 5 处按"全量"语义硬编码

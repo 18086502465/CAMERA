@@ -116,7 +116,8 @@ async function waitText(page, text, timeoutMs = 15000) {
     await sleep(3000)
     const kpiCount = await page.evaluate(() => document.querySelectorAll('.kpi-card').length)
     const miniCount = await page.evaluate(() => document.querySelectorAll('.mini-card').length)
-    check('④ 当日 KPI 卡 = 4', kpiCount === 4, `${kpiCount} 张`)
+    // ★ 2026-11-21：P1-2 新增「直通率（心跳口径·待校准）」第 5 张卡，断言同步为 5。
+    check('④ 当日 KPI 卡 = 5（含心跳口径直通率）', kpiCount === 5, `${kpiCount} 张`)
     check('④b 四宫格维度卡 = 4', miniCount === 4, `${miniCount} 张`)
     check('④c 口径页脚存在', await waitText(page, '统计口径', 10000))
 

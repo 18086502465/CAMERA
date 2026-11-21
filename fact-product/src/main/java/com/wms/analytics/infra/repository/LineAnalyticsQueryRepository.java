@@ -364,4 +364,33 @@ public class LineAnalyticsQueryRepository {
             return new ArrayList<>();
         }
     }
+
+    /**
+     * 把标准缺陷类型 ID 解析为现场上报使用的名称（评审 P1-4）。
+     *
+     * <p>现场缺陷图片通道的 {@code defect_image_box.defect_type} 存的是中文/自由文本
+     * （接头/胶滴/污点），而筛选下拉给的是 {@code dim_defect_type} 标准码；两套标识
+     * 通过 {@code cfg_camera_defect_mapping} 的 {@code source_code} ↔ {@code defect_type_id}
+     * 关联。只有现场真正维护了映射（source_code 与上报名称一致）时，按 ID 筛选才会命中。
+     *
+     * <p>同时返回标准 defect_code/defect_name 作为兜底候选（若现场上报用的就是标准名）。
+     * 查不到映射返回空列表，调用方据此继续上报 ignoredFilter（诚实降级）。
+     */
+    public List<String> resolveDefectTypeNames(Long defectTypeId) {
+        if (defectTypeId == null) return new ArrayList<>();
+        try {
+            List<String> names = jdbcTemplate.queryForList(
+                    "SELECT defect_name FROM dim_defect_type WHERE defect_type_id = ? AND IFNULL(is_deleted,0)=0 " +
+                            "UNION " +
+                            "SELECT DISTINCT source_code FROM cfg_camera_defect_mapping " +
+                            "WHERE defect_type_id = ? AND IFNULL(is_enabled,1)=1 AND source_code IS NOT NULL",
+                    String.class, defectTypeId, defectTypeId);
+            List<String> result = new ArrayList<>();
+            for (String n : names) if (n != null && !n.trim().isEmpty() && !result.contains(n.trim())) result.add(n.trim());
+            return result;
+        } catch (Exception e) {
+            // 表缺失（老库未跑 02）/ 查询失败 → 空列表，调用方继续诚实上报不生效
+            return new ArrayList<>();
+        }
+    }
 }

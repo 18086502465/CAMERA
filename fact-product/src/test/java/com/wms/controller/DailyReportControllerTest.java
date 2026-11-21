@@ -394,7 +394,9 @@ class DailyReportControllerTest {
         details.put("idleHours", Arrays.asList(3, 4));
         details.put("detailsAvailable", true);
         details.put("detailDetectCount", 620);
-        when(dailyReportRepository.computeBreakdownDetails(eq(day), eq(0))).thenReturn(details);
+        // ★ P1-3/G20：生产走 6 参（工位/相机/缺陷类型/班次筛选），测试桩同步到新签名。
+        when(dailyReportRepository.computeBreakdownDetails(eq(day), eq(0), isNull(), isNull(), isNull(), isNull()))
+                .thenReturn(details);
 
         controllerMvc().perform(get("/api/v1/analytics/daily-reports/2026-11-16/breakdown"))
                 .andExpect(status().isOk())
@@ -405,7 +407,102 @@ class DailyReportControllerTest {
                 .andExpect(jsonPath("$.data.typeBreakdown[0].type").value("接头"))
                 // idleHours 必须落在 anomalies 里，不能留在顶层（顶层是明细字段区）
                 .andExpect(jsonPath("$.data.anomalies.idleHours.length()").value(2))
-                .andExpect(jsonPath("$.data.idleHours").doesNotExist());
+                .andExpect(jsonPath("$.data.idleHours").doesNotExist())
+                // ★ P0-4：异常全景字段必须存在（2 参构造无告警仓储 → 空 types + note，不 500）
+                .andExpect(jsonPath("$.data.alertTrend").exists())
+                .andExpect(jsonPath("$.data.alertTrend.days.length()").value(7))
+                // ★ P1-3/G20：无明细筛选时 ignoredFilters 必须为空、无 detailFilterMessage / detailFilterActive
+                .andExpect(jsonPath("$.data.ignoredFilters.length()").value(0))
+                .andExpect(jsonPath("$.data.detailFilterMessage").doesNotExist())
+                .andExpect(jsonPath("$.data.detailFilterActive").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("P1-3：工位/相机/缺陷类型筛选真正传给明细仓储，且不再上报 ignoredFilters")
+    void breakdownDetailFiltersPassThrough() throws Exception {
+        LocalDate day = LocalDate.of(2026, 11, 16);
+        Map<String, Object> row = plantRow(day, 1230, 38, 30.9);
+        when(dailyReportRepository.listRange(eq(day), eq(day), eq(0)))
+                .thenReturn(Collections.singletonList(row));
+        when(dailyReportRepository.listRange(eq(day.minusDays(1)), eq(day.minusDays(1)), isNull()))
+                .thenReturn(Collections.emptyList());
+        when(dailyReportRepository.computeBreakdownDetails(eq(day), eq(0), eq(3), eq(7L), eq("接头"), isNull()))
+                .thenReturn(new LinkedHashMap<>());
+
+        controllerMvc().perform(get("/api/v1/analytics/daily-reports/2026-11-16/breakdown")
+                        .param("workstationId", "3")
+                        .param("cameraId", "7")
+                        .param("defectType", "接头"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.ignoredFilters.length()").value(0))
+                .andExpect(jsonPath("$.data.detailFilterMessage").exists());
+        verify(dailyReportRepository).computeBreakdownDetails(eq(day), eq(0), eq(3), eq(7L), eq("接头"), isNull());
+    }
+
+    @Test
+    @DisplayName("G20：班次筛选透传给明细仓储，且响应给出 detailFilterActive/Names 与口径提示")
+    void breakdownShiftFilterPassThrough() throws Exception {
+        LocalDate day = LocalDate.of(2026, 11, 16);
+        when(dailyReportRepository.listRange(eq(day), eq(day), eq(0)))
+                .thenReturn(Collections.singletonList(plantRow(day, 1230, 38, 30.9)));
+        when(dailyReportRepository.listRange(eq(day.minusDays(1)), eq(day.minusDays(1)), isNull()))
+                .thenReturn(Collections.emptyList());
+        when(dailyReportRepository.computeBreakdownDetails(eq(day), eq(0), isNull(), isNull(), isNull(), eq(2L)))
+                .thenReturn(new LinkedHashMap<>());
+
+        controllerMvc().perform(get("/api/v1/analytics/daily-reports/2026-11-16/breakdown")
+                        .param("shiftId", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.ignoredFilters.length()").value(0))
+                .andExpect(jsonPath("$.data.detailFilterActive").value(true))
+                .andExpect(jsonPath("$.data.detailFilterNames[0]").value("班次"))
+                .andExpect(jsonPath("$.data.detailFilterMessage").value(
+                        org.hamcrest.Matchers.containsString("未随明细筛选变化")))
+                // G19：白话口径字段必须随 breakdown 返回
+                .andExpect(jsonPath("$.data.caliber.ratePlain").exists())
+                .andExpect(jsonPath("$.data.caliber.passPlain").exists());
+        verify(dailyReportRepository).computeBreakdownDetails(eq(day), eq(0), isNull(), isNull(), isNull(), eq(2L));
+    }
+
+    @Test
+    @DisplayName("P1-2：直通率用 ok 累计差分算，且 ok 语义未校准时标注口径（不叫良率）")
+    void heartbeatPassRateUsesOkDelta() throws Exception {
+        LocalDate day = LocalDate.of(2026, 11, 16);
+        Map<String, Object> row = plantRow(day, 1230, 38, 30.9);
+        row.put("inspTotalCum", 2230L);
+        row.put("ngTotalCum", 48L);
+        row.put("okTotalCum", 2182L);
+        Map<String, Object> prev = plantRow(day.minusDays(1), 1000, 10, 10.0);
+        prev.put("inspTotalCum", 1230L);
+        prev.put("ngTotalCum", 10L);
+        prev.put("okTotalCum", 1220L);
+        when(dailyReportRepository.listRange(eq(day), eq(day), eq(0)))
+                .thenReturn(Collections.singletonList(row));
+        when(dailyReportRepository.listRange(eq(day.minusDays(1)), eq(day.minusDays(1)), isNull()))
+                .thenReturn(Collections.singletonList(prev));
+        when(dailyReportRepository.computeBreakdownDetails(eq(day), eq(0), isNull(), isNull(), isNull(), isNull()))
+                .thenReturn(new LinkedHashMap<>());
+
+        controllerMvc().perform(get("/api/v1/analytics/daily-reports/2026-11-16/breakdown"))
+                .andExpect(status().isOk())
+                // okDelta = 2182-1220 = 962；inspDelta = 2230-1230 = 1000 → 96.2%
+                .andExpect(jsonPath("$.data.kpi.okDelta").value(962))
+                .andExpect(jsonPath("$.data.kpi.heartbeatPassRate").value(96.2))
+                .andExpect(jsonPath("$.data.caliber.heartbeatPassNote").exists());
+    }
+
+    @Test
+    @DisplayName("G20 发版回归：生产构造函数必须带 @Autowired，防止 Spring 退回无参构造启动崩溃")
+    void productionConstructorIsAutowired() {
+        boolean annotated = false;
+        for (java.lang.reflect.Constructor<?> c : DailyReportController.class.getDeclaredConstructors()) {
+            if (c.getParameterCount() == 3
+                    && c.isAnnotationPresent(org.springframework.beans.factory.annotation.Autowired.class)) {
+                annotated = true;
+            }
+        }
+        assertThat(annotated).as("DailyReportController 的 3 参生产构造必须标 @Autowired；"
+                + "两个构造都不标时 Spring 会尝试无参构造 → 启动即崩 No default constructor found").isTrue();
     }
 
     private static Map<String, Object> lineOption(int lineId, String lineName) {

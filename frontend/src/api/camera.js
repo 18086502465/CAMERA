@@ -31,5 +31,9 @@ export const getDefectImageHistory = (params = {}) =>
 
 // 图像记录页筛选下拉选项（缺陷类型/分辨率）：取自设备实际上报数据，
 // 不是 /v1/config/defect-types（后者与现场叫法完全不相交，选了永远是 0 条）
+// ★ P1-1：相机心跳历史趋势（温度/状态，近 N 小时）
+export const getCameraHeartbeatTrend = (cameraCode, hours = 24, limit = 120) =>
+  request({ url: `/cameras/${encodeURIComponent(cameraCode)}/heartbeat-trend`, method: 'get', params: { hours, limit } })
+
 export const getDefectImageFilterOptions = () =>
   request({ url: '/v1/defect-images/filter-options', method: 'get' })

@@ -66,6 +66,14 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
 
     private final Map<String, CameraStatusCache> statusCache = new ConcurrentHashMap<>();
 
+    /**
+     * 心跳历史写入节流（评审 P1-1）：心跳 5 秒/台，36 台一天 62 万行会撑爆历史表。
+     * 按 camera_code 记录上次写历史的时间戳，每分钟最多写 1 条 —— 温度/状态趋势看分钟级足够。
+     * 进程内状态、重启清零可接受（重启后首条补写，不影响趋势连续性）。
+     */
+    private final Map<String, Long> historyWriteAt = new ConcurrentHashMap<>();
+    private static final long HISTORY_WRITE_INTERVAL_MS = 60 * 1000L;
+
     private static class CameraStatusCache {
         Integer recognizeCount;
         Integer correctCount;
@@ -118,6 +126,7 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
 
             saveCameraStatus(dto, deviceId);
             checkAndAlert(dto, deviceId);
+            recordHeartbeatHistory(dto, deviceId);
             return buildResponse();
         } catch (IllegalArgumentException e) {
             // ★ 2026-11-19 评审 P0-2：心跳是 5 秒/台的高频链路，这条日志**必须节流**。
@@ -225,6 +234,50 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
             //   处理方可以精确分流（Controller 据此不重复记日志）。
             throw new CameraNotConfiguredException(deviceId);
         }
+    }
+
+    /**
+     * 心跳历史采样写入（评审 P1-1，2026-11-21）。
+     *
+     * <p>每个相机每分钟最多写 1 条到 {@code fact_camera_heartbeat}，供设备温度/状态趋势回溯。
+     * 三条纪律：
+     * <ol>
+     *   <li><b>只采样成功上报的已配置相机</b>——本方法在 saveCameraStatus 之后调用，
+     *       未配置相机会先抛 CameraNotConfiguredException，走不到这里；</li>
+     *   <li><b>节流在写库之前</b>——5 秒心跳 36 台若不节流一天 62 万行；每分钟每条足够画趋势；</li>
+     *   <li><b>任何失败都不影响心跳主流程</b>——仓储层吞异常，本方法再兜一层 catch。</li>
+     * </ol>
+     */
+    private void recordHeartbeatHistory(CameraStatusHeartbeatDTO dto, String deviceId) {
+        try {
+            long now = System.currentTimeMillis();
+            Long last = historyWriteAt.get(deviceId);
+            if (last != null && now - last < HISTORY_WRITE_INTERVAL_MS) return;
+            // 先占位再写，避免并发心跳重复写（写失败也占位，下一分钟再试）
+            historyWriteAt.put(deviceId, now);
+            Long cameraId = cameraDirectoryRepository.findCameraIdByCode(deviceId);
+            cameraDirectoryRepository.insertHeartbeatHistory(
+                    cameraId, deviceId, null, dto.getProductName(),
+                    parseReportTime(dto.getTimestamp()), dto.getCameraStatus(),
+                    toLong(dto.getRecognizeCount()), toLong(dto.getCorrectCount()), toLong(dto.getAbnormalCount()),
+                    toDecimal(dto.getCpuUsage()), toDecimal(dto.getMemoryUsage()), toDecimal(dto.getTemperature()),
+                    dto.getErrorMessage());
+        } catch (Exception e) {
+            // 绝不冒泡：历史写入是Best-effort，心跳上报/告警才是主流程
+            if (LogThrottle.allow("heartbeat-history-hotpath:" + deviceId, 10 * 60 * 1000L)) {
+                log.warn("心跳历史采样跳过（不影响上报）: {}", e.getMessage());
+            }
+        }
+    }
+
+    private static Long toLong(Integer v) { return v == null ? null : v.longValue(); }
+    private static BigDecimal toDecimal(Double v) { return v == null ? null : BigDecimal.valueOf(v); }
+
+    @Override
+    public List<Map<String, Object>> getHeartbeatTrend(String cameraCode, int hours, int limit) {
+        int h = Math.max(1, Math.min(24, hours));
+        int lim = Math.max(10, Math.min(500, limit));
+        return cameraDirectoryRepository.listHeartbeatTrend(cameraCode, LocalDateTime.now().minusHours(h), lim);
     }
 
     /**

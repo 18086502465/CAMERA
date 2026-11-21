@@ -5,6 +5,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 异常告警仓储（DDD P3 批次③ 收敛）。
@@ -174,6 +175,42 @@ public class AnomalyAlertRepository {
                         "ORDER BY alert_id DESC LIMIT 1",
                 Long.class, alertType, lineId, workstationId);
         return ids.isEmpty() ? null : ids.get(0);
+    }
+
+    /**
+     * 统计「当日 + 近 7 日」五类相机告警的按天数量，供日报「异常全景」展示趋势。
+     *
+     * <p>★ 2026-11-21 评审 P0-4：日报原来只取了 temperature 一类告警、且只有当日一个数字，
+     * 既看不到趋势也看不到类型分布。这里补一个只读聚合：
+     * <ul>
+     *   <li>只统计五类**相机业务告警**，显式排除运维类（BACKUP_FAILED / DISK_* 等），
+     *       避免把「磁盘告警」混进「相机异常」误导产线；</li>
+     *   <li>按 detect_time 的自然日分组，前端据此画 7 日趋势；</li>
+     *   <li>lineId 为 null 或 0 表示全厂，否则按 line_id 过滤；未配置产线的告警
+     *       （line_id=0）在筛选具体产线时**不计入**，口径与相机目录一致；</li>
+     *   <li>只读、失败由调用方 catch（日报主流程不受影响）。</li>
+     * </ul>
+     *
+     * @return 每行：alert_type / day / cnt，按 day 升序、cnt 降序
+     */
+    public List<Map<String, Object>> countCameraAlertsByDay(java.time.LocalDate start,
+                                                             java.time.LocalDate endExclusive,
+                                                             Integer lineId) {
+        String types = "('CAMERA_FAULT','COUNT_MISMATCH','CPU_HIGH','MEMORY_HIGH','TEMPERATURE_HIGH')";
+        StringBuilder sql = new StringBuilder()
+                .append("SELECT alert_type AS alertType, DATE(detect_time) AS day, COUNT(1) AS cnt ")
+                .append("FROM fact_anomaly_alert ")
+                .append("WHERE alert_type IN ").append(types)
+                .append("  AND detect_time >= ? AND detect_time < ? ");
+        List<Object> params = new java.util.ArrayList<>();
+        params.add(java.sql.Timestamp.valueOf(start.atStartOfDay()));
+        params.add(java.sql.Timestamp.valueOf(endExclusive.atStartOfDay()));
+        if (lineId != null && lineId > 0) {
+            sql.append("  AND line_id = ? ");
+            params.add(lineId);
+        }
+        sql.append("GROUP BY alert_type, DATE(detect_time) ORDER BY day ASC, cnt DESC");
+        return jdbcTemplate.queryForList(sql.toString(), params.toArray());
     }
 
     /**

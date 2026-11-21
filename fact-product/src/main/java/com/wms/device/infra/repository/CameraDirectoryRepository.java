@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import com.wms.shared.util.LogThrottle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -179,6 +180,72 @@ public class CameraDirectoryRepository {
     /** 相机心跳记录数（按相机编码） */
     public int countHeartbeats(String cameraCode) {
         return countOrZero("SELECT COUNT(*) FROM fact_camera_heartbeat WHERE camera_code = ?", cameraCode);
+    }
+
+    /**
+     * 写一条心跳历史到 {@code fact_camera_heartbeat}（评审 P1-1，2026-11-21）。
+     *
+     * <p>表在 02_final_schema_p0.sql 已建、索引齐全（idx_camera_time/status_time/product_time），
+     * 但此前**只有 countHeartbeats 读、没有任何写入路径** → 设备温度/状态趋势无法回溯。
+     *
+     * <p><b>热路径纪律</b>：心跳是 5 秒/台的高频链路，本方法<b>吞掉所有异常只记节流 WARN</b>，
+     * 绝不把写历史失败冒泡到心跳主流程（相机上报/告警不能因历史写入失败而 500）。
+     * 调用方按相机节流到「每分钟最多 1 条」，避免日增数十万行。
+     *
+     * @return 是否写入成功（供调用方统计/节流，不影响主流程）
+     */
+    public boolean insertHeartbeatHistory(Long cameraId, String cameraCode, Long productId, String productName,
+                                          java.time.LocalDateTime reportTime, Integer cameraStatus,
+                                          Long recognizeCount, Long correctCount, Long abnormalCount,
+                                          java.math.BigDecimal cpuUsage, java.math.BigDecimal memoryUsage,
+                                          java.math.BigDecimal temperature, String errorMessage) {
+        try {
+            jdbcTemplate.update(
+                    "INSERT INTO fact_camera_heartbeat(camera_id, camera_code, product_id, product_name, " +
+                            "report_time, camera_status, recognize_count, correct_count, abnormal_count, " +
+                            "cpu_usage, memory_usage, temperature, error_message, create_time) " +
+                            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())",
+                    cameraId == null ? 0L : cameraId, cameraCode,
+                    productId, productName,
+                    java.sql.Timestamp.valueOf(reportTime), cameraStatus,
+                    recognizeCount == null ? 0L : recognizeCount,
+                    correctCount == null ? 0L : correctCount,
+                    abnormalCount == null ? 0L : abnormalCount,
+                    cpuUsage, memoryUsage, temperature, errorMessage);
+            return true;
+        } catch (DataAccessException e) {
+            if (LogThrottle.allow("heartbeat-history-db:" + cameraCode, 10 * 60 * 1000L)) {
+                log.warn("写心跳历史失败（不影响上报主流程，10 分钟内只记一次）: {}", e.getMessage());
+            }
+            return false;
+        } catch (Exception e) {
+            if (LogThrottle.allow("heartbeat-history-unknown:" + cameraCode, 10 * 60 * 1000L)) {
+                log.warn("写心跳历史异常（不影响上报主流程）: {}", e.getMessage());
+            }
+            return false;
+        }
+    }
+
+    /**
+     * 查询某相机近 N 小时的温度/状态采样（供设备健康趋势）。
+     *
+     * <p>按 report_time 升序返回，最多 limit 条；表缺失时返回空列表（降级）。
+     */
+    public List<Map<String, Object>> listHeartbeatTrend(String cameraCode, java.time.LocalDateTime since, int limit) {
+        try {
+            return jdbcTemplate.queryForList(
+                    "SELECT report_time AS reportTime, camera_status AS cameraStatus, " +
+                            "temperature, cpu_usage AS cpuUsage, memory_usage AS memoryUsage, " +
+                            "recognize_count AS recognizeCount, correct_count AS correctCount, abnormal_count AS abnormalCount " +
+                            "FROM fact_camera_heartbeat WHERE camera_code = ? AND report_time >= ? " +
+                            "ORDER BY report_time ASC LIMIT ?",
+                    cameraCode, java.sql.Timestamp.valueOf(since), limit);
+        } catch (DataAccessException e) {
+            if (LogThrottle.allow("heartbeat-trend-db:" + cameraCode, 10 * 60 * 1000L)) {
+                log.warn("查心跳趋势失败（降级为空）: {}", e.getMessage());
+            }
+            return java.util.Collections.emptyList();
+        }
     }
 
     // ==================== DDL ====================

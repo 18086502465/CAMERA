@@ -33,6 +33,12 @@
           <i class="lv lv1"></i><i class="lv lv2"></i><i class="lv lv3"></i><i class="lv lv4"></i>
           <span class="legend-label">多</span>
         </span>
+        <span class="target-setting">
+          <span class="legend-label">目标</span>
+          <input class="target-input" type="number" min="0" step="100" v-model.number="targetBoxes"
+            @change="persistTarget" title="每日缺陷框数目标线；留空或 0 表示未设目标" />
+          <span class="legend-label">框/天</span>
+        </span>
       </div>
 
       <div class="panel-body">
@@ -46,10 +52,17 @@
             :title="cellTitle(c)"
             @click="pickDate(c)">
             <div class="day-num">{{ Number(c.date.slice(8, 10)) }}</div>
+            <span v-if="isBest(c)" class="day-badge best" title="本月最佳日（缺陷框最少，已排除今天）">优</span>
+            <span v-else-if="isWorst(c)" class="day-badge worst" title="本月最差日（缺陷框最多，已排除今天）">差</span>
             <template v-if="!c.isFuture">
               <template v-if="c.hasData">
                 <div class="day-rate">{{ fmt(c.defectCount) }} 框</div>
                 <div class="day-sub" :class="{ muted: c.counterRateKilo == null }">{{ rateText(c) }}</div>
+                <div v-if="dodOf(c) != null" class="day-dod" :class="dodOf(c)>0?'up':(dodOf(c)<0?'down':'flat')"
+                  :title="dodTitle(c)">
+                  {{ dodText(c) }}
+                </div>
+                <div v-if="overTarget(c)" class="day-over" title="缺陷框数超过设定的目标线">超标</div>
               </template>
               <div v-else class="day-empty">{{ c.missingSnapshot ? '无快照' : '无数据' }}</div>
             </template>
@@ -61,7 +74,8 @@
           <span>累计检测 <b>{{ fmt(summary.totalDetect) }}</b></span>
           <span>累计缺陷框 <b>{{ fmt(summary.totalDefect) }}</b></span>
           <span v-if="summary.avgCounterRateKilo != null">平均缺陷率 <b>{{ summary.avgCounterRateKilo }}‰</b></span>
-          <span v-if="summary.worstDate">最多的一天 <b>{{ summary.worstDate }}</b>（{{ fmt(summary.worstDefect) }} 框）</span>
+          <span v-if="summary.worstDate">最多 <b>{{ summary.worstDate }}</b>（{{ fmt(summary.worstDefect) }} 框）</span>
+          <span v-if="summary.bestDate">最少 <b>{{ summary.bestDate }}</b>（{{ fmt(summary.bestDefect) }} 框）</span>
         </div>
       </div>
     </div>
@@ -83,6 +97,40 @@
       <div class="panel-body" v-loading="detailLoading">
         <el-empty v-if="breakdown && breakdown.missing" description="这一天没有日报快照（服务上线前或生成失败），可用「补算这一天」生成" />
         <template v-else-if="breakdown">
+          <!-- ★ P1-3：明细筛选（工位 / 相机 / 缺陷类型），真正落到四个明细块 -->
+          <div class="detail-filter">
+            <span class="df-label">明细筛选</span>
+            <el-select v-model="detailFilters.workstationId" clearable placeholder="全部工位" size="small"
+              style="width:130px" @change="loadBreakdown">
+              <el-option v-for="w in workstationOptions" :key="w.workstationId" :label="w.workstationName || w.stationName || w.workstationId" :value="w.workstationId" />
+            </el-select>
+            <el-select v-model="detailFilters.cameraId" clearable filterable placeholder="全部相机" size="small"
+              style="width:150px" @change="loadBreakdown">
+              <el-option v-for="c in cameraOptions" :key="c.id ?? c.cameraId" :label="c.cameraName || c.cameraCode || c.label" :value="c.id ?? c.cameraId" />
+            </el-select>
+            <el-select v-model="detailFilters.shiftId" clearable placeholder="全部班次" size="small"
+              style="width:120px" @change="loadBreakdown">
+              <el-option v-for="s in shiftOptions" :key="s.shiftId" :label="s.shiftName" :value="s.shiftId" />
+            </el-select>
+            <el-select v-model="detailFilters.defectType" clearable filterable allow-create placeholder="全部缺陷类型" size="small"
+              style="width:150px" @change="loadBreakdown">
+              <el-option v-for="t in defectTypeOptions" :key="t.value" :label="t.label" :value="t.value" />
+            </el-select>
+            <el-button link size="small" @click="resetDetailFilters">清除</el-button>
+            <span v-if="breakdown.detailFilterMessage" class="df-note">{{ breakdown.detailFilterMessage }}</span>
+          </div>
+          <!-- 今日质量判断条：把散落的 KPI 收敛成一句可拍板结论；数据不足时诚实说不确定 -->
+          <div class="verdict" :class="verdict.level">
+            <span class="verdict-dot"></span>
+            <b class="verdict-label">{{ verdict.label }}</b>
+            <span class="verdict-text">{{ verdict.text }}</span>
+          </div>
+          <!-- ★ G20：明细筛选激活时，明确标注 KPI 区口径边界，避免厂长误以为已筛选 -->
+          <div v-if="detailFilterActive" class="kpi-scope-note">
+            <b>口径提示</b>：下方 KPI 与月历为<b>所选产线整体</b>，未随上方明细筛选（
+            <template v-if="breakdown.detailFilterNames">{{ breakdown.detailFilterNames.join('、') }}</template>
+            <template v-else>工位/相机/班次/缺陷类型</template>）变化；筛选结果见下方四宫格。
+          </div>
           <div class="kpi-row">
             <div class="kpi-card">
               <span class="kpi-label">检测总数（日增）</span>
@@ -94,8 +142,8 @@
               <strong class="kpi-value err">{{ deltaText(kpi.ngDelta) }}</strong>
               <small>NG 计数差分</small>
             </div>
-            <div class="kpi-card">
-              <span class="kpi-label">缺陷率（‰ · 计数）</span>
+            <div class="kpi-card" :title="caliber.ratePlain">
+              <span class="kpi-label">缺陷率（‰ · 计数）<span class="plain-tag">?</span></span>
               <strong class="kpi-value">{{ deltaText(kpi.counterRateKilo) }}</strong>
               <!-- ★ 2026-11-20 复测 D-4：计数列为 null 时原来只显示「待积累」，
                    用户会以为「这天没数据」。后端现在如实回传原因，这里显示出来。 -->
@@ -105,6 +153,12 @@
               <span class="kpi-label">在线相机</span>
               <strong class="kpi-value">{{ kpi.cameraOnline ?? 0 }}/{{ kpi.cameraTotal ?? 0 }}</strong>
               <small>当日有上传的 REAL 相机</small>
+            </div>
+            <!-- ★ P1-2：心跳口径直通率（设备 correctCount 差分；语义待校准，绝不当良率显示） -->
+            <div class="kpi-card" :title="caliber.passPlain">
+              <span class="kpi-label">直通率 <span class="plain-tag">?</span> <span class="calib-tag">心跳口径·待校准</span></span>
+              <strong class="kpi-value">{{ kpi.heartbeatPassRate != null ? kpi.heartbeatPassRate + '%' : '待积累' }}</strong>
+              <small>{{ caliber.heartbeatPassNote || '识别正确计数差分，非终检良率' }}</small>
             </div>
           </div>
 
@@ -167,14 +221,27 @@
 
             <!-- 当日异常 -->
             <div class="mini-card">
-              <div class="mini-head">当日异常<span class="mini-hint">只能当线索，不当结论</span></div>
+              <div class="mini-head">异常全景<span class="mini-hint">五类相机告警 · 只能当线索，不当结论</span></div>
+              <!-- ★ P0-4：五类告警当日数 + 近 7 日趋势迷你条 -->
+              <div v-if="alertTypes.length" class="alert-types">
+                <div v-for="t in alertTypes" :key="t.type" class="alert-type-row">
+                  <span class="alert-name" :title="t.type">{{ t.label }}</span>
+                  <span class="alert-spark" :title="alertTrendTitle(t)">
+                    <i v-for="(n, i) in t.daily" :key="i" :style="{ height: barWidth(n, alertMax, 2) }"
+                      :class="{ hot: n > 0 }"></i>
+                  </span>
+                  <b class="alert-total" :class="{ err: t.total > 0 }">{{ t.total }}</b>
+                </div>
+                <div class="alert-axis"><span>7 日前</span><span>今日</span></div>
+              </div>
+              <div v-else class="mini-empty">{{ alertNote || '近 7 日无相机告警' }}</div>
               <ul class="anomaly-list">
                 <li>
-                  <span>温度告警</span>
+                  <span>温度告警（当日）</span>
                   <b :class="{ err: (anomalies.tempAlarmCount || 0) > 0 }">{{ anomalies.tempAlarmCount || 0 }} 条</b>
                 </li>
                 <li>
-                  <span>离线相机</span>
+                  <span>未上报相机</span>
                   <b :class="{ err: (anomalies.offlineCameras || 0) > 0 }">{{ anomalies.offlineCameras || 0 }} 台</b>
                 </li>
                 <li>
@@ -189,11 +256,36 @@
             </div>
           </div>
 
+          <!-- ★ P1-1：设备健康趋势（心跳历史采样，分钟级；无历史时诚实提示） -->
+          <div class="device-trend">
+            <div class="mini-head">
+              设备健康趋势
+              <el-select v-model="trendCameraCode" clearable filterable size="small" placeholder="选相机看趋势"
+                style="width:170px" @change="loadHeartbeatTrend">
+                <el-option v-for="c in cameraOptions" :key="c.cameraCode || c.code || c.id"
+                  :label="c.cameraName || c.cameraCode || c.label" :value="c.cameraCode || c.code" />
+              </el-select>
+              <span class="mini-hint">近 24h · 心跳每分钟采样，无数据不伪造</span>
+            </div>
+            <div v-if="trendCameraCode && trendPoints.length" class="trend-chart">
+              <svg viewBox="0 0 600 90" preserveAspectRatio="none" class="trend-svg">
+                <polyline :points="trendLinePoints" fill="none" stroke="var(--color-primary)" stroke-width="2" />
+                <line v-if="trendWarnY != null" x1="0" :y1="trendWarnY" x2="600" :y2="trendWarnY"
+                  stroke="var(--color-error)" stroke-width="1" stroke-dasharray="4 3" />
+              </svg>
+              <div class="trend-axis"><span>24 小时前</span><span>温度峰值 {{ trendMax }}℃ · 最低 {{ trendMin }}℃</span><span>现在</span></div>
+            </div>
+            <div v-else class="mini-empty">
+              {{ trendCameraCode ? trendNote || '该相机近 24h 暂无心跳历史采样（功能刚上线需积累，或该时段未上报）' : '选择一台相机查看温度趋势' }}
+            </div>
+          </div>
+
           <div class="caliber">
             统计口径：{{ caliber.rateFormula }} ｜ 相机范围：{{ caliber.cameraType }}
             ｜ 相机排名最低样本：{{ caliber.rankMinSample }} 张 ｜ 数据源：{{ breakdown.dataSource === 'REALTIME' ? '实时计算（当天）' : '日终快照' }}
             <br />{{ caliber.counterNote }}
             <br />{{ breakdown.idleNote }}
+            <br /><span class="caliber-plain"><b>白话解读（给厂长）：</b>{{ caliber.ratePlain }} {{ caliber.passPlain }} {{ caliber.counterPlain }}</span>
           </div>
         </template>
       </div>
@@ -204,7 +296,9 @@
 <script setup>
 import { ref, computed, inject, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getDailyReportCalendar, getDailyReportBreakdown, regenerateDailyReport, exportDailyReport } from '@/api/analytics'
+import { getDailyReportCalendar, getDailyReportBreakdown, regenerateDailyReport, exportDailyReport, getAnalyticsMetadata } from '@/api/analytics'
+import { getCascadeAll } from '@/api/cascade'
+import { getCameraOptions, getDefectImageFilterOptions, getCameraHeartbeatTrend } from '@/api/camera'
 import { useUserStore } from '../../stores/user'
 
 const userStore = useUserStore()
@@ -215,6 +309,7 @@ const filterParams = inject('filterParams', ref({ factoryId: null, lineIds: [], 
 
 const WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 const LINE_KEY = 'daily-report:lineId'
+const TARGET_KEY = 'daily-report:targetBoxes'
 
 const month = ref(currentMonth())
 const lineId = ref(initialLineId())
@@ -228,6 +323,22 @@ const loading = ref(false)
 const detailLoading = ref(false)
 const exporting = ref(false)
 const regenerating = ref(false)
+const targetBoxes = ref(loadTarget())
+// ★ P1-3 / G20：明细筛选状态与候选（含班次）
+const detailFilters = ref({ workstationId: null, cameraId: null, defectType: null, shiftId: null })
+const workstationOptions = ref([])
+const cameraOptions = ref([])
+const defectTypeOptions = ref([])
+const shiftOptions = ref([])
+// G20：明细筛选是否激活（用于 KPI 区「未随筛选」角标，避免误读）
+const detailFilterActive = computed(() =>
+  !!(detailFilters.value.workstationId || detailFilters.value.cameraId ||
+     (detailFilters.value.defectType && String(detailFilters.value.defectType).trim()) ||
+     detailFilters.value.shiftId))
+// ★ P1-1：设备健康趋势
+const trendCameraCode = ref('')
+const trendPoints = ref([])
+const trendNote = ref('')
 
 function pad(n) { return n < 10 ? '0' + n : String(n) }
 function todayStrOf(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` }
@@ -243,6 +354,19 @@ function initialLineId() {
   return injected ? Number(injected) : 0
 }
 
+/** 目标缺陷框数：按产线存 localStorage，空/0 表示未设目标（区分「异常」与「超标」用） */
+function loadTarget() {
+  try {
+    const v = Number(localStorage.getItem(`${TARGET_KEY}:${lineId.value ?? 0}`))
+    return Number.isFinite(v) && v > 0 ? v : 0
+  } catch (e) { return 0 }
+}
+function persistTarget() {
+  const v = Math.max(0, Number(targetBoxes.value) || 0)
+  targetBoxes.value = v
+  try { localStorage.setItem(`${TARGET_KEY}:${lineId.value}`, String(v)) } catch (e) { /* 忽略 */ }
+}
+
 const monthLabel = computed(() => `${Number(month.value.slice(0, 4))} 年 ${Number(month.value.slice(5, 7))} 月`)
 const scopeName = computed(() => (lines.value.find(l => l.lineId === lineId.value)?.lineName) || '全厂')
 
@@ -256,6 +380,14 @@ const leadingBlanks = computed(() => {
 
 const kpi = computed(() => breakdown.value?.kpi || {})
 const anomalies = computed(() => breakdown.value?.anomalies || {})
+// P0-4：五类相机告警的近 7 日趋势（后端 breakdown.alertTrend）
+const alertTypes = computed(() => breakdown.value?.alertTrend?.types || [])
+const alertNote = computed(() => breakdown.value?.alertTrend?.note || '')
+const alertMax = computed(() => Math.max(1, ...alertTypes.value.flatMap(t => (t.daily || []).map(n => Number(n) || 0))))
+function alertTrendTitle(t) {
+  const days = breakdown.value?.alertTrend?.days || []
+  return `${t.label} 近 7 日：${(t.daily || []).map((n, i) => `${days[i] || ''} ${n}`).join('，')}`
+}
 const detailsAvailable = computed(() => breakdown.value?.detailsAvailable !== false)
 const topCameras = computed(() => (breakdown.value?.cameraBreakdown || []).slice(0, 5))
 const maxTypeCount = computed(() => Math.max(1, ...((breakdown.value?.typeBreakdown || []).map(t => Number(t.count) || 0))))
@@ -283,6 +415,34 @@ const idleText = computed(() => {
   const night = (anomalies.value.idleHours || []).filter(h => h < 8 || h > 19).length
   if (!idleRanges.value.length) return night ? '无（夜间未排产）' : '无'
   return `${idleRanges.value.join('、')}`
+})
+
+/**
+ * 今日质量判断条：把 KPI 收敛成一句可拍板结论。
+ * 原则（对齐 PRD「数字不骗人」）：
+ *   · 无快照 / 无数据 / 样本不足 → 一律 gray「不确定」，绝不绿；
+ *   · 有硬信号（超标 / 温度告警 / 相机未上报）→ red；
+ *   · 只有环比恶化 → yellow；其余 → green「暂无异常信号」。
+ * 这是「线索不是结论」的聚合，按钮文案避免下质量定论。
+ */
+const verdict = computed(() => {
+  const b = breakdown.value
+  if (!b || b.missing) return { level: 'gray', label: '无数据', text: '这一天没有日报快照，无法判断。可用「补算这一天」生成。' }
+  const detect = Number(kpi.value.detectCount) || 0
+  if (detect <= 0) return { level: 'gray', label: '无数据', text: '这一天没有检测数据，无法判断。' }
+  if (kpi.value.sampleInsufficient) {
+    return { level: 'gray', label: '样本不足', text: `当日仅 ${fmt(detect)} 张（<100），统计仅供参考，不做健康判断。` }
+  }
+  const hard = []
+  const target = Number(targetBoxes.value) || 0
+  const defect = Number(b.defectCount ?? kpi.value.defectCount) || 0
+  if (target > 0 && defect > target) hard.push(`缺陷框 ${defect} 超过目标 ${target}`)
+  if ((anomalies.value.tempAlarmCount || 0) > 0) hard.push(`温度告警 ${anomalies.value.tempAlarmCount} 条`)
+  if ((anomalies.value.offlineCameras || 0) > 0) hard.push(`${anomalies.value.offlineCameras} 台相机当日未上报`)
+  if (hard.length) return { level: 'red', label: '需关注', text: hard.join('；') + '。建议下钻对应维度核实。' }
+  const dod = dodOf({ date: selectedDate.value })
+  if (dod != null && dod >= 20) return { level: 'yellow', label: '略有抬头', text: `缺陷框较前一天上升 ${dod.toFixed(1)}%，未超目标但需留意趋势。` }
+  return { level: 'green', label: '暂无异常信号', text: '缺陷量未超目标、无设备告警与相机失联。仅为线索汇总，非质量定论。' }
 })
 
 function fmt(n) {
@@ -331,7 +491,50 @@ function cellClass(c) {
   if (v > p90) lv = 4
   else if (v > p75) lv = 3
   else if (v > p50) lv = 2
-  return [`hasdata`, `lv${lv}`, { selected: c.date === selectedDate.value, today: c.isToday }]
+  return [`hasdata`, `lv${lv}`, { selected: c.date === selectedDate.value, today: c.isToday, over: overTarget(c) }]
+}
+
+/** 是否本月最佳/最差日（后端 summary 已排除今天，直接按日期比对，不重复计算） */
+function isBest(c) { return !!summary.value.bestDate && c.date === summary.value.bestDate && c.hasData }
+function isWorst(c) { return !!summary.value.worstDate && c.date === summary.value.worstDate && c.hasData && !c.isToday }
+
+/** 是否超过目标线（目标未设或该日无数据 → 不算超标，避免误报） */
+function overTarget(c) {
+  const t = Number(targetBoxes.value) || 0
+  return t > 0 && c.hasData && (Number(c.defectCount) || 0) > t
+}
+
+/**
+ * 日环比：缺陷框数相对前一天。天数上涨=红（多），下降=绿（少），与股票无关，这里用缺陷量语义。
+ * 前一天缺数据 / 前一天为 0（除零）→ null（诚实留空，不伪造 0%）。
+ */
+const dodByDate = computed(() => {
+  const map = {}
+  const days = calendarDays.value.filter(c => c.hasData && !c.isFuture)
+  for (let i = 1; i < days.length; i++) {
+    const prev = Number(days[i - 1].defectCount) || 0
+    const cur = Number(days[i].defectCount) || 0
+    // 只比相邻两天：日历已按自然日连续排列，跳过无数据日后的差分会失真，故要求紧邻
+    const consecutive = dateDiffDays(days[i - 1].date, days[i].date) === 1
+    if (consecutive && prev > 0) map[days[i].date] = Math.round((cur - prev) * 10000.0 / prev) / 100
+  }
+  return map
+})
+function dateDiffDays(a, b) {
+  return Math.round((new Date(`${b}T00:00:00`) - new Date(`${a}T00:00:00`)) / 86400000)
+}
+function dodOf(c) {
+  const v = dodByDate.value[c.date]
+  return v === undefined ? null : v
+}
+function dodText(c) {
+  const v = dodOf(c)
+  if (v == null) return ''
+  return `${v > 0 ? '▲' : v < 0 ? '▼' : '—'} ${Math.abs(v).toFixed(1)}%`
+}
+function dodTitle(c) {
+  const v = dodOf(c)
+  return v == null ? '与前一天无可用基线（前一天无数据或为 0）' : `缺陷框数较前一天${v > 0 ? '上升' : v < 0 ? '下降' : '持平'} ${Math.abs(v).toFixed(1)}%`
 }
 
 function cellTitle(c) {
@@ -377,6 +580,13 @@ async function loadBreakdown() {
   detailLoading.value = true
   try {
     const params = lineId.value > 0 ? { lineId: lineId.value } : {}
+    // ★ P1-3：把明细筛选真正传给后端（有值才传，避免空串被当成筛选）
+    if (detailFilters.value.workstationId) params.workstationId = detailFilters.value.workstationId
+    if (detailFilters.value.cameraId) params.cameraId = detailFilters.value.cameraId
+    if (detailFilters.value.defectType && String(detailFilters.value.defectType).trim()) {
+      params.defectType = String(detailFilters.value.defectType).trim()
+    }
+    if (detailFilters.value.shiftId) params.shiftId = detailFilters.value.shiftId
     const res = await getDailyReportBreakdown(selectedDate.value, params)
     breakdown.value = res.data?.data || null
     if (breakdown.value?.caliber) caliber.value = breakdown.value.caliber
@@ -396,6 +606,7 @@ function pickDate(c) {
 function selectLine(id) {
   if (id === lineId.value) return
   lineId.value = id
+  targetBoxes.value = loadTarget()
   try { localStorage.setItem(LINE_KEY, String(id)) } catch (e) { /* 忽略 */ }
   selectedDate.value = ''
   loadCalendar()
@@ -428,6 +639,72 @@ function onKeydown(e) {
     e.preventDefault()
     goToday()
   }
+}
+
+/* ★ P1-1：温度趋势迷你折线（纯 SVG，避免再引 ECharts 实例） */
+const trendTemps = computed(() => trendPoints.value.map(p => Number(p.temperature)).filter(n => Number.isFinite(n)))
+const trendMax = computed(() => trendTemps.value.length ? Math.max(...trendTemps.value) : 0)
+const trendMin = computed(() => trendTemps.value.length ? Math.min(...trendTemps.value) : 0)
+const trendLinePoints = computed(() => {
+  const vals = trendTemps.value
+  if (vals.length < 2) return ''
+  const lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1
+  return vals.map((v, i) => `${(i * 600 / (vals.length - 1)).toFixed(1)},${(80 - (v - lo) / span * 70).toFixed(1)}`).join(' ')
+})
+const trendWarnY = computed(() => {
+  const vals = trendTemps.value
+  if (vals.length < 2) return null
+  const lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1
+  const warn = 70 // 温度告警阈值提示线（仅为参考线，真实阈值以设备配置为准）
+  return warn >= lo && warn <= hi ? (80 - (warn - lo) / span * 70).toFixed(1) : null
+})
+
+async function loadHeartbeatTrend() {
+  trendPoints.value = []
+  trendNote.value = ''
+  if (!trendCameraCode.value) return
+  try {
+    const res = await getCameraHeartbeatTrend(trendCameraCode.value, 24, 120)
+    const data = res.data?.data
+    trendPoints.value = Array.isArray(data) ? data : []
+    if (!trendPoints.value.length) trendNote.value = '该相机近 24h 暂无心跳历史采样（功能刚上线需积累）'
+  } catch (e) {
+    trendNote.value = '趋势数据暂不可用：' + (e?.response?.data?.message || e?.message || '未知错误')
+  }
+}
+
+function resetDetailFilters() {
+  detailFilters.value = { workstationId: null, cameraId: null, defectType: null, shiftId: null }
+  loadBreakdown()
+}
+
+/** 加载明细筛选候选：失败只降级为空选项，不影响日报主流程 */
+async function loadFilterOptions() {
+  try {
+    const [cascade, cams, types, meta] = await Promise.all([
+      getCascadeAll().catch(() => null),
+      getCameraOptions().catch(() => null),
+      getDefectImageFilterOptions().catch(() => null),
+      getAnalyticsMetadata().catch(() => null)
+    ])
+    const rows = cascade?.data?.data || cascade?.data || {}
+    // cascade 同时给顶层 workstations[] 与 factories[].lines[].stations[]，优先前者（更全）
+    const rawStations = (rows.workstations && rows.workstations.length)
+      ? rows.workstations
+      : (rows.factories || []).flatMap(f => (f.lines || []).flatMap(l => l.stations || []))
+    workstationOptions.value = rawStations.map(s => ({
+      workstationId: s.workstationId || s.stationId,
+      workstationName: s.stationName || s.workstationName || s.stationCode
+    })).filter(w => w.workstationId)
+    const camData = cams?.data?.data || cams?.data || []
+    cameraOptions.value = Array.isArray(camData) ? camData : (camData.options || camData.cameras || [])
+    const typeData = types?.data?.data || types?.data || []
+    defectTypeOptions.value = (Array.isArray(typeData) ? typeData : (typeData.options || []))
+      .map(t => ({ label: t.label || t.name || t.defectType, value: t.value || t.defectType || t.name }))
+      .filter(t => t.value)
+    const metaData = meta?.data?.data || meta?.data || {}
+    shiftOptions.value = Array.isArray(metaData.shifts) ? metaData.shifts : []
+  } catch (e) { /* 候选加载失败不影响主流程 */ }
 }
 
 async function loadAll() {
@@ -503,11 +780,15 @@ watch(() => (filterParams.value?.lineIds || []).join(','), (v, old) => {
   const next = Number((filterParams.value?.lineIds || [])[0] || 0)
   if (next === lineId.value) return
   lineId.value = next
+  targetBoxes.value = loadTarget()
   selectedDate.value = ''
   loadCalendar()
 })
 
-onMounted(loadAll)
+onMounted(() => {
+  loadFilterOptions()
+  loadAll()
+})
 </script>
 
 <style scoped>
@@ -544,6 +825,12 @@ onMounted(loadAll)
 .legend { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--color-text-secondary); }
 .legend-label { margin: 0 2px; }
 .legend .lv { display: inline-block; width: 14px; height: 12px; border-radius: 2px; }
+.target-setting { display: flex; align-items: center; gap: 3px; margin-left: 4px; font-size: 12px; color: var(--color-text-secondary); }
+.target-input {
+  width: 62px; padding: 2px 5px; font-size: 12px; text-align: right;
+  border: 1px solid var(--color-border); border-radius: 4px;
+  background: var(--color-bg-card); color: var(--color-text);
+}
 .panel-body { padding: 12px 14px; }
 
 .weekday-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-bottom: 6px; }
@@ -567,6 +854,21 @@ onMounted(loadAll)
   position: absolute; top: 4px; right: 6px; font-size: 10px; color: #fff;
   background: var(--color-primary); border-radius: 8px; padding: 0 4px; line-height: 14px;
 }
+/* 最佳/最差角标：仅历史日标记，今天不参与（后端已排除） */
+.day-badge {
+  position: absolute; top: 4px; left: 6px; font-size: 10px; line-height: 14px;
+  border-radius: 3px; padding: 0 4px; color: #fff;
+}
+.day-badge.best { background: var(--color-success, #16a34a); }
+.day-badge.worst { background: var(--color-error); }
+/* 日环比：缺陷量上升用红、下降用绿（缺陷语义，非涨跌语义） */
+.day-dod { font-size: 11px; font-weight: 600; margin-top: 1px; }
+.day-dod.up { color: var(--color-error); }
+.day-dod.down { color: var(--color-success, #16a34a); }
+.day-dod.flat { color: var(--color-text-secondary); }
+/* 超标：叠加在分位色阶上的绝对目标判断，用下划线+角标区分于「相对分位异常」 */
+.day-cell.over { outline: 2px solid var(--color-error); outline-offset: -2px; }
+.day-over { font-size: 10px; font-weight: 700; color: var(--color-error); margin-top: 1px; }
 /* 热力档位：色阶由数据分位驱动，只能用 error 色的透明度梯度表达，文字保持深色可读 */
 .day-cell.lv1 { background: color-mix(in srgb, var(--color-error) 7%, var(--color-bg-card)); }
 .day-cell.lv2 { background: color-mix(in srgb, var(--color-error) 16%, var(--color-bg-card)); }
@@ -585,6 +887,36 @@ onMounted(loadAll)
 .cal-foot b { color: var(--color-text); }
 
 /* ---------- 段③ 当日维度 ---------- */
+/* ★ P1-1：设备健康趋势 */
+.device-trend { margin-top: 12px; border: 1px solid var(--color-border); border-radius: 8px; padding: 10px 12px; background: var(--color-bg-card); }
+.trend-chart { margin-top: 6px; }
+.trend-svg { width: 100%; height: 90px; display: block; background: var(--color-bg-subtle); border-radius: 4px; }
+.trend-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--color-text-placeholder); margin-top: 2px; }
+/* P1-3：明细筛选条 */
+.detail-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.df-label { font-size: 12px; color: var(--color-text-secondary); }
+.df-note { font-size: 11px; color: var(--color-text-placeholder); flex-basis: 100%; }
+/* 今日质量判断条：四档语义色，灰=不确定、绿=无信号、黄=抬头、红=需关注 */
+.verdict {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border-radius: 8px; padding: 9px 14px; margin-bottom: 12px;
+  font-size: 13px; border: 1px solid transparent;
+}
+.verdict-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.verdict-label { font-size: 13px; }
+.verdict-text { color: var(--color-text-regular); font-size: 12px; }
+.verdict.gray { background: var(--color-bg-subtle); border-color: var(--color-border); }
+.verdict.gray .verdict-dot { background: var(--color-text-placeholder); }
+.verdict.gray .verdict-label { color: var(--color-text-secondary); }
+.verdict.green { background: color-mix(in srgb, var(--color-success, #16a34a) 8%, var(--color-bg-card)); border-color: color-mix(in srgb, var(--color-success, #16a34a) 30%, var(--color-bg-card)); }
+.verdict.green .verdict-dot { background: var(--color-success, #16a34a); }
+.verdict.green .verdict-label { color: var(--color-success, #16a34a); }
+.verdict.yellow { background: color-mix(in srgb, var(--color-warning) 10%, var(--color-bg-card)); border-color: color-mix(in srgb, var(--color-warning) 32%, var(--color-bg-card)); }
+.verdict.yellow .verdict-dot { background: var(--color-warning); }
+.verdict.yellow .verdict-label { color: var(--color-warning-dark); }
+.verdict.red { background: color-mix(in srgb, var(--color-error) 9%, var(--color-bg-card)); border-color: color-mix(in srgb, var(--color-error) 30%, var(--color-bg-card)); }
+.verdict.red .verdict-dot { background: var(--color-error); }
+.verdict.red .verdict-label { color: var(--color-error); }
 .kpi-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .kpi-card {
   flex: 1; min-width: 150px; background: var(--color-bg-subtle); border-radius: 8px;
@@ -594,6 +926,19 @@ onMounted(loadAll)
 .kpi-value { font-size: 22px; font-weight: 700; color: var(--color-text); }
 .kpi-value.err { color: var(--color-error); }
 .kpi-card small { font-size: 11px; color: var(--color-text-placeholder); }
+.calib-tag { font-size: 10px; font-weight: 400; color: var(--color-warning-dark); background: var(--color-warning-bg); border-radius: 3px; padding: 0 4px; margin-left: 3px; }
+/* G19：白话解读标记（? 悬浮给出口径白话翻译，不改变术语本身的准确性） */
+.plain-tag { display: inline-block; font-size: 9px; font-weight: 600; line-height: 12px; text-align: center;
+  width: 12px; height: 12px; border-radius: 50%; margin-left: 3px; cursor: help;
+  color: var(--color-primary); background: var(--color-primary-bg, #eef4fb); }
+.kpi-card { position: relative; }
+/* G20：明细筛选激活时的 KPI 口径边界提示条 */
+.kpi-scope-note { font-size: 11px; line-height: 1.5; color: var(--color-warning-dark);
+  background: var(--color-warning-bg, #fff8e6); border: 1px solid var(--color-warning, #f5a623);
+  border-radius: 4px; padding: 5px 9px; margin-bottom: 10px; }
+.kpi-scope-note b { font-weight: 600; }
+.caliber-plain { color: var(--color-text-secondary); }
+.caliber-plain b { color: var(--color-primary); }
 
 .grid4 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top: 12px; }
 .mini-card { border: 1px solid var(--color-border); border-radius: 8px; padding: 10px 12px; background: var(--color-bg-card); }
@@ -616,6 +961,16 @@ onMounted(loadAll)
 .spark-col i { display: block; width: 100%; min-height: 0; background: var(--color-warning); border-radius: 2px 2px 0 0; }
 .spark-axis { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; font-size: 10px; color: var(--color-text-placeholder); }
 
+/* P0-4：五类告警近 7 日迷你趋势 */
+.alert-types { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px dashed var(--color-border); }
+.alert-type-row { display: grid; grid-template-columns: 56px 1fr 24px; align-items: center; gap: 6px; }
+.alert-name { font-size: 11px; color: var(--color-text-regular); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alert-spark { display: flex; align-items: flex-end; gap: 2px; height: 20px; }
+.alert-spark i { flex: 1; min-height: 1px; background: var(--color-border); border-radius: 1px 1px 0 0; }
+.alert-spark i.hot { background: var(--color-error-light); }
+.alert-total { font-size: 12px; text-align: right; color: var(--color-text); }
+.alert-total.err { color: var(--color-error); }
+.alert-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--color-text-placeholder); padding-left: 62px; }
 .anomaly-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .anomaly-list li { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--color-text-secondary); gap: 10px; }
 .anomaly-list b { font-size: 13px; color: var(--color-text); text-align: right; font-weight: 600; }
