@@ -1,8 +1,11 @@
 <template>
   <router-view />
+  <!-- 全局授权到期浮层（非模态，不影响操作；详见组件注释） -->
+  <LicenseNotice />
 </template>
 
 <script setup>
+import LicenseNotice from './components/LicenseNotice.vue'
 </script>
 
 <style>

@@ -114,13 +114,21 @@ public final class LicenseSigner {
         }
     }
 
+    /** 载荷支持的最高版本；超过则拒绝导入并提示升级平台（LIC-FILE-003）。 */
+    public static final int MAX_SUPPORTED_VERSION = 2;
+
     /** 结构校验：只做「格式自洽」，不判断时间与机器。 */
     public static void validate(LicensePayload payload) {
         if (payload == null) {
             throw new IllegalArgumentException("授权载荷为空");
         }
-        if (payload.getVersion() == null || payload.getVersion() != 1) {
-            throw new IllegalArgumentException("不支持的授权版本: " + payload.getVersion());
+        if (payload.getVersion() == null) {
+            throw new IllegalArgumentException("授权缺少版本号");
+        }
+        if (payload.getVersion() > MAX_SUPPORTED_VERSION) {
+            // v2 新增 expiredMode 字段；更高版本的字段本版无法理解，必须升级平台再导入
+            throw new IllegalArgumentException("授权由更新版本的工具签发（v" + payload.getVersion()
+                    + "），请先升级平台后重新导入");
         }
         if (isBlank(payload.getExpireAt())) {
             throw new IllegalArgumentException("授权缺少到期日期");
@@ -133,6 +141,13 @@ public final class LicenseSigner {
         }
         if (isBlank(payload.getMachineCode())) {
             payload.setMachineCode("*");
+        }
+        if (!isBlank(payload.getExpiredMode())
+                && !"warn".equalsIgnoreCase(payload.getExpiredMode())
+                && !"readonly".equalsIgnoreCase(payload.getExpiredMode())
+                && !"block".equalsIgnoreCase(payload.getExpiredMode())) {
+            throw new IllegalArgumentException("到期策略非法: " + payload.getExpiredMode()
+                    + "（仅支持 warn/readonly/block）");
         }
     }
 

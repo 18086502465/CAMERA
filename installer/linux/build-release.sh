@@ -286,6 +286,12 @@ fi
 # check_config_parity.py 是**构建期**守卫，服务器上用不到（现场只有 config/application.yml 一份），
 # 不进发布包，免得运维误以为是运维脚本。
 rm -f "${STAGE_DIR}/scripts/check_config_parity.py"
+# LIC-08（2026-11-21）：授权签发/工具类脚本绝不进客户交付包。
+# 背景：gen_license.py 内置默认密钥推导常量，客户拿到就能给自己签任意授权；
+# 正式的签发工具只存在于厂商侧 installer/license-tool/（本仓库不随包分发）。
+rm -f "${STAGE_DIR}/scripts/gen_license.py" \
+      "${STAGE_DIR}/scripts/issue_license.py" \
+      "${STAGE_DIR}/scripts/issue_license_gui.py"
 [[ -f "${STAGE_DIR}/scripts/jar_manifest.py" ]] \
   || die "缺少 scripts/jar_manifest.py —— 服务器端 deploy_jar.sh 的增量模式（*.zip）会直接报「缺少合成工具」"
 # 注意：除 *.service 外还要打包 *.timer（备份定时器）——
@@ -316,7 +322,7 @@ fi
 ok "脚本行尾检查通过（全部 LF）"
 
 # 文档：现场运维需要的手册随包发出（docs/archive 是历史评审稿，不进发布包）
-for d in "部署与运维手册.md" "服务器文件布局.md" "使用说明.md" "踩坑速查.md" "配置项清单.md"; do
+for d in "部署与运维手册.md" "服务器文件布局.md" "使用说明.md" "踩坑速查.md" "配置项清单.md" "服务器授权设计.md"; do
   [[ -f "${ROOT_DIR}/docs/$d" ]] && cp "${ROOT_DIR}/docs/$d" "${STAGE_DIR}/docs/" || true
 done
 cp "${ROOT_DIR}/README.md" "${STAGE_DIR}/docs/" 2>/dev/null || true
@@ -393,7 +399,12 @@ SH_MODE_PERM="${SH_MODE: -9}"
 if [[ "$SH_MODE_PERM" != "rwxr-xr-x" ]]; then
   die "scripts/install.sh 权限是 ${SH_MODE}（权限位 ${SH_MODE_PERM}），应为 rwxr-xr-x —— 解压后无法执行"
 fi
-ok "产物权限自检通过（install.sh 为 755，无反斜杠路径）"
+# LIC-08 打包断言（2026-11-21）：包内绝不允许出现签发工具与默认密钥推导脚本。
+# 上面 rm 只防「已复制」这一条路；这里是终检，防止将来有人加新的复制逻辑绕过。
+if tar -tzf "$TARBALL" | grep -qE 'gen_license|issue_license'; then
+  die "产物包含授权签发工具（gen_license/issue_license）—— 签发工具属厂商资产，绝不进客户交付包"
+fi
+ok "产物权限自检通过（install.sh 为 755，无反斜杠路径，无签发工具）"
 
 SIZE_MB=$(du -m "$TARBALL" | cut -f1)
 ok "产物：${TARBALL}（约 ${SIZE_MB} MB）"

@@ -46,4 +46,14 @@ public class LicensePayload implements Serializable {
 
     /** 绑定的机器码；"*" = 不绑定。 */
     private String machineCode;
+
+    /**
+     * 到期策略（v2 新增）：warn（只提示）/ readonly（到期停设备上报）/ block（到期只留授权页）。
+     *
+     * <p>进签名载荷的原因：商务卖的是「到期后怎么处理」，客户改配置文件不该改得掉。
+     * 生效优先级：本字段 &gt; 配置 {@code license.expired-mode} &gt; 默认 warn。
+     * 旧 jar 读 v2 授权时因 {@code FAIL_ON_UNKNOWN_PROPERTIES=false} 会忽略该字段、
+     * 回退配置，不会报错 —— {@code version} 双向兼容的关键。
+     */
+    private String expiredMode;
 }

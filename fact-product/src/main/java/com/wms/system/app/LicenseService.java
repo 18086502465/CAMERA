@@ -5,7 +5,9 @@ import com.wms.shared.license.LicenseSigner;
 import com.wms.shared.license.LicenseState;
 import com.wms.shared.license.LicenseStatus;
 import com.wms.shared.license.MachineFingerprint;
+import com.wms.system.infra.repository.SystemSettingsRepository;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -78,6 +80,28 @@ public class LicenseService {
     @Value("${license.enforce-machine:true}")
     private boolean enforceMachine;
 
+    /** 试用期开关（未装正式授权时给试用窗口）。 */
+    @Value("${license.trial-enabled:true}")
+    private boolean trialEnabled;
+
+    /** 试用天数（商务决策：试用 2 个月）。 */
+    @Value("${license.trial-days:60}")
+    private int trialDays;
+
+    /** 试用期内相机上限。 */
+    @Value("${license.trial-cameras:30}")
+    private int trialCameras;
+
+    /** 试用起始日的内部设置键（首启写入，防重启重置）。 */
+    private static final String TRIAL_START_KEY = "license.trial.startedAt";
+
+    /** 试用起始日缓存：与机器码一样进程内不变，只读一次库。 */
+    private volatile LocalDate trialStartDateCache;
+    private volatile boolean trialResolved;
+
+    @Autowired(required = false)
+    private SystemSettingsRepository settingsRepository;
+
     private volatile LicensePayload payload;
     private volatile LicenseStatus staticStatus;
     private volatile String staticMessage;
@@ -146,19 +170,37 @@ public class LicenseService {
         s.setFingerprintSource(getFingerprintSource());
         s.setServerTime(LocalDateTime.now().format(DATETIME));
 
+        LicensePayload current = payload;
+        String mode = effectiveExpiredMode(current);
+        s.setExpiredMode(mode);
+        s.setExpiredModeSource(expiredModeSource(current));
+
         if (staticStatus != null) {
             s.setStatus(staticStatus);
             s.setMessage(staticMessage);
+            if (staticStatus == LicenseStatus.MISSING) {
+                // 未装正式授权 → 先看试用窗口；试用结束后回到 MISSING（前端弹「未安装授权」）
+                applyTrialIfEligible(s);
+                if (s.getStatus() != LicenseStatus.TRIAL) {
+                    s.setUsable(false);
+                    s.setWriteBlocked(computeBlocked(staticStatus, false, mode));
+                }
+                return s;
+            }
             s.setUsable(staticStatus == LicenseStatus.DISABLED);
-            s.setWriteBlocked(computeBlocked(staticStatus, false));
+            s.setWriteBlocked(computeBlocked(staticStatus, false, mode));
             return s;
         }
 
-        LicensePayload p = payload;
+        LicensePayload p = current;
         if (p == null) {
             s.setStatus(LicenseStatus.MISSING);
             s.setMessage("授权未加载");
-            s.setWriteBlocked(computeBlocked(LicenseStatus.MISSING, false));
+            applyTrialIfEligible(s);
+            if (s.getStatus() != LicenseStatus.TRIAL) {
+                s.setUsable(false);
+                s.setWriteBlocked(computeBlocked(LicenseStatus.MISSING, false, mode));
+            }
             return s;
         }
 
@@ -200,14 +242,14 @@ public class LicenseService {
         if (issued != null && today.isBefore(issued)) {
             s.setStatus(LicenseStatus.NOT_YET);
             s.setMessage("授权自 " + p.getIssuedAt() + " 起生效");
-            s.setWriteBlocked(computeBlocked(LicenseStatus.NOT_YET, false));
+            s.setWriteBlocked(computeBlocked(LicenseStatus.NOT_YET, false, mode));
         } else if (today.isAfter(expire)) {
             boolean inGrace = !today.isAfter(expire.plusDays(Math.max(graceDays, 0)));
             s.setStatus(LicenseStatus.EXPIRED);
             s.setMessage(inGrace
                     ? "授权已于 " + p.getExpireAt() + " 到期，处于 " + graceDays + " 天宽限期内"
                     : "授权已于 " + p.getExpireAt() + " 到期");
-            s.setWriteBlocked(computeBlocked(LicenseStatus.EXPIRED, inGrace));
+            s.setWriteBlocked(computeBlocked(LicenseStatus.EXPIRED, inGrace, mode));
         } else if (left <= warnDays) {
             s.setStatus(LicenseStatus.EXPIRING);
             s.setMessage("授权将于 " + p.getExpireAt() + " 到期，剩余 " + left + " 天");
@@ -229,7 +271,8 @@ public class LicenseService {
     /** 是否应拒绝全部业务请求（仅 block 模式且已超宽限）。 */
     public boolean isAccessBlocked() {
         LicenseState s = getState();
-        return "block".equalsIgnoreCase(expiredMode) && s.isWriteBlocked();
+        // getState 已按「载荷 > 配置」解析出生效策略，直接用结果，避免二次判定口径漂移
+        return "block".equalsIgnoreCase(s.getExpiredMode()) && s.isWriteBlocked();
     }
 
     /**
@@ -295,11 +338,89 @@ public class LicenseService {
 
     // ==================== 内部 ====================
 
-    private boolean computeBlocked(LicenseStatus status, boolean inGrace) {
+    /** 生效策略：授权载荷 v2 内带值优先（商务定的，客户改不掉），否则用服务器配置。 */
+    private String effectiveExpiredMode(LicensePayload p) {
+        if (p != null && p.getExpiredMode() != null && !p.getExpiredMode().trim().isEmpty()) {
+            return p.getExpiredMode().trim().toLowerCase();
+        }
+        return expiredMode;
+    }
+
+    /** 策略来源：license（载荷内带）/ config（服务器配置）。 */
+    private String expiredModeSource(LicensePayload p) {
+        if (p != null && p.getExpiredMode() != null && !p.getExpiredMode().trim().isEmpty()) {
+            return "license";
+        }
+        return "config";
+    }
+
+    /**
+     * 未装正式授权时套用试用窗口。
+     *
+     * <p>试用起始日写 {@code sys_system_setting}（内部键）：首次 getState 时落库，
+     * 之后进程内缓存 —— 重启不会重置计时。库不可用（单测 / DB 故障）整体降级为
+     * 原有 MISSING 行为，绝不因试用功能抛错。
+     */
+    private void applyTrialIfEligible(LicenseState s) {
+        s.setTrial(false);
+        s.setTrialDaysLeft(null);
+        if (!trialEnabled) {
+            return;
+        }
+        LocalDate started = trialStartDate();
+        if (started == null) {
+            return;
+        }
+        long elapsed = ChronoUnit.DAYS.between(started, LocalDate.now());
+        long left = Math.max(trialDays, 0) - elapsed;
+        s.setTrial(true);
+        s.setTrialDaysLeft(left);
+        if (left > 0) {
+            s.setStatus(LicenseStatus.TRIAL);
+            s.setMessage("试用期剩余 " + left + " 天（试用上限 " + trialCameras
+                    + " 台相机），请申请正式授权");
+            s.setMaxCameras(trialCameras);
+            s.setWriteBlocked(false);
+            s.setUsable(true);
+        } else {
+            s.setMessage("试用期已结束（试用自 " + started + " 起 " + trialDays
+                    + " 天），未安装正式授权：" + licenseFile);
+        }
+    }
+
+    /** 试用起始日（进程内只解析一次）。DB 不可用返回 null。 */
+    private LocalDate trialStartDate() {
+        if (trialResolved) {
+            return trialStartDateCache;
+        }
+        synchronized (this) {
+            if (trialResolved) {
+                return trialStartDateCache;
+            }
+            LocalDate result = null;
+            if (settingsRepository != null) {
+                String today = LocalDate.now().format(DATE);
+                String v = settingsRepository.findOrCreateInternalSetting(
+                        TRIAL_START_KEY, today, "授权试用起始日", "LICENSE");
+                try {
+                    if (v != null) {
+                        result = LocalDate.parse(v.trim(), DATE);
+                    }
+                } catch (Exception ignored) {
+                    // 值被改坏：视为无试用，绝不抛错影响主流程
+                }
+            }
+            trialStartDateCache = result;
+            trialResolved = true;
+            return result;
+        }
+    }
+
+    private boolean computeBlocked(LicenseStatus status, boolean inGrace, String mode) {
         if (!status.isProblem()) {
             return false;
         }
-        if ("warn".equalsIgnoreCase(expiredMode)) {
+        if ("warn".equalsIgnoreCase(mode)) {
             return false;
         }
         // MACHINE_MISMATCH / INVALID / MISSING 不给宽限：这些是配置错误，不是自然到期

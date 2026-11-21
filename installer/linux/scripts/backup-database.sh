@@ -67,6 +67,15 @@ LOG_FILE="${LOG_DIR}/backup.log"
 # 通常能覆盖到 14 天；服务器先清掉的文件，副本按 mtime 到期后一并删除。
 BINLOG_KEEP_DAYS="${BINLOG_KEEP_DAYS:-14}"
 
+# --- 授权文件备份（LIC-11，2026-11-21）-------------------------------------------
+# license.lic 是几百字节文本，但丢了等于授权丢了：换机 / 重装时拿不出原始授权
+# 就得重走商务流程（重新定档、重签）。所以与图片同等级别纳入备份与跨盘副本。
+#   ① 本地副本 ${BACKUP_DIR}/license：随备份目录一起落盘；
+#   ② 跨盘副本 ${OFFSITE_DIR}/license：统一走「跨盘副本」段（不用 --delete，
+#      授权只会更新不会删，源侧误删时副本要能救回）；
+#   ③ .bak-* 历史文件一并备份：导入前旧授权是有价值的回滚物料。
+LICENSE_SRC="${LICENSE_SRC:-/main/app/data/license}"
+
 log() {
   local msg="[$(date '+%F %T')] $*"
   printf '%s\n' "$msg"
@@ -393,6 +402,26 @@ if [[ "${IMAGE_BACKUP_ENABLED:-1}" == "1" ]]; then
   fi
 fi
 
+# --- 授权文件 ------------------------------------------------------------------
+# 放在图片之后：库 > 图片 > 授权 的优先级；授权备份失败不阻断主流程，只告警。
+backup_license() {
+  if [[ ! -d "$LICENSE_SRC" ]]; then
+    log "WARN: 授权目录不存在：${LICENSE_SRC}，跳过授权备份（未安装过授权属正常）"
+    return 0
+  fi
+  mkdir -p "${BACKUP_DIR}/license"
+  if rsync -a "$LICENSE_SRC/" "${BACKUP_DIR}/license/" 2>/dev/null; then
+    log "授权文件已备份：$(ls -1 "${BACKUP_DIR}/license" 2>/dev/null | wc -l) 个文件 → ${BACKUP_DIR}/license"
+  else
+    log "WARN: 授权文件本地备份失败"
+    return 1
+  fi
+}
+if ! backup_license; then
+  alert "MEDIUM" "授权文件备份失败" \
+        "license.lic 备份失败，若近期换机或重装系统将无法找回原始授权。详见 ${LOG_FILE}。"
+fi
+
 # --- 清理过期备份 --------------------------------------------------------------
 # 先删 .sql.zst 再删 .sha256，避免出现「有校验文件无备份文件」的中间态
 DELETED=$(find "$FULL_DIR" -name "${DB_NAME}_*.sql.zst" -mtime "+${KEEP_FULL_DAYS}" -print -delete | wc -l)
@@ -426,6 +455,11 @@ if [[ -d "$OFFSITE_DIR" ]]; then
 
     if [[ -d "$BINLOG_DIR" ]] && rsync -a "$BINLOG_DIR/" "${OFFSITE_DIR}/binlog/" 2>/dev/null; then
       log "已同步到跨盘副本：${OFFSITE_DIR}/binlog/"
+    fi
+
+    # 授权文件跨盘副本（LIC-11）：不用 --delete，源侧误删时副本要能救回
+    if [[ -d "$LICENSE_SRC" ]] && rsync -a "$LICENSE_SRC/" "${OFFSITE_DIR%/}/license/" 2>/dev/null; then
+      log "已同步到跨盘副本：${OFFSITE_DIR%/}/license/"
     fi
   fi
 fi

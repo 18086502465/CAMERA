@@ -3,10 +3,13 @@ package com.wms.system.api;
 import com.wms.shared.common.ResultVO;
 import com.wms.shared.license.LicensePayload;
 import com.wms.shared.license.LicenseState;
+import com.wms.system.app.LicensePackageService;
 import com.wms.system.app.LicenseService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -46,6 +49,9 @@ public class LicenseController {
     @Autowired
     private LicenseService licenseService;
 
+    @Autowired
+    private LicensePackageService packageService;
+
     @GetMapping
     public ResultVO<LicenseState> status() {
         return ResultVO.success(licenseService.getState());
@@ -68,6 +74,72 @@ public class LicenseController {
         LicenseState s = licenseService.getState();
         log.info("管理员手动重载授权: status={}, message={}", s.getStatus(), s.getMessage());
         return ResultVO.success(s, "已重新读取授权文件");
+    }
+
+    /**
+     * 下载机器码包（四步流程第 2 步，产品设计 §2.1）。
+     *
+     * <p>失败时返回 JSON 错误（HTTP 400）而不是空 zip；带 LIC-MACHINE-002 等
+     * 机器可读错误码，前端按错误码给处置提示。
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @GetMapping("/machine-code-package")
+    public ResponseEntity<?> machineCodePackage(@RequestParam(value = "order", required = false) String order) {
+        try {
+            Map<String, Object> pkg = packageService.buildMachineCodePackage(order);
+            String filename = String.valueOf(pkg.get("filename"));
+            byte[] zip = (byte[]) pkg.get("zip");
+            log.info("管理员下载机器码包: file={}, order={}", filename, order);
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("application/zip"))
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            "attachment; filename=\"" + filename + "\"")
+                    .body(zip);
+        } catch (LicensePackageService.LicensePackageException e) {
+            log.warn("机器码包下载被拒绝: code={}, message={}", e.getCode(), e.getMessage());
+            return ResponseEntity.badRequest()
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(ResultVO.fail(e.getMessage()).withErrorCode(e.getCode()));
+        }
+    }
+
+    /**
+     * 授权包预览（两步导入第一步）：解析 + 验签 + 机器预检，全部只读内存，
+     * 返回摘要 + 5 分钟有效的 previewToken。阻断问题透传错误码。
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping(value = "/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResultVO<Map<String, Object>> preview(@RequestParam("file") MultipartFile file) {
+        try {
+            return ResultVO.success(packageService.preview(file), "预览成功，请核对摘要后确认导入");
+        } catch (LicensePackageService.LicensePackageException e) {
+            log.warn("授权包预览被拒绝: code={}, message={}", e.getCode(), e.getMessage());
+            ResultVO<Map<String, Object>> r = ResultVO.fail(e.getMessage());
+            r.setErrorCode(e.getCode());
+            return r;
+        }
+    }
+
+    /**
+     * 授权包导入（两步导入第二步）：previewToken + sha256 双重校验后落盘生效。
+     * 上限低于现场台数时须 {@code ackQuota=true}（客户在页面显式勾选）。
+     */
+    @PreAuthorize("hasRole('ADMIN')")
+    @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResultVO<Map<String, Object>> importPackage(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "previewToken", required = false) String previewToken,
+            @RequestParam(value = "ackQuota", required = false, defaultValue = "false") boolean ackQuota) {
+        try {
+            LicensePackageService.LicenseStateView view =
+                    packageService.importPackage(file, previewToken, ackQuota);
+            return ResultVO.success(view.getJson(), "授权已生效");
+        } catch (LicensePackageService.LicensePackageException e) {
+            log.warn("授权包导入被拒绝: code={}, message={}", e.getCode(), e.getMessage());
+            ResultVO<Map<String, Object>> r = ResultVO.fail(e.getMessage());
+            r.setErrorCode(e.getCode());
+            return r;
+        }
     }
 
     @PreAuthorize("hasRole('ADMIN')")

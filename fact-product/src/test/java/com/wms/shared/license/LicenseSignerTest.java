@@ -81,12 +81,35 @@ class LicenseSignerTest {
 
     @Test
     void 版本不支持应被拒绝() {
+        // 2026-11-21 起 v2 为正式协议（新增 expiredMode），最高支持到 MAX_SUPPORTED_VERSION=2；
+        // 超过则要求升级平台（LIC-FILE-003）
         LicensePayload p = samplePayload();
-        p.setVersion(2);
+        p.setVersion(LicenseSigner.MAX_SUPPORTED_VERSION + 1);
         String text = LicenseSigner.encode(p, null);
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> LicenseSigner.decode(text, null));
-        assertTrue(e.getMessage().contains("版本"));
+        assertTrue(e.getMessage().contains("升级"));
+    }
+
+    @Test
+    void v2载荷应被接受且保留expiredMode() {
+        LicensePayload p = samplePayload();
+        p.setVersion(2);
+        p.setExpiredMode("readonly");
+        String text = LicenseSigner.encode(p, null);
+        LicensePayload back = LicenseSigner.decode(text, null);
+        assertEquals("readonly", back.getExpiredMode());
+    }
+
+    @Test
+    void v2载荷策略非法值应被拒绝() {
+        LicensePayload p = samplePayload();
+        p.setVersion(2);
+        p.setExpiredMode("stop");
+        String text = LicenseSigner.encode(p, null);
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> LicenseSigner.decode(text, null));
+        assertTrue(e.getMessage().contains("到期策略"));
     }
 
     @Test

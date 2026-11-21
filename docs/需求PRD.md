@@ -323,6 +323,12 @@ C（批量上报）是冻结契约、D（单图上传）是调试端点 —— *
 | LIC-05 | **签名安全边界** | 对称密钥在 jar 里，反编译可提取 → **只挡"改到期日/换机器拷/过期继续用"，挡不住逆向**。不可对客户承诺"无法破解" |
 | LIC-06 | 签发两端一致 | Java 与 `installer/linux/scripts/gen_license.py` 的密钥与 base64 变体必须逐字节一致；`LicenseSignerTest.GOLDEN` 固化了真实签发文件 —— **不要为了变绿去改 GOLDEN** |
 | LIC-07 | 改签名的测试改**中间位** | base64 末位只有 4 位有效信息，改末位可能解码出同一份字节 → 假绿 |
+| LIC-08 | 签发工具不进客户交付包（2026-11-21）✅ | `build-release.sh` 排除 `gen_license.py`/`issue_license*` 并在打包后终检断言；签发工具只存厂商侧 `installer/license-tool/` |
+| LIC-09 | 一客户一密钥（2026-11-21）⏳ 部分 | 工具侧已实现：`keygen` 生成 32 字节 hex、`--secret-file` 注入、台账只存 sha256 指纹；**现场默认密钥 → 客户密钥的迁移未做**（切密钥会使现场 2029 授权失效，需单独窗口按迁移序执行） |
+| LIC-11 | 授权文件纳入备份（2026-11-21）✅ | `backup-database.sh` 备份 `data/license/` 到备份目录与跨盘副本（`--delete` 禁用，源误删时副本可救回） |
+| LIC-13 | 试用 60 天（2026-11-21）✅ | 未装授权时 `TRIAL` 状态：试用起始日写 `sys_system_setting` 内部键（`license.trial.startedAt`，`is_editable=0`）防重启重置；试用上限 `license.trial-cameras`（默认 30）；试用结束回到 MISSING |
+| LIC-18 | 到期全局浮层（2026-11-21）✅ | `LicenseNotice.vue` 挂 `App.vue`：**非模态**（禁遮罩 el-dialog，否则点击被吃掉、违背"不影响功能"）；EXPIRED 或试用结束的 MISSING 触发；每次页面点击重新弹出（300ms 防抖）；不拦路由不拦请求 |
+| LIC-19 | 四步交付流程（2026-11-21）✅ | ①`GET /api/license/machine-code-package` 出机器码包 zip（json+txt+README+MANIFEST，无敏感信息）②`POST /preview` 只读内存验签出摘要 + 5 分钟 previewToken ③`POST /import`（token+sha256 双校验、配额需 `ackQuota`、备份原子替换）④载荷 v2 新增 `expiredMode`（优先级 载荷 > 配置；`FAIL_ON_UNKNOWN_PROPERTIES=false` 保证旧 jar 向后兼容）；签发工具 `issue_license.py`（issue/inspect/ledger/keygen）+ Tkinter GUI，签名与 Java 同构由 GOLDEN 向量锁死 |
 
 ### 3.10 账号、权限与操作日志 ✅ 已实现
 

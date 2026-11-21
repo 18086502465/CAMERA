@@ -75,6 +75,39 @@ public class SystemSettingsRepository {
                 String.class);
     }
 
+    /**
+     * 读取或创建内部设置项（授权试用期等内部键，{@code is_editable=0} 不进设置页）。
+     *
+     * <p>与 {@link #findSettingValue(String)} 的区别：行不存在时写入默认值并返回它；
+     * 任何失败（表不存在 / 连接异常）返回 {@code null}，由调用方决定降级行为 ——
+     * 内部键丢了只影响试用计时这类辅助功能，绝不能让业务接口报错。
+     *
+     * @return 当前值（含新写入的默认值）；失败返回 {@code null}
+     */
+    public String findOrCreateInternalSetting(String key, String defaultValue,
+                                              String name, String group) {
+        try {
+            String v = jdbcTemplate.queryForObject(
+                    "SELECT setting_value FROM sys_system_setting WHERE setting_key=? LIMIT 1",
+                    new Object[]{key}, String.class);
+            if (v != null && !v.trim().isEmpty()) {
+                return v;
+            }
+        } catch (Exception ignored) {
+            // 行不存在或查询失败，走下面的 upsert；upsert 再失败则整体降级
+        }
+        try {
+            jdbcTemplate.update(
+                    "INSERT INTO sys_system_setting(setting_key,setting_name,setting_group,setting_value,"
+                            + "value_type,description,is_editable,sort_order) VALUES(?,?,?,?,'STRING',?,0,999) "
+                            + "ON DUPLICATE KEY UPDATE setting_key=setting_key",
+                    key, name, group, defaultValue, "内部键，请勿手工修改");
+            return defaultValue;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     // ==================== 写入 ====================
 
     /** 更新单个设置项的值（仅可编辑项生效） */

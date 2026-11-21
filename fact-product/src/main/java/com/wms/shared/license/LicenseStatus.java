@@ -23,6 +23,9 @@ public enum LicenseStatus {
     /** 尚未到生效日期（客户提前拿到 license 的正常情况）。 */
     NOT_YET("授权尚未生效"),
 
+    /** 试用期：未安装授权、试用窗口未过（v1.1 新增，功能可用但提示申请正式授权）。 */
+    TRIAL("试用中"),
+
     /** 正常，且剩余天数 > 预警阈值。 */
     VALID("授权正常"),
 
@@ -50,6 +53,6 @@ public enum LicenseStatus {
 
     /** 是否可以正常提供业务功能。 */
     public boolean isUsable() {
-        return this == DISABLED || this == VALID || this == EXPIRING;
+        return this == DISABLED || this == TRIAL || this == VALID || this == EXPIRING;
     }
 }

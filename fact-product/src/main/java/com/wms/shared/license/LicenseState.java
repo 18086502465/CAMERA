@@ -51,6 +51,18 @@ public class LicenseState implements Serializable {
     /** 生效中的过期策略：warn / readonly / block。 */
     private String expiredMode;
 
+    /**
+     * 生效策略的来源：{@code license}（授权载荷 v2 内带，客户改不掉）或
+     * {@code config}（服务器配置 {@code license.expired-mode}）。
+     */
+    private String expiredModeSource;
+
+    /** 是否处于试用期（未安装授权且试用窗口未过）。 */
+    private boolean trial;
+
+    /** 试用剩余天数；非试用态为 null。 */
+    private Long trialDaysLeft;
+
     /** 授权文件路径（排障用）。 */
     private String licenseFile;
 

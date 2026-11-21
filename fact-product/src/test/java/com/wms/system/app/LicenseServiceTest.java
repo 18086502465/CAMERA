@@ -4,6 +4,7 @@ import com.wms.shared.license.LicensePayload;
 import com.wms.shared.license.LicenseSigner;
 import com.wms.shared.license.LicenseState;
 import com.wms.shared.license.LicenseStatus;
+import com.wms.system.infra.repository.SystemSettingsRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -189,9 +190,83 @@ class LicenseServiceTest {
         assertTrue(s.isUsable());
     }
 
+    // ==================== 试用期（2026-11-21 LIC-13）====================
+
+    @Test
+    void 未装授权且试用未过应为TRIAL() {
+        SystemSettingsRepository repo = org.mockito.Mockito.mock(SystemSettingsRepository.class);
+        org.mockito.Mockito.when(repo.findOrCreateInternalSetting(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(LocalDate.now().format(DATE)); // 今天首启
+        ReflectionTestUtils.setField(service, "trialEnabled", true);
+        ReflectionTestUtils.setField(service, "trialDays", 60);
+        ReflectionTestUtils.setField(service, "trialCameras", 30);
+        ReflectionTestUtils.setField(service, "settingsRepository", repo);
+
+        service.reload();
+        LicenseState s = service.getState();
+        assertEquals(LicenseStatus.TRIAL, s.getStatus());
+        assertTrue(s.isTrial());
+        assertTrue(s.isUsable(), "试用期内功能必须可用");
+        assertFalse(s.isWriteBlocked());
+        assertEquals(Integer.valueOf(30), s.getMaxCameras(), "试用上限应生效");
+        assertEquals(Long.valueOf(60), s.getTrialDaysLeft());
+    }
+
+    @Test
+    void 试用过期应回到MISSING且不阻断warn模式() {
+        SystemSettingsRepository repo = org.mockito.Mockito.mock(SystemSettingsRepository.class);
+        org.mockito.Mockito.when(repo.findOrCreateInternalSetting(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyString()))
+                .thenReturn(LocalDate.now().minusDays(90).format(DATE)); // 90 天前首启 > 60 天试用
+        ReflectionTestUtils.setField(service, "trialEnabled", true);
+        ReflectionTestUtils.setField(service, "trialDays", 60);
+        ReflectionTestUtils.setField(service, "trialCameras", 30);
+        ReflectionTestUtils.setField(service, "settingsRepository", repo);
+
+        service.reload();
+        LicenseState s = service.getState();
+        assertEquals(LicenseStatus.MISSING, s.getStatus(), "试用过期不是正式授权过期");
+        assertTrue(s.getMessage().contains("试用"), "文案应说明试用已结束");
+    }
+
+    // ==================== 策略优先级（载荷 v2 > 配置）====================
+
+    @Test
+    void 载荷内带策略应覆盖配置且来源为license() {
+        // 配置 warn，授权内带 readonly：昨天到期已超宽限期 → 依据载荷策略拦截
+        writeLicenseV2(LocalDate.now().minusDays(10), -1, "*", "readonly");
+        service.reload();
+        LicenseState s = service.getState();
+        assertEquals(LicenseStatus.EXPIRED, s.getStatus());
+        assertTrue(s.isWriteBlocked(), "载荷 readonly 应覆盖配置 warn");
+        assertEquals("readonly", s.getExpiredMode());
+        assertEquals("license", s.getExpiredModeSource());
+    }
+
+    @Test
+    void 载荷无策略时应回退配置且来源为config() {
+        writeLicense(LocalDate.now().plusDays(365), -1, "*"); // v1 载荷无 expiredMode
+        service.reload();
+        LicenseState s = service.getState();
+        assertEquals("warn", s.getExpiredMode());
+        assertEquals("config", s.getExpiredModeSource());
+    }
+
     // ==================== 辅助 ====================
 
     private void writeLicense(LocalDate expire, int maxCameras, String machine) {
+        writeLicenseV2(expire, maxCameras, machine, null);
+    }
+
+    /** v2 载荷：可带 expiredMode（null 表示不写该字段，模拟旧版签发）。 */
+    private void writeLicenseV2(LocalDate expire, int maxCameras, String machine, String expiredMode) {
         LicensePayload p = new LicensePayload();
         p.setVersion(1);
         p.setLicenseId("LIC-UT-" + expire.toString());
@@ -201,6 +276,10 @@ class LicenseServiceTest {
         p.setMaxCameras(maxCameras);
         p.setFeatures(new ArrayList<String>());
         p.setMachineCode(machine);
+        if (expiredMode != null) {
+            p.setVersion(2);
+            p.setExpiredMode(expiredMode);
+        }
         String text = LicenseSigner.encode(p, null);
         try {
             Files.write(new File(licensePath).toPath(), text.getBytes(StandardCharsets.UTF_8));
