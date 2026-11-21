@@ -1,7 +1,35 @@
 import request from '../utils/request'
 
+/**
+ * 进行中 GET 请求去重（2026-11-21 性能第二批 P0-1）。
+ *
+ * 背景：统计页 onMounted 先 loadDashboard()（内部 loadWidgetData()），随后 loadData()
+ * 又调一次 loadWidgetData()；内置看板多个 widget 的 widgetParams 完全相同 → 同一 URL
+ * 并发发出 4 次。日报 loadAll()→loadCalendar()→ensureSelection() 未 await 调
+ * loadBreakdown()，返回后又调一次 → 同一 URL 并发 2 次。后端 TtlCache 无 single-flight，
+ * 并发同 key 全部穿透（首屏实测 3 次重算 ≈ 207 次 SQL）。
+ *
+ * 这里只合并「当前正在飞行」的同 URL + 同参数 GET：
+ *  - 键按参数名排序后拼接，避免对象键顺序不同导致漏合并；
+ *  - 返回**同一个 Promise**，所有调用方拿到同一份只读响应（调用方都只读 res.data）；
+ *  - finally 清理，请求结束后新调用照常发请求，不影响页面内 30s 轮询；
+ *  - 不删页面调用点 —— loadDashboard() 另有 6 处不跟随 loadData() 的独立调用。
+ */
+const inflightGet = new Map()
+function getDedup(url, params) {
+  const keys = params && typeof params === 'object' ? Object.keys(params).sort() : []
+  const key = url + '|' + keys.map(k => `${k}=${params[k]}`).join('&')
+  const existing = inflightGet.get(key)
+  if (existing) return existing
+  const pending = request({ url, method: 'get', params }).finally(() => {
+    inflightGet.delete(key)
+  })
+  inflightGet.set(key, pending)
+  return pending
+}
+
 export const getAnalyticsMetadata = () => request({ url: '/v1/analytics/metadata', method: 'get' })
-export const getLineAnalyticsSummary = (params) => request({ url: '/v1/analytics/line-summary', method: 'get', params })
+export const getLineAnalyticsSummary = (params) => getDedup('/v1/analytics/line-summary', params)
 export const queryAnalytics = (data) => request({ url: '/v1/analytics/query', method: 'post', data })
 
 export const getDefaultDashboard = (params) => request({ url: '/v1/analytics/dashboards/default', method: 'get', params })
@@ -32,4 +60,4 @@ export const regenerateDailyReport = (date) => request({ url: `/v1/analytics/dai
 export const exportDailyReport = (params) => request({ url: '/v1/analytics/daily-reports/export', method: 'get', params, responseType: 'blob' })
 // 2026-11-17 交互重构：月历 + 单日维度明细
 export const getDailyReportCalendar = (params) => request({ url: '/v1/analytics/daily-reports/calendar', method: 'get', params })
-export const getDailyReportBreakdown = (date, params) => request({ url: `/v1/analytics/daily-reports/${date}/breakdown`, method: 'get', params })
+export const getDailyReportBreakdown = (date, params) => getDedup(`/v1/analytics/daily-reports/${date}/breakdown`, params)

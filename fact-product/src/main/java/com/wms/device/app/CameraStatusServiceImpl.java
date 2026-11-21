@@ -86,6 +86,10 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
         }
     }
 
+    /**
+     * 启动期一次性补列自检（★ 2026-11-21 起不再在心跳热路径重复调用）。
+     * 失败仍按 Repository 既有语义只记 WARN、不阻断启动。
+     */
     @PostConstruct
     public void initSchema() {
         ensureCameraStatusColumns();
@@ -151,7 +155,11 @@ public class CameraStatusServiceImpl implements ICameraStatusService {
     }
 
     private void saveCameraStatus(CameraStatusHeartbeatDTO dto, String deviceId) {
-        ensureCameraStatusColumns();
+        // ★ 2026-11-21 性能 P1-1：移除热路径的 ensureCameraStatusColumns()。
+        //   原实现每次心跳都跑 9 次 INFORMATION_SCHEMA.COLUMNS 检查（8 列 + 1 列 dim_camera），
+        //   现场 ~7 次/秒心跳 → 12.7 小时累计 298 万次元数据查询，与报表争抢 DB 资源。
+        //   DDL 自愈仍由 @PostConstruct initSchema() 在启动时完成（语义不变）；
+        //   Repository 层 ensure* 的幂等判断与「失败只 WARN」契约均保留，未删除。
         LocalDateTime reportTime = parseReportTime(dto.getTimestamp());
 
         CameraStatus status = new CameraStatus();

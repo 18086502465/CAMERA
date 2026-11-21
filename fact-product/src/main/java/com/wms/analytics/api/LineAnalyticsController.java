@@ -335,7 +335,13 @@ public class LineAnalyticsController {
                                    Long productId, Long shiftId, Long defectTypeId, String severity,
                                    String defectType, String dim) {
         StringBuilder key = new StringBuilder(96);
-        key.append(start.format(DT)).append('~').append(end.format(DT));
+        // ★ 2026-11-21 性能 P0-1：缓存键的 end 归一化到「分钟」。
+        //   前端默认时间范围的 end 取当前秒（formatDate(now)），秒级键导致每次刷新页面
+        //   都是新 key → 60s TTL 从未命中 → 每次重跑 69 次 SQL（实测近 7 天 3.65s）。
+        //   归一到分钟后最大数据延迟 <60s，与本缓存既有 TTL 承诺一致；
+        //   **SQL 仍使用原始秒级 end，统计口径不变**（仅缓存键变粗）。
+        key.append(start.format(DT)).append('~')
+                .append(end.withSecond(0).withNano(0).format(DT));
         key.append('|').append(factoryId).append('|').append(lineId)
                 .append('|').append(joinIds(lineIds))
                 .append('|').append(workstationId)

@@ -325,6 +325,13 @@ public class SecurityConfig {
             .exceptionHandling()
                 .authenticationEntryPoint(restAuthenticationEntryPoint())
                 .accessDeniedHandler(restAccessDeniedHandler())
+            .and()
+            // 2026-11-21 性能第二批 P0-2：禁用 Spring 默认的全量 no-store，改用区分
+            // /assets/** 的缓存头（带内容哈希 + 保留历史 chunk → immutable 安全）。
+            // 非 assets 响应由 StaticAssetCacheHeaders 写回完全相同的 no-store 头。
+            .headers()
+                .cacheControl().disable()
+                .addHeaderWriter(new StaticAssetCacheHeaders())
             .and();
 
         // 将 JWT 过滤器添加到 UsernamePasswordAuthenticationFilter 之前

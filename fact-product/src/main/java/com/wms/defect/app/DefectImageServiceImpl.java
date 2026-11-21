@@ -9,6 +9,7 @@ import com.wms.device.infra.mapper.CameraImageMapper;
 import com.wms.device.infra.mapper.CameraStatusMapper;
 import com.wms.defect.app.IDefectImageService;
 import com.wms.defect.infra.repository.DefectImageRepository;
+import com.wms.shared.common.TtlCache;
 import com.wms.shared.util.LogThrottle;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -98,6 +99,18 @@ public class DefectImageServiceImpl implements IDefectImageService {
     private volatile long lastSchemaCheckAt = 0L;
     /** 运行期表结构自检的最小间隔（毫秒）。 */
     private static final long SCHEMA_CHECK_INTERVAL_MS = 5 * 60 * 1000L;
+
+    /**
+     * 2026-11-21 性能第二批 P0-3：图像记录 / 统计页 / 日报页共用的筛选候选缓存。
+     *
+     * <p>原实现每次请求跑两次全表 JOIN + {@code COUNT(DISTINCT image_id)}，现场实测
+     * 0.49 / 0.64 / 0.78s，且三个页面首屏都调。候选只来自实际上报数据，
+     * 新图片入库时由 {@link #insertImageFile} / {@link #insertDefectBoxes} 主动失效，
+     * 未命中失效路径时最多延迟 5 分钟，只影响下拉候选，不影响任何统计口径。
+     */
+    private final TtlCache<String, Map<String, Object>> filterOptionsCache =
+            new TtlCache<>(5 * 60 * 1000L, 4);
+    private static final String FILTER_OPTIONS_KEY = "all";
 
     // DDD P5：启动期完整建表已由 com.wms.init.SchemaInitializer 统一调度；
     // 本类的 ensureSchema() 限频自愈守卫保留（表运行期被删时最多 5 分钟自愈）。
@@ -664,10 +677,13 @@ public class DefectImageServiceImpl implements IDefectImageService {
                                  SavedImage saved, LocalDateTime captureTime, LocalDateTime uploadTime,
                                  DefectCounts counts) {
         // DDD P3 批次⑤：INSERT 已下沉到 DefectImageRepository
-        return defectImageRepository.insertImageFile(batchId, cameraId, cameraName,
+        Long imageId = defectImageRepository.insertImageFile(batchId, cameraId, cameraName,
                 imageMeta.getFileName(), saved.originalFileName, saved.absolutePath, saved.imageUrl,
                 captureTime, uploadTime, saved.fileSize, saved.width, saved.height,
                 counts.total, counts.high, counts.medium, counts.low);
+        // P0-3：新分辨率可能出现 → 让筛选候选下次重算
+        filterOptionsCache.invalidate(FILTER_OPTIONS_KEY);
+        return imageId;
     }
 
     private void insertDefectBoxes(Long batchId, Long imageId, List<DefectImageUploadMetadataDTO.DefectMetadata> defects) {
@@ -684,6 +700,8 @@ public class DefectImageServiceImpl implements IDefectImageService {
                     nvl(defect.getHeight()),
                     nvl(defect.getArea()));
         }
+        // P0-3：新缺陷类型可能出现 → 让筛选候选下次重算
+        filterOptionsCache.invalidate(FILTER_OPTIONS_KEY);
     }
 
     private void insertLegacyCameraImage(String cameraName, SavedImage saved, LocalDateTime captureTime) {
@@ -1171,9 +1189,12 @@ public class DefectImageServiceImpl implements IDefectImageService {
 
     @Override
     public Map<String, Object> listFilterOptions() {
+        Map<String, Object> cached = filterOptionsCache.get(FILTER_OPTIONS_KEY);
+        if (cached != null) return cached;
         Map<String, Object> options = new LinkedHashMap<>();
         options.put("defectTypes", defectImageRepository.listDefectTypeOptions());
         options.put("resolutions", defectImageRepository.listResolutionOptions());
+        filterOptionsCache.put(FILTER_OPTIONS_KEY, options);
         return options;
     }
 }

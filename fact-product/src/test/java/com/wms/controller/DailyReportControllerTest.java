@@ -505,6 +505,30 @@ class DailyReportControllerTest {
                 + "两个构造都不标时 Spring 会尝试无参构造 → 启动即崩 No default constructor found").isTrue();
     }
 
+    @Test
+    @DisplayName("P0-3 性能：月历同参数二次请求命中 30s 短缓存，不再重查快照")
+    void calendarUsesShortCache() throws Exception {
+        Map<String, Object> row = plantRow(LocalDate.of(2026, 11, 16), 1230, 38, 30.9);
+        when(dailyReportRepository.listRange(any(LocalDate.class), any(LocalDate.class), any(Integer.class)))
+                .thenReturn(Collections.singletonList(row));
+        org.mockito.Mockito.lenient()
+                .when(dailyReportRepository.computeDay(any(), org.mockito.ArgumentMatchers.anyBoolean()))
+                .thenReturn(Collections.emptyList());
+        when(dailyReportRepository.listRealLines()).thenReturn(Collections.emptyList());
+
+        // ★ 必须用同一个 controller 实例：controllerMvc() 每次 new 一个，缓存不共享
+        DailyReportController controller =
+                new DailyReportController(dailyReportRepository, generationTask);
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(controller).build();
+        String url = "/api/v1/analytics/daily-reports/calendar?month=2026-11";
+        mvc.perform(get(url)).andExpect(status().isOk()).andExpect(jsonPath("$.data.days.length()").value(30));
+        mvc.perform(get(url)).andExpect(status().isOk()).andExpect(jsonPath("$.data.days.length()").value(30));
+
+        verify(dailyReportRepository, org.mockito.Mockito.times(1))
+                .listRange(any(LocalDate.class), any(LocalDate.class), any(Integer.class));
+        verify(dailyReportRepository, org.mockito.Mockito.times(1)).listRealLines();
+    }
+
     private static Map<String, Object> lineOption(int lineId, String lineName) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("lineId", lineId);

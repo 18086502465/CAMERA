@@ -1304,7 +1304,7 @@ function pivotColumnsFor(w){ const d=summaryFor(w); const src=(d.defectPivot||[]
 function pivotRowsFor(w){ const d=summaryFor(w); const productMap=new Map(metadata.products.map(p=>[p.productId,p.productName])); const rows=new Map(); (d.defectPivot||[]).forEach(item=>{ const pid=item.productId||filters.productId||0; if(!rows.has(pid)) rows.set(pid,{productId:pid,productName:productMap.get(pid)||item.productName||'当前产品'}); rows.get(pid)[item.defectTypeId]=item.defectCount }); if(!rows.size&&filters.productId) rows.set(filters.productId,{productId:filters.productId,productName:productMap.get(filters.productId)||'当前产品'}); return Array.from(rows.values()) }
 
 function resetFilters(){ timeRange.value=defaultRange(); activeRangeKey.value='today'; Object.assign(filters,{productId:null,shiftId:null,cameraId:null,defectType:null,severity:null}); loadData() }
-function defaultRange(){ const now=new Date(), start=new Date(now.getFullYear(),now.getMonth(),now.getDate(),0,0,0); return [formatDate(start),formatDate(now)] }
+function defaultRange(){ const now=new Date(), start=new Date(now.getFullYear(),now.getMonth(),now.getDate(),0,0,0); return [formatDate(start),formatDateMinute(now)] }
 
 /**
  * ★ 2026-11-04：时间范围快捷选项。
@@ -1332,14 +1332,14 @@ function rangeOfPreset(key){
   }
   if (key === 'last7') {
     const s = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)
-    return [formatDate(dayStart(s)), formatDate(now)]
+    return [formatDate(dayStart(s)), formatDateMinute(now)]
   }
   if (key === 'last30') {
     const s = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29)
-    return [formatDate(dayStart(s)), formatDate(now)]
+    return [formatDate(dayStart(s)), formatDateMinute(now)]
   }
   if (key === 'thisMonth') {
-    return [formatDate(new Date(now.getFullYear(), now.getMonth(), 1)), formatDate(now)]
+    return [formatDate(new Date(now.getFullYear(), now.getMonth(), 1)), formatDateMinute(now)]
   }
   return defaultRange()
 }
@@ -1367,6 +1367,8 @@ function restoreRangePreset(){
   }
 }
 function formatDate(d){ const pad=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds()) }
+/** ★ 2026-11-21 性能 P0-1：动态 end 固定到整分钟，配合后端缓存键归一化，避免刷新穿透。 */
+function formatDateMinute(d){ const pad=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':00' }
 function parseJsonField(v,f){ if(v==null||v==='') return f; if(typeof v==='object') return v; try{return JSON.parse(v)}catch{return f} }
 function widgetMetric(w){ return parseJsonField(w?.metricJson,{}).metric||defaultMetricByType(w?.widgetType) }
 function widgetLayout(w){ return parseJsonField(w?.layoutJson,{w:6,h:3}) }

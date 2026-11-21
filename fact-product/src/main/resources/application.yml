@@ -2,6 +2,13 @@
   port: 8091
   servlet:
     context-path: /
+  # 2026-11-21 性能第二批 P0-2：静态资源 3.3MB/次且现场实测带 Accept-Encoding 仍回原文。
+  # 开启 Tomcat gzip 后 JS/CSS/JSON 压缩传输；min-response-size=1KB 避免小响应反而变慢。
+  # 注意：压缩只改传输编码，不改业务数据与统计口径。
+  compression:
+    enabled: true
+    mime-types: application/javascript,text/css,application/json,text/plain,application/xml
+    min-response-size: 1024
 
 spring:
   datasource:

@@ -4,6 +4,7 @@ import com.wms.analytics.infra.repository.AnomalyAlertRepository;
 import com.wms.analytics.infra.repository.DailyReportRepository;
 import com.wms.analytics.infra.task.DailyReportGenerationTask;
 import com.wms.shared.common.ResultVO;
+import com.wms.shared.common.TtlCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -56,6 +57,18 @@ public class DailyReportController {
 
     /** 与 PRD D3 一致：本期不做目标值，列表只给环比不给达成率 */
     private static final Map<String, String> CALIBER = buildCaliber();
+
+    /**
+     * ★ 2026-11-21 性能 P0-3：月历 / 当日明细短缓存 30 秒。
+     *
+     * <p>两端点现场实测各 0.39–0.46s 且无缓存，首屏累计约 0.8s。日报数据日终物化、
+     * 今天实时段靠计数差分，30 秒延迟不影响厂长阅读；复用 shared 的 TtlCache，
+     * 离线部署不引三方依赖。缓存值是只读响应 Map，仅经 Jackson 序列化。
+     */
+    private static final long DAILY_CACHE_TTL_MS = 30 * 1000L;
+    private static final int DAILY_CACHE_MAX_ENTRIES = 128;
+    private final TtlCache<String, ResultVO<Map<String, Object>>> dailyCache =
+            new TtlCache<>(DAILY_CACHE_TTL_MS, DAILY_CACHE_MAX_ENTRIES);
 
     private final DailyReportRepository dailyReportRepository;
     private final DailyReportGenerationTask generationTask;
@@ -295,6 +308,13 @@ public class DailyReportController {
         LocalDate today = LocalDate.now();
         int scope = (lineId == null || lineId == 0) ? 0 : lineId;
 
+        // ★ 2026-11-21 P0-3：月历 30s 短缓存。key = 月份 + 产线（结果只依赖这两个入参）
+        String cacheKey = "calendar|" + monthStart.toString() + "|" + scope;
+        ResultVO<Map<String, Object>> cached = dailyCache.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
+
         // ① 取快照：多取前一天当计数差分基线
         Map<LocalDate, Map<String, Object>> byDate = new java.util.TreeMap<>();
         LocalDate snapEnd = monthEnd.isBefore(today) ? monthEnd : today.minusDays(1);
@@ -432,7 +452,9 @@ public class DailyReportController {
         data.put("days", days);
         data.put("summary", summary);
         data.put("caliber", CALIBER);
-        return ResultVO.success(data);
+        ResultVO<Map<String, Object>> result = ResultVO.success(data);
+        dailyCache.put(cacheKey, result);
+        return result;
     }
 
     // ==================== 单日维度明细（月历下方的四宫格） ====================
@@ -465,6 +487,16 @@ public class DailyReportController {
         }
         int scope = (lineId == null || lineId == 0) ? 0 : lineId;
         boolean realtime = day.equals(LocalDate.now());
+
+        // ★ 2026-11-21 P0-3：明细 30s 短缓存。key 含全部影响结果的筛选参数，
+        //   避免不同工位/相机/类型/班次共用同一份响应。
+        String cacheKey = "breakdown|" + day.toString() + "|" + scope + "|"
+                + workstationId + "|" + cameraId + "|"
+                + (defectType == null ? "" : defectType.trim()) + "|" + shiftId;
+        ResultVO<Map<String, Object>> cached = dailyCache.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
 
         // ① 汇总行：历史日优先用快照（图片可能已归档，重算会得到 0），今天实时算
         Map<String, Object> kpi = null;
@@ -555,7 +587,9 @@ public class DailyReportController {
             data.put("detailFilterMessage", "明细已按" + String.join("、", applied)
                     + "筛选（TOP 排行 / 时段分布 / 全量计数均生效）；顶部汇总 KPI 与月历仍按所选产线整体统计，未随明细筛选变化。");
         }
-        return ResultVO.success(data);
+        ResultVO<Map<String, Object>> result = ResultVO.success(data);
+        dailyCache.put(cacheKey, result);
+        return result;
     }
 
     // ==================== 补算（管理员） ====================
@@ -577,6 +611,8 @@ public class DailyReportController {
         if (!ok) {
             return ResultVO.fail("补算失败，已落 DAILY_REPORT_FAILED 告警，请查看服务日志");
         }
+        // ★ 2026-11-21 P0-3：补算改写了快照，30s 内旧缓存必须失效，否则管理员刚补完仍看到旧数字。
+        dailyCache.clear();
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("message", "补算完成");
         data.put("reportDate", day.toString());
