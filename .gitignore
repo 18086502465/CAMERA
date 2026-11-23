@@ -84,6 +84,10 @@ desktop.ini
 .env
 .env.local
 application-local.yml
+# 授权签发台账：厂商内部资产（客户清单/机器码/密钥指纹），随密钥一起留厂商侧，不入库。
+# 已签发授权的参数摘要另记入 docs/templates/10-客户密钥台账模板.md 的实例（只指纹）。
+installer/license-tool/secrets/
+installer/license-tool/ledger.csv
 
 # ---- 临时脚本 ----
 *.timestamp-*.mjs

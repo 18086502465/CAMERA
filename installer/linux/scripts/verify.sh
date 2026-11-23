@@ -127,18 +127,21 @@ echo "${C_HEAD}[2] 程序文件${C_OFF}"
   && check "参数配置" true "/etc/default/camera-detection" \
   || check "参数配置" false "缺失"
 
-# 与 build-release.sh 的 REQUIRED_SQL 清单一致：01→05 建库 + 06/07 幂等补丁。
-# 旧版只校验「≥4」，漏拷 05（相机类型，清理保护集的安全阀）也会显示通过。
-required_sql="01_init_schema_nodb.sql 02_final_schema_p0.sql 03_system_settings.sql 04_align_entity_columns.sql 05_camera_type_migration.sql 06_index_tuning.sql 07_daily_report.sql"
+# 现场 dist/sql 必需 6 份：01→05 建库 + 06 幂等索引补丁。
+# ★ 2026-11-23 修正：07_daily_report.sql 由应用启动 SchemaInitializer 幂等建表
+#   （见 CODEBUDDY.md / DailyReportRepository.ensureTable），**不纳入 init-database.sh，
+#   也不随现场 dist/sql 下发**。此前按源码 sql/deploy 的 7 份校验现场，导致 44/45 假红。
+#   源码构建侧（build-release.sh REQUIRED_SQL）仍校验 7 份——那是打包真源，两处口径不同是有意的。
+required_sql="01_init_schema_nodb.sql 02_final_schema_p0.sql 03_system_settings.sql 04_align_entity_columns.sql 05_camera_type_migration.sql 06_index_tuning.sql"
 missing_sql=""
 for _f in $required_sql; do
   [[ -f "${INSTALL_DIR}/sql/${_f}" ]] || missing_sql="${missing_sql} ${_f}"
 done
 sql_count=$(find "${INSTALL_DIR}/sql" -name "*.sql" 2>/dev/null | wc -l | tr -d ' ')
 if [[ -z "$missing_sql" ]]; then
-  check "建库脚本" true "${sql_count} 个（01→05 + 06/07 齐全）"
+  check "建库脚本" true "${sql_count} 个（01→06 齐全；07 日报快照由应用启动建）"
 else
-  check "建库脚本" false "缺少:${missing_sql}（找到 ${sql_count} 个，应为 7）"
+  check "建库脚本" false "缺少:${missing_sql}（现场应有 01→06 共 6 个，找到 ${sql_count} 个）"
 fi
 
 # --- 3. 工作目录 -------------------------------------------------------------

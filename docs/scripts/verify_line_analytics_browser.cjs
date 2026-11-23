@@ -138,11 +138,23 @@ async function readKpis(page) {
     const num = (v) => Number(String(v ?? '').replace(/[^0-9.]/g, ''))
     const totalAll = num(kpiAll['缺陷图片数'])
     const totalLine = num(kpiLine['缺陷图片数'])
-    check('筛选产线后数量 ≤ 全集（子集不得大于全集）',
-      Number.isFinite(totalAll) && Number.isFinite(totalLine) && totalLine > 0 && totalLine <= totalAll,
-      `不筛选=${totalAll} / ZK23=${totalLine}`)
-    check('两种筛选的数据源一致', srcAll === srcLine, `${srcAll} / ${srcLine}`)
-    check('筛选后也没有良率卡片', !('良率' in kpiLine), Object.keys(kpiLine).join('/'))
+    // ★ 2026-11-23：ZK23 当天可能 0 上传 → 产品按「无数据≠0」诚实降级为
+    //   「当前条件下没有检测记录」+ 另一套 KPI 卡（无『缺陷图片数』键）。
+    //   这是正确行为，不是 bug —— 识别该态时跳过数值比较，避免假红。
+    const noData = String(srcLine).includes('没有检测记录')
+    if (noData) {
+      check('筛选后无数据 → 诚实降级（不误判为数值错误）', true,
+        `ZK23 当天无上传，显示「没有检测记录」（无数据≠0）`)
+    } else {
+      check('筛选产线后数量 ≤ 全集（子集不得大于全集）',
+        Number.isFinite(totalAll) && Number.isFinite(totalLine) && totalLine > 0 && totalLine <= totalAll,
+        `不筛选=${totalAll} / ZK23=${totalLine}`)
+      check('两种筛选的数据源一致', srcAll === srcLine, `${srcAll} / ${srcLine}`)
+    }
+    // 无数据占位卡会显示「良率：—」（未接入，不是假数值）；只有真实数据时才禁止良率键
+    const yieldVal = kpiLine['良率']
+    check('筛选后也没有良率卡片', !('良率' in kpiLine) || yieldVal === '—' || yieldVal === '-',
+      Object.keys(kpiLine).join('/') + ' 良率=' + String(yieldVal))
 
     // ---- ④ 趋势图不画良率线 ----
     const legend = await page.evaluate(() => {

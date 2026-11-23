@@ -68,7 +68,10 @@ const check = (name, ok, detail) => {
     // 3. 授权信息：到期日期
     const labels = await page.$$eval('.el-descriptions__label', els => els.map(e => (e.textContent || '').trim()))
     check('出现「到期日期」', labels.includes('到期日期'))
-    check('出现「过期策略」', labels.includes('过期策略'))
+    // 2026-11-23：状态区 descriptions 没有「过期策略」标签（策略在状态横幅/告警文案里展示，
+    // 「到期策略」只在导入预览摘要出现）。原断言写死 labels 包含「过期策略」是旧版残留。
+    check('状态区展示授权关键信息', labels.includes('客户') && labels.includes('授权单号'),
+      labels.join('/'))
 
     // 4. 机器码（16 位大写十六进制，或明确提示无法采集）
     const mc = await page.$eval('.mc-value .mono.big', e => (e.textContent || '').trim()).catch(() => '')
@@ -80,10 +83,12 @@ const check = (name, ok, detail) => {
     const modeOk = /warn|readonly|block/.test(bodyText)
     check('过期策略取值可见', modeOk)
 
-    // 6. 管理员上传区
+    // 6. 管理员导入区（2026-11-23：两步式改造后入口是「选择授权包（.zip）」，
+    //    旧脚本断言的「上传并生效」按钮已不存在）
     const uploadBtn = await page.evaluate(() =>
-      Array.from(document.querySelectorAll('button')).some(b => (b.textContent || '').includes('上传并生效')))
-    check('管理员可见上传入口', uploadBtn)
+      Array.from(document.querySelectorAll('button')).some(b =>
+        (b.textContent || '').includes('选择授权包') || (b.textContent || '').includes('上传并生效')))
+    check('管理员可见导入入口', uploadBtn)
 
     // 7. 与接口对账
     const lr = await fetch(BASE + '/api/auth/login', {
