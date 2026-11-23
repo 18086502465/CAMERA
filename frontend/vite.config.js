@@ -72,6 +72,32 @@ function elementPlusGuard() {
 
 export default defineConfig({
   plugins: [vue(), elementPlusGuard()],
+  build: {
+    rollupOptions: {
+      output: {
+        /**
+         * ★ 第三方库分包（页面打开效率优化 2026-11-22）。
+         *
+         * <p>不改分包时 vue+element-plus 全在入口 chunk：每次发版入口 hash 变化，
+         * 用户必须重下 ~1.9MB。拆出独立 vendor chunk 后，业务代码改版只让
+         * entry/页面 chunk 失效 —— 依赖版本不变时 vendor chunk 的 URL 与内容
+         * 都不变，浏览器缓存直接命中。
+         *
+         * <p>⚠ 首版把 vue/element-plus 拆成两个 chunk，实测
+         * 「ReferenceError: Cannot access '$e' before initialization」（TDZ）——
+         * entry 与 vendor-element-plus 之间存在循环引用，Rollup 无法用提升消除。
+         * 修正：**其余 node_modules 全部并入单一 vendor chunk**（一个块内部无环）；
+         * echarts/zrender 只被页面异步引用、与入口无环，可安全独立。
+         * vendor-ui 分包后已验证构建 + 浏览器回归。
+         */
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('echarts') || id.includes('zrender')) return 'vendor-echarts'
+          return 'vendor-ui'
+        }
+      }
+    }
+  },
   resolve: {
     alias: [
       { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },

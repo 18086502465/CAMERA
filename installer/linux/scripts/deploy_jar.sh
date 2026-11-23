@@ -44,6 +44,18 @@ TOOL_DIR="$(cd "$(dirname "$0")" && pwd)"     # jar_manifest.py 与本脚本同�
 log()  { printf '[deploy] %s\n' "$*"; }
 die()  { printf '[deploy] 错误：%s\n' "$*" >&2; exit 1; }
 
+# 增量模式合成的 /tmp/merged-*.jar 约 60MB/次，现场实测 16 份共 947MB 从不清理。
+# ① 开跑前清 60 分钟以上的历史残留（不会碰到并发中的其它部署）；
+# ② EXIT trap 只删本次合成的 MERGED —— 成功、die、回滚三条路径都会触发。
+MERGED=""
+cleanup_merged() {
+  if [[ -n "$MERGED" && -f "$MERGED" ]]; then
+    rm -f "$MERGED" && log "已清理本次合成临时文件：$MERGED"
+  fi
+}
+trap cleanup_merged EXIT
+find /tmp -maxdepth 1 -type f -name 'merged-*.jar' -mmin +60 -delete 2>/dev/null || true
+
 # --- 前置检查 --------------------------------------------------------------
 [[ -n "${SUDO_PASSWORD:-}" ]] || die "未设置环境变量 SUDO_PASSWORD，无法执行需要 root 的操作
   用法：export SUDO_PASSWORD='<服务器 sudo 口令>' && bash $0"

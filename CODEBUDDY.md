@@ -48,7 +48,9 @@ npm run build          # vite build + postbuild 自动把产物填进后端 stat
 npm run preview        # 预览 dist 产物
 ```
 
-前端**没有 lint、没有单元测试**（`package.json` 只有 dev/build/preview + postbuild 钩子）。所以 `npm run build` 就是前端唯一的门禁 —— 它挂了才算挂，它过了不代表逻辑对，行为正确性只能靠 `docs/scripts/verify_*_browser.cjs` 浏览器回归。
+前端现有 `npm test`（node --test）与 `npm run lint`（eslint），两者与 `npm run build` 一起构成门禁；
+2026-11-22 前本段曾写「没有 lint、没有单元测试」，已过时。注意构建通过只说明产物能出，
+**行为正确性仍只能靠 `docs/scripts/verify_*_browser.cjs` 浏览器回归**。
 
 > 只用 `npm ci`（与 CI 一致）。`npm install` 会在 lock 漂移时装出不同依赖树，
 > 导致"本机能构建、CI 也能过、但产物不一致"。已退役的 `sync_static.py` 会删旧 chunk，别再用。
@@ -128,7 +130,7 @@ com.wms
 
 每域分层：`api/`（Controller + DTO/VO）→ `app/`（应用服务、事件、跨域端口）→ `domain/model/`（被动实体）→ `infra/`（`mapper/` MyBatis-Plus + `repository/` JdbcTemplate + `task/`）。层不齐是既有状态：`defect` 没有 `domain/`，`system` 没有 `app/` —— 别为了"整齐"新建空层。
 
-规模参考（2026-11-18 实测）：**178** 个 Java 文件 / **24,191** 行、**30** 个 Controller / **147** 个端点（接口文档口径 146）、16 个 Repository / 17 个 Mapper、**30** 个测试类 / **256** 个用例。文档里若见 151 文件 / 134 端点 / 79 用例，都是 DDD 定稿时的旧值。
+规模参考（2026-11-18 实测）：**178** 个 Java 文件 / **24,191** 行、**30** 个 Controller、16 个 Repository / 17 个 Mapper、**30** 个测试类 / **256** 个用例；端点数以 `docs/接口文档.md` 的生成结果为准，不在文档里硬编码。文档里若见 151 文件 / 134 端点 / 79 用例，都是 DDD 定稿时的旧值。
 
 ### ArchUnit 三条铁律（`com.wms.arch.ArchitectureTest`）
 
@@ -370,10 +372,11 @@ Element Plus 的 value 绑定与 password 类型输入静默失效）。
 
 ## 文档地图
 
-完整索引与「什么问题查哪份」见 `docs/README.md`。这里只列改代码时**必看**的三份：
+完整索引与「什么问题查哪份」见 `docs/README.md`。这里只列改代码时**必看**的几份：
 
 | 文档 | 什么时候看 |
 |---|---|
+| `docs/交付件体系与端到端交付流程.md` | 立项、发版、验收时：阶段门禁 S0～S8、RACI、命令序列、DoD |
 | `docs/需求PRD.md` | **全项目需求总纲**（2026-11-18 新建）：功能需求 10 域 130 条、数据口径与指标公式、非功能指标、**需求→实现→验证追溯矩阵**、明确不做与遗留待办。想知道"这系统要什么、做到哪一步"看它 |
 | `docs/踩坑速查.md` | **改任何东西之前**；**20 节**真实事故与根因（逐节累加，编号只增不改） |
 | `docs/架构说明.md` | 分层规则、依赖铁律、关键机制（本文件 §后端架构 的精简版来源） |

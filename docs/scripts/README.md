@@ -1,5 +1,8 @@
 # 运维与验证脚本索引
 
+> 交付阶段门禁、责任分工与验收标准见 [`../交付件体系与端到端交付流程.md`](../交付件体系与端到端交付流程.md)；
+> 本文只回答「哪个脚本解决哪个坑」。
+
 > 目录：`docs/scripts/`（一次性排查/迁移/修复脚本已随 2026-11-05 项目精简移除，需要时从 git 历史找回；
 > 2026-11-12 又退役 4 个，见 `docs/archive/scripts-retired/`）
 > **约定**：
@@ -20,6 +23,7 @@
 | `installer/linux/scripts/jar_manifest.py` | 轻量增量发版核心（构建端/部署端共用）：`make-update` 产 2.1MB update 包、`merge` 与线上 fat jar 在线合成（lib 指纹不一致 exit 2 强制走全量）。⚠️ **真源在 installer，本目录无副本** |
 | `upload_jar_b64.py` | 上传大文件到服务器的**唯一可行通道**（base64 分块 + 普通命令通道；scp/SFTP/管道直传均不可用）。Git Bash 需 `MSYS_NO_PATHCONV=1` |
 | `push_via_github_api.py` | GitHub Git Data API 推送（原生 `git push` 被代理拦截 502 时的备选；支持多提交链；>40MB blob 复用远端 sha）。令牌从 `GITHUB_TOKEN` 读取 |
+| `preflight.sh` | **发版前只读预检（S5 入口）**：不构建/不上传/不改库，只报四件事——代码状态（分支/HEAD/未提交数）、构建输入（SQL 7 份清单 + 两份 yml key 对账）、上次门禁结果（surefire 统计 + dist 新旧）、现有产物与部署目标。发现工作树不干净、凭据字面量、缺 SQL、key 不一致即退出码 1。用法 `bash docs/scripts/preflight.sh`，输出可重定向存档随发布记录归档 |
 
 ## 二、运维工具
 
@@ -86,10 +90,10 @@ evaluate 内 value setter 会被 v-model 同步回去（用真实键盘事件）
 | 脚本 | 触发 | 作用 |
 |---|---|---|
 | `install.sh` | 手工（root） | 全新安装：建用户、装 JAR、写 systemd、装 cron/timer、装 logrotate |
-| `init-database.sh` | 手工 | 按序执行 `sql/deploy/01~04` 建库 |
+| `init-database.sh` | 手工 | 按序执行 `sql/deploy/01→05` 建库；06/07 是幂等补丁（06 索引、07 日报快照，07 也由应用启动补建），发布包必须 7 份齐全 |
 | `run.sh` | systemd `ExecStart` | 启动入口，`source /etc/default/camera-detection` 组装 JVM 参数 |
 | `service.sh` | 手工 | `start/stop/restart/status/logs/version/health/config-check/rollback/cleanup` |
-| `verify.sh` | 手工（**必须 root + 正确口令**） | 45 项自检（统一布局；未迁移老布局 35 项）：环境、配置、目录、保留期口径、cron 无明文口令、**cron 脚本路径（必须是 `${INSTALL_DIR}/scripts/`，防旧副本）**、备份新鲜度、**binlog 副本新鲜度**、图片副本无 TEST 相机、服务、鉴权、上报链路、授权可用性 |
+| `verify.sh` | 手工（**必须 root + 正确口令**） | 45 项自检（统一布局；未迁移老布局 35 项）：环境、配置、目录、保留期口径、cron 无明文口令、**cron 脚本路径（必须是 `${INSTALL_DIR}/scripts/`，防旧副本）**、备份新鲜度、**binlog 副本新鲜度**、图片副本无 TEST 相机、服务、鉴权、上报链路、授权可用性。加 `--delivery` 进入交付模式（LIC-10）：常规口径不变，额外断言授权状态=VALID、载荷字段齐全、机器码匹配本机、过期策略来源=license 且非试用，并写 `${WORK_DIR}/data/license/licenseSelfCheck.json`（不含密钥/完整机器码）。常规模式容忍 MISSING/TRIAL；交付模式一律判红 |
 | `reset-password.sh` | 手工 | 重置管理员口令（前端无自助改密端点） |
 
 `verify.sh` 的口径检查会比对 **cron `KEEP_DAYS` vs `application.yml` `retain-days`**；

@@ -46,7 +46,7 @@
 
 <script setup>
 import { ref, computed, inject, watch, onMounted, nextTick } from 'vue'
-import * as echarts from 'echarts'
+import * as echarts from '@/utils/echarts-core'
 import { getDefectStats, getDefectHeatmap, getDefectTrend } from '@/api/stats'
 
 const c1 = ref(null), c2 = ref(null), c3 = ref(null), c4 = ref(null), c5 = ref(null)

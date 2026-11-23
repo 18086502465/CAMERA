@@ -112,6 +112,13 @@ upload:
   max-file-size: 10MB
   max-request-size: 1024MB
 
+analytics:
+  # ---- 性能优化（2026-11-21）：产线统计图片通道「单遍内存聚合」开关 ----
+  #   开（默认）：一次 line-summary 只跑 1 条窗口取数 + 3 条小维表 SQL，
+  #   其余 12 个数据块全部内存聚合（原路径 12+ 条全表扫描 SQL，现场冷查 ~3.9s）。
+  #   主窗口无数据或聚合异常时自动回退原 SQL 路径；false = 完全回退旧路径。
+  image-summary-fast: true
+
 logging:
   level:
     # OPS-01（2026-11-06）：默认 INFO。原默认 DEBUG 会把每条 SQL/参数打进日志文件；

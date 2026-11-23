@@ -109,7 +109,7 @@ import { getLineDashboard, exportStatsExcel } from '@/api/stats'
 import { getLineList } from '@/api/line'
 import { getBrandList } from '@/api/brand'
 import { getDefectTypeList } from '@/api/defect-type'
-import * as echarts from 'echarts'
+import * as echarts from '@/utils/echarts-core'
 import { Download } from '@element-plus/icons-vue'
 
 const loading = ref(false)

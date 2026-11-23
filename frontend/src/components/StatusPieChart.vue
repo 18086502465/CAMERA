@@ -7,7 +7,7 @@
 
 <script setup>
 import { ref, onMounted, watch, onBeforeUnmount } from 'vue'
-import * as echarts from 'echarts'
+import * as echarts from '@/utils/echarts-core'
 
 const props = defineProps({ stats: { type: Object, default: () => ({}) } })
 const chartRef = ref(null)

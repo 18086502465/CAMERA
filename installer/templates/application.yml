@@ -153,6 +153,13 @@ defect-image:
     #   ★ 目录名里的 defect-images 不可改：Java 读图白名单按 "/defect-images/" 过滤。
     dir: /main/app/data/images/defect-images/
 
+analytics:
+  # 产线统计图片通道「单遍内存聚合」开关（性能优化 2026-11-21）。
+  # 开（默认）：一次 line-summary 只跑 1 条窗口取数 + 3 条小维表 SQL，其余 12 个
+  # 数据块全部内存聚合（原路径 12+ 条全表扫描 SQL，现场冷查 ~3.9s）。
+  # 主窗口无数据或聚合异常时自动回退原 SQL 路径；false = 完全回退旧路径。
+  image-summary-fast: true
+
 logging:
   level:
     root: INFO

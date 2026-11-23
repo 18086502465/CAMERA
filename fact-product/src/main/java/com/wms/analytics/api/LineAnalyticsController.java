@@ -2,6 +2,7 @@ package com.wms.analytics.api;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.wms.analytics.app.DefectImageSummaryFastAggregator;
 import com.wms.analytics.infra.repository.AnalyticsAggregationRepository;
 import com.wms.analytics.infra.repository.AnalyticsDashboardRepository;
 import com.wms.analytics.infra.repository.LineAnalyticsQueryRepository;
@@ -14,6 +15,7 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -73,6 +75,19 @@ public class LineAnalyticsController {
 
     @Autowired
     private AnalyticsAggregationRepository aggregationRepository;
+
+    @Autowired
+    private DefectImageSummaryFastAggregator defectImageSummaryFastAggregator;
+
+    /**
+     * 图片统计「单遍内存聚合」开关（性能优化 2026-11-21）。
+     *
+     * <p>开（默认）：一次响应只跑 1 条窗口取数 SQL + 3 条小维表 SQL，其余 12 个数据块
+     * 全部内存聚合（原路径是 12+ 条全表扫描 SQL，冷查 ~3.9s）。主窗口无数据或聚合异常
+     * 时自动回退原 SQL 路径；配置关闭即完全回退。
+     */
+    @Value("${analytics.image-summary-fast:true}")
+    private boolean imageSummaryFastEnabled;
 
     /**
      * 时间格式解析器（严格模式）。
@@ -329,6 +344,33 @@ public class LineAnalyticsController {
         return built;
     }
 
+    /**
+     * 默认视图缓存预热（页面打开效率优化 2026-11-22）。
+     *
+     * <p>缓存键的 end 归一化到「分钟」+ TTL 60s：每分钟第一个打开统计页的用户
+     * 必然 miss，独自承担整次重算（快速聚合冷查 ~0.5-1.1s）。本预热每 45s 用与
+     * 前端默认落地视图<b>完全相同的参数</b>（今天 00:00 → 当前分钟、无任何筛选、
+     * dim=null 与 dim=line 两条——内置看板「产线缺陷排行 / 缺陷量趋势(按产线)」
+     * 走 dim=line 独立请求）重算并写缓存，用户打开页面即命中热缓存。
+     *
+     * <p>口径说明：SQL 仍用预热时刻的 end（分钟整），与用户秒级 end 的差异
+     * &lt;45s，与既有「分钟归一化 + 60s TTL」的数据延迟承诺一致。
+     * 任何异常只记 WARN —— 预热是增强，绝不能影响主流程。
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 45_000L, initialDelay = 20_000L)
+    public void warmUpDefaultSummaryCache() {
+        try {
+            LocalDateTime end = LocalDateTime.now().withSecond(0).withNano(0);
+            LocalDateTime start = end.toLocalDate().atStartOfDay();
+            buildSummaryCached(start, end, null, null, null, null, null, null,
+                    null, null, null, null, null, null);
+            buildSummaryCached(start, end, null, null, null, null, null, null,
+                    null, null, null, null, null, "line");
+        } catch (Exception ex) {
+            log.warn("默认视图统计缓存预热失败（不影响线上服务）：{}", ex.getMessage());
+        }
+    }
+
     private String summaryCacheKey(LocalDateTime start, LocalDateTime end,
                                    Long factoryId, Long lineId, List<Long> lineIds, Long workstationId,
                                    List<Long> workstationIds, Long cameraId,
@@ -399,8 +441,24 @@ public class LineAnalyticsController {
         //   不筛选产线时显示聚合表的 4 条，筛选产线时触发兜底显示图片表的 3041 条
         //   → **子集比全集还大**，用户完全无法理解。
         //   改为：**图片事实表优先**（它是现场真正在用的通道），聚合表仅在图片表无数据时兜底。
-        Map<String, Object> imageData = buildDefectImageSummary(
+        // ★ 性能优化（2026-11-21）：优先走「单遍内存聚合」（1 条窗口取数 + 3 条小维表
+        //   SQL，其余 12 个数据块内存聚合；原路径 12+ 条全表扫描冷查 ~3.9s）。
+        //   返回 null（主窗口无图片）或异常时回退原 SQL 路径 —— 无数据时 SQL 路径
+        //   会走聚合表兜底分支，行为不同，必须让位；异常回退保证可用性优先。
+        Map<String, Object> imageData = null;
+        if (imageSummaryFastEnabled) {
+            try {
+                imageData = buildDefectImageSummaryFast(start, end, factoryId, lineId, lineIds,
+                        workstationId, workstationIds, cameraId, productId, severity, defectType,
+                        shiftId, defectTypeId, dim);
+            } catch (Exception ex) {
+                log.warn("图片统计单遍快速聚合失败，回退 SQL 路径：{}", ex.getMessage(), ex);
+            }
+        }
+        if (imageData == null) {
+            imageData = buildDefectImageSummary(
                 start, end, factoryId, lineId, lineIds, workstationId, workstationIds, cameraId, productId, severity, defectType, shiftId, defectTypeId, dim);
+        }
         if (longVal(map(imageData.get("kpi")).get("totalCount")) > 0) {
             Map<String, Object> data = new LinkedHashMap<>(imageData);
             data.put("aggregationLevel", daily ? "DAY" : "30M");
@@ -640,6 +698,71 @@ public class LineAnalyticsController {
     }
 
     /**
+     * 图片统计「单遍内存聚合」入口（性能优化 2026-11-21）。
+     *
+     * <p>把 effectiveDefectType 解析、班次定义、诚实降级上报这些与 SQL 路径
+     * <b>共用</b>的前置逻辑先算好，再交给 {@link DefectImageSummaryFastAggregator}。
+     * 任何一步抛异常（如班次不存在 → IAE → 400）都由调用方整体回退 SQL 路径。
+     */
+    private Map<String, Object> buildDefectImageSummaryFast(LocalDateTime start, LocalDateTime end,
+                                                            Long factoryId, Long lineId, List<Long> lineIds,
+                                                            Long workstationId, List<Long> workstationIds,
+                                                            Long cameraId, Long productId, String severity,
+                                                            String defectType, Long shiftId, Long defectTypeId,
+                                                            String dim) {
+        // ★ 2026-11-21 评审 P1-4：defectTypeId 经映射表解析为现场上报名称（与 SQL 路径逐字一致）
+        String effectiveDefectType = defectType;
+        List<String> mappedNames = defectTypeId != null ? queryRepository.resolveDefectTypeNames(defectTypeId) : new ArrayList<>();
+        boolean defectTypeIdApplied = false;
+        if (mappedNames.size() == 1 && (effectiveDefectType == null || effectiveDefectType.trim().isEmpty())) {
+            effectiveDefectType = mappedNames.get(0);
+            defectTypeIdApplied = true;
+        }
+        Map<String, Object> shiftFilter = resolveShift(shiftId);
+        Map<String, Object> shiftWindows = resolveShiftWindows();
+        Map<String, Object> block = imageIgnoredFiltersBlock(productId, defectTypeId, defectTypeIdApplied, severity);
+        @SuppressWarnings("unchecked")
+        List<String> ignoredFilters = (List<String>) block.get("ignoredFilters");
+        return defectImageSummaryFastAggregator.build(start, end, factoryId, lineId, lineIds,
+                workstationId, workstationIds, cameraId, severity, effectiveDefectType, defectType,
+                shiftId, shiftFilter, dim, shiftWindows, ignoredFilters,
+                (String) block.get("ignoredFilterMessage"));
+    }
+
+    /**
+     * 图片通道「被丢弃的筛选」诚实降级上报块（P0-1 / B-1 / B-2，2026-11-21 抽取共用）。
+     *
+     * <p>返回的 Map 含 {@code ignoredFilters}（恒有）与
+     * {@code ignoredFilterMessage}（列表非空时才有）—— 与旧内联代码的 put 顺序一致。
+     */
+    private static Map<String, Object> imageIgnoredFiltersBlock(Long productId, Long defectTypeId,
+                                                                boolean defectTypeIdApplied, String severity) {
+        List<String> ignoredFilters = new ArrayList<>();
+        List<String> ignoredFilterNotes = new ArrayList<>();
+        if (productId != null) {
+            ignoredFilters.add("productId");
+            ignoredFilterNotes.add("产品筛选对缺陷图片通道不生效：图片事实表不记录产品"
+                    + "（camera_status.product_name 只是当前心跳快照，无历史）");
+        }
+        if (defectTypeId != null && !defectTypeIdApplied) {
+            ignoredFilters.add("defectTypeId");
+            ignoredFilterNotes.add("缺陷类型 ID 筛选未命中任何现场上报名称映射："
+                    + "请在系统配置中维护「标准缺陷类型 → 设备上报名(source_code)」映射后重试");
+        }
+        if (severity != null && !severity.trim().isEmpty()) {
+            ignoredFilters.add("severity(部分)");
+            ignoredFilterNotes.add("严重度筛选**只作用于缺陷类型排行 / 缺陷透视 / 严重度分布**；"
+                    + "KPI、趋势、工位与相机排行、时段热力图、班次对比按全部严重度统计");
+        }
+        Map<String, Object> block = new LinkedHashMap<>();
+        block.put("ignoredFilters", ignoredFilters);
+        if (!ignoredFilters.isEmpty()) {
+            block.put("ignoredFilterMessage", String.join("；", ignoredFilterNotes) + "。");
+        }
+        return block;
+    }
+
+    /**
      * 基于「缺陷图片事实表」的统计（聚合表无数据时的兜底数据源）。
      *
      * <p>现场设备通过 {@code /api/v1/defect-images/upload} 上报，
@@ -697,39 +820,9 @@ public class LineAnalyticsController {
         // （见 DefectImageRepository 的同类注释），所以不能拿来兜底。
         // 旧行为是静默忽略 —— 用户选了「产品 A」却看到全部数据，只会怀疑系统坏了。
         // 现在改为：如实回传 ignoredFilters，前端在筛选区给出「该筛选不生效」提示。
-        List<String> ignoredFilters = new ArrayList<>();
-        List<String> ignoredFilterNotes = new ArrayList<>();
-        if (productId != null) {
-            ignoredFilters.add("productId");
-            ignoredFilterNotes.add("产品筛选对缺陷图片通道不生效：图片事实表不记录产品"
-                    + "（camera_status.product_name 只是当前心跳快照，无历史）");
-        }
-        // ★ 2026-11-19 评审 B-1：defectTypeId 在图片通道**完全没有数据源**，
-        //   且此前**既不生效、也不上报** → 用户以为按类型筛了，实际看的是全量。
-        //   原因：dim_defect_type 的 15 个标准类型（P0_INNER_GLUE_SMALL 等）
-        //   与 defect_image_box.defect_type 的现场中文类型（接头/胶滴/污点）
-        //   **完全不相交**，按 ID 过滤在语义上本就无法命中；
-        //   而 buildDefectImageSummary 的形参里原本根本没有 defectTypeId。
-        //   修法（2026-11-21 P1-4）：先查 cfg_camera_defect_mapping 把标准 ID 解析为现场上报名，
-        //   命中则真正落进 defectType 筛选；未命中仍如实上报不生效（不静默吞）。
-        if (defectTypeId != null && !defectTypeIdApplied) {
-            ignoredFilters.add("defectTypeId");
-            ignoredFilterNotes.add("缺陷类型 ID 筛选未命中任何现场上报名称映射："
-                    + "请在系统配置中维护「标准缺陷类型 → 设备上报名(source_code)」映射后重试");
-        }
-        // ★ 2026-11-19 评审 B-2：severity 只进了 3 个块（缺陷排行 / 透视 / 严重度分布），
-        //   **KPI、趋势、工位/相机排行、热力图、班次对比都不受它约束**
-        //   → 用户选「高危」后 KPI 纹丝不动，却没有任何提示。
-        //   修法：如实上报为「仅部分生效」，并说明哪部分生效、哪部分不生效。
-        if (severity != null && !severity.trim().isEmpty()) {
-            ignoredFilters.add("severity(部分)");
-            ignoredFilterNotes.add("严重度筛选**只作用于缺陷类型排行 / 缺陷透视 / 严重度分布**；"
-                    + "KPI、趋势、工位与相机排行、时段热力图、班次对比按全部严重度统计");
-        }
-        data.put("ignoredFilters", ignoredFilters);
-        if (!ignoredFilters.isEmpty()) {
-            data.put("ignoredFilterMessage", String.join("；", ignoredFilterNotes) + "。");
-        }
+        // ★ 2026-11-21 计算逻辑抽到 imageIgnoredFiltersBlock（单遍快速聚合路径共用，
+        //   保证两条路径的上报内容不漂移）。
+        data.putAll(imageIgnoredFiltersBlock(productId, defectTypeId, defectTypeIdApplied, severity));
 
         Map<String, Object> kpi = new LinkedHashMap<>();
         List<Object> kpiParams = new ArrayList<>(params);

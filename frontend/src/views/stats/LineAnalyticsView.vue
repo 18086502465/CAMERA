@@ -590,7 +590,7 @@
 
 <script setup>
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import * as echarts from 'echarts'
+import * as echarts from '@/utils/echarts-core'
 import { ElMessage, ElMessageBox } from '@/utils/message'
 import { getAnalyticsMetadata, getLineAnalyticsSummary, getDefaultDashboard, getDashboards, getDashboard, createDashboard, updateDashboard, deleteDashboard, copyDashboard, createWidget, updateWidget, deleteWidget, reorderWidgets, exportWidgetExcel, runDailyAggregation, getAggregationJobs, getAggregationSchedule, updateAggregationSchedule, queryAggregationJobs, retryAggregationJob } from '@/api/analytics'
 import { getDefectImageFilterOptions } from '@/api/camera'
@@ -935,7 +935,14 @@ function pruneStaleCameraFilter() {
 watch([visibleWidgets, () => summary.trend, () => summary.defectRanking, () => summary.defectPareto, () => summary.severityDistribution, () => summary.defectTrend, () => summary.stationRanking, () => summary.cameraRanking, () => summary.defectPivot, () => summary.hourlyHeatmap, () => summary.shiftCompare, () => summary.dailyCalendar], () => renderAllCharts(), { deep: true })
 watch([() => widgetDialogVisible.value, () => widgetForm.widgetType, () => widgetForm.metric, () => widgetForm.width, () => widgetForm.height, () => summary.trend, () => summary.defectRanking, () => summary.defectPareto, () => summary.severityDistribution, () => summary.defectTrend, () => summary.stationRanking, () => summary.cameraRanking, () => summary.dailyCalendar], () => renderPreviewChart(), { deep: true })
 
-onMounted(async () => { restoreRangePreset(); await loadMetadata(); loadDefectTypeOptions(); await loadDashboards(); await loadDashboard(); await loadData(); await loadAggregationJobs(); await loadAggregationSchedule(); window.addEventListener('resize', resizeCharts) })
+/**
+ * ★ 2026-11-22 页面打开效率：首屏请求并行化。
+ *   旧链路 metadata → dashboards → dashboard → summary 全串行，首屏接口
+ *   往返 4~5 跳。全局 summary（最重的一跳）不依赖元数据/看板，与看板链
+ *   并行发出；loadDashboard 尾部自带 loadWidgetData + renderAllCharts，
+ *   看板就绪后 widget 数据与图表自然补齐，无需额外调用。
+ */
+onMounted(async () => { restoreRangePreset(); const dashChain=(async()=>{ await loadMetadata(); loadDefectTypeOptions(); await loadDashboards(); await loadDashboard() })(); const summaryTask=loadData().catch(()=>{}); await dashChain; await summaryTask; await loadAggregationJobs(); await loadAggregationSchedule(); window.addEventListener('resize', resizeCharts) })
 onBeforeUnmount(() => { window.removeEventListener('resize', resizeCharts); window.removeEventListener('mousemove', onResizeMove); window.removeEventListener('mouseup', endResize); chartInstances.forEach(i => i.dispose()); chartInstances.clear(); disposePresentationCharts(); disposePreviewChart() })
 
 async function loadMetadata(){ try{ const data=(await getAnalyticsMetadata()).data?.data||{}; Object.assign(metadata,{products:data.products||[],defectTypes:data.defectTypes||[],positions:data.positions||[],cameras:data.cameras||[],shifts:data.shifts||[],widgetTypes:data.widgetTypes||[],dimensions:data.dimensions||[]}) }catch(e){ ElMessage.error('加载统计元数据失败：'+errorMessage(e)) } }

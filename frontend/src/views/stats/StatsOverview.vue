@@ -162,7 +162,7 @@ import { ElMessage } from '@/utils/message.js'
 import { getStatsOverview, exportStatsExcel } from '@/api/stats'
 import { getFactoryList } from '@/api/factory'
 import { getLineList } from '@/api/line'
-import * as echarts from 'echarts'
+import * as echarts from '@/utils/echarts-core'
 import { Download } from '@element-plus/icons-vue'
 
 const loading = ref(false)

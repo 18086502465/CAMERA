@@ -3,6 +3,8 @@ package com.wms.analytics.infra.repository;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -392,5 +394,162 @@ public class LineAnalyticsQueryRepository {
             // 表缺失（老库未跑 02）/ 查询失败 → 空列表，调用方继续诚实上报不生效
             return new ArrayList<>();
         }
+    }
+
+    // ==================== 单遍内存聚合（性能优化 2026-11-21） ====================
+
+    /**
+     * 单遍取数 DTO：{@code defect_image_file LEFT JOIN defect_image_box} 展平行。
+     *
+     * <p>无缺陷框的图片只产生一行（{@code boxType == null}）；有 N 个框的图片产生 N 行
+     * （每行携带相同图片列 + 各自的框列）——与 LEFT JOIN 的行乘法语义一致，
+     * 调用方按 {@code imageId} 分组还原「图片 → 框列表」结构。
+     */
+    public static final class ImageBoxRow {
+        public final long imageId;
+        public final String cameraCode;
+        public final LocalDateTime captureTime;
+        public final long defectCount;
+        public final long highCount;
+        public final long mediumCount;
+        public final long lowCount;
+        public final Long boxId;
+        public final String boxType;
+        public final String boxSeverity;
+
+        public ImageBoxRow(long imageId, String cameraCode, LocalDateTime captureTime,
+                           long defectCount, long highCount, long mediumCount, long lowCount,
+                           Long boxId, String boxType, String boxSeverity) {
+            this.imageId = imageId;
+            this.cameraCode = cameraCode;
+            this.captureTime = captureTime;
+            this.defectCount = defectCount;
+            this.highCount = highCount;
+            this.mediumCount = mediumCount;
+            this.lowCount = lowCount;
+            this.boxId = boxId;
+            this.boxType = boxType;
+            this.boxSeverity = boxSeverity;
+        }
+    }
+
+    /** 单遍取数 DTO：{@code dim_camera} 全量维度行（SQL 路径的 JOIN 不带 is_deleted 条件，此处同样不过滤）。 */
+    public static final class CameraDimRow {
+        public final Long cameraId;
+        public final String cameraCode;
+        public final String cameraName;
+        public final Long factoryId;
+        public final Long lineId;
+        public final Long workstationId;
+
+        public CameraDimRow(Long cameraId, String cameraCode, String cameraName,
+                            Long factoryId, Long lineId, Long workstationId) {
+            this.cameraId = cameraId;
+            this.cameraCode = cameraCode;
+            this.cameraName = cameraName;
+            this.factoryId = factoryId;
+            this.lineId = lineId;
+            this.workstationId = workstationId;
+        }
+    }
+
+    /** 单遍取数 DTO：工位名（{@code dim_workstation}，只取 JOIN 用到的两列）。 */
+    public static final class StationDimRow {
+        public final Long workstationId;
+        public final String stationName;
+
+        public StationDimRow(Long workstationId, String stationName) {
+            this.workstationId = workstationId;
+            this.stationName = stationName;
+        }
+    }
+
+    /** 单遍取数 DTO：产线名/编码（{@code dim_production_line}，只取 JOIN 用到的列）。 */
+    public static final class LineDimRow {
+        public final Long lineId;
+        public final String lineName;
+        public final String lineCode;
+
+        public LineDimRow(Long lineId, String lineName, String lineCode) {
+            this.lineId = lineId;
+            this.lineName = lineName;
+            this.lineCode = lineCode;
+        }
+    }
+
+    /**
+     * 单遍取数：窗口内 {@code defect_image_file LEFT JOIN defect_image_box} 展平行。
+     *
+     * <p>★ 性能优化（2026-11-21）：原 buildDefectImageSummary 一次响应串行跑 12+ 条查询，
+     * 每条都独立扫一遍时间窗内全部图片行（现场 7 天窗 ≈ 6.6 万行，覆盖全表 90%，
+     * 优化器选全表扫是正确选择，索引救不了）+ 每行回表 {@code dim_camera}。
+     * 改为一条 SQL 把窗口内「图片×框」行一次取回（~6.9 万行、百毫秒级），
+     * 其余聚合在内存完成。窗口由调用方取「主窗 ∪ 日历窗 ∪ 环比窗」的并集。
+     */
+    public List<ImageBoxRow> fetchImageBoxRows(Timestamp start, Timestamp end) {
+        return jdbcTemplate.query(
+                "SELECT f.image_id, f.camera_id, f.capture_time, f.defect_count, " +
+                        "f.high_count, f.medium_count, f.low_count, b.box_id, b.defect_type, b.severity " +
+                        "FROM defect_image_file f " +
+                        "LEFT JOIN defect_image_box b ON b.image_id = f.image_id " +
+                        "WHERE f.capture_time BETWEEN ? AND ?",
+                (rs, i) -> new ImageBoxRow(
+                        rs.getLong(1),
+                        rs.getString(2),
+                        rs.getTimestamp(3) == null ? null : rs.getTimestamp(3).toLocalDateTime(),
+                        rs.getLong(4),
+                        rs.getLong(5),
+                        rs.getLong(6),
+                        rs.getLong(7),
+                        rs.getObject(8) == null ? null : rs.getLong(8),
+                        rs.getString(9),
+                        rs.getString(10)),
+                // ★ 必须走带参重载：query(sql, rowMapper) 是无参 Statement 版本，
+                //   占位符不绑定直接报语法错（现场实测踩过）。
+                start, end);
+    }
+
+    /** 单遍取数：{@code dim_camera} 全量维度行（按 camera_code 索引；SQL 路径 JOIN 无 is_deleted 条件，此处保持一致）。 */
+    public Map<String, CameraDimRow> fetchCameraDims() {
+        Map<String, CameraDimRow> map = new LinkedHashMap<>();
+        jdbcTemplate.query(
+                "SELECT camera_code, camera_id, camera_name, factory_id, line_id, workstation_id FROM dim_camera",
+                rs -> {
+                    String code = rs.getString(1);
+                    if (code != null && map.putIfAbsent(code, new CameraDimRow(
+                            rs.getObject(2) == null ? null : rs.getLong(2),
+                            code,
+                            rs.getString(3),
+                            rs.getObject(4) == null ? null : rs.getLong(4),
+                            rs.getObject(5) == null ? null : rs.getLong(5),
+                            rs.getObject(6) == null ? null : rs.getLong(6))) != null) {
+                        // uk_camera_code 保证唯一，putIfAbsent 冲突属于异常数据，保留首行
+                    }
+                });
+        return map;
+    }
+
+    /** 单遍取数：工位名映射（{@code dim_workstation}）。 */
+    public Map<Long, StationDimRow> fetchStationDims() {
+        Map<Long, StationDimRow> map = new LinkedHashMap<>();
+        jdbcTemplate.query(
+                "SELECT workstation_id, station_name FROM dim_workstation",
+                rs -> {
+                    long id = rs.getLong(1);
+                    map.put(id, new StationDimRow(id, rs.getString(2)));
+                });
+        return map;
+    }
+
+    /** 单遍取数：产线名/编码映射（{@code dim_production_line}）。 */
+    public Map<Long, LineDimRow> fetchLineDims() {
+        Map<Long, LineDimRow> map = new LinkedHashMap<>();
+        jdbcTemplate.query(
+                "SELECT line_id, line_name, line_code FROM dim_production_line",
+                rs -> {
+                    long id = rs.getLong(1);
+                    map.put(id, new LineDimRow(id, rs.getString(2), rs.getString(3)));
+                });
+        return map;
     }
 }

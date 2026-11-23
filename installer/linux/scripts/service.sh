@@ -111,7 +111,9 @@ cmd_health() {
 
   # 3) 磁盘
   local mp use
-  for mp in / /data /var; do
+  # 统一布局后数据盘挂载点是 /main，旧的 /data 已不是挂载点：
+  # df /data 实际返回系统盘 → 500G 数据盘从未被巡检（2026-11-13 事故）。
+  for mp in / /main; do
     [[ -d "$mp" ]] || continue
     use=$(df --output=pcent "$mp" 2>/dev/null | tail -1 | tr -d ' %')
     printf "  %-14s %s 使用率 %s%%\n" "磁盘 $mp" "$(df -h "$mp" 2>/dev/null | tail -1 | awk '{print $2}')" "${use:-?}"

@@ -11,13 +11,26 @@
 "current" 版本永远保留。超出部分的文件从 JAR 中删除。
 
 用法：sudo python3 prune_legacy_chunks.py [保留版数]
+当前 JAR 默认 /main/app/dist/app/time-bucket-demo.jar；也可由环境变量
+INSTALL_DIR / BASE（来自 /etc/default/camera-detection）推导。
 """
 import os
 import re
 import sys
 import zipfile
 
-CURRENT_JAR = "/opt/camera-detection-system/app/time-bucket-demo.jar"
+def resolve_app_dir():
+    """统一布局唯一根 /main/app；兼容手工执行时 source 过 /etc/default 的场景。"""
+    install = os.environ.get("INSTALL_DIR", "").rstrip("/")
+    base = os.environ.get("BASE", "").rstrip("/")
+    if install:
+        return install if os.path.basename(install) == "app" else os.path.join(install, "app")
+    if base:
+        return os.path.join(base, "dist", "app") if os.path.basename(base) == "app" else os.path.join(base, "app")
+    return "/main/app/dist/app"
+
+
+CURRENT_JAR = os.path.join(resolve_app_dir(), "time-bucket-demo.jar")
 ASSET_PREFIX = "BOOT-INF/classes/static/assets/"
 
 

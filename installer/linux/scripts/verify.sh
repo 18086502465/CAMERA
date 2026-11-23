@@ -2,8 +2,11 @@
 # ==============================================================================
 # 产线缺陷在线AI检测系统 —— 安装自检（Ubuntu 22.04 LTS）
 #
-# 用法：sudo ./verify.sh [base_url]
+# 用法：sudo ./verify.sh [--delivery] [base_url]
 #   默认 base_url = http://127.0.0.1:${PORT}（PORT 取自 /etc/default/camera-detection）
+#   --delivery  授权交付自检（LIC-10）：在常规自检之上追加 4 项授权断言，
+#              并输出 ${WORK_DIR}/data/license/licenseSelfCheck.json。
+#              常规模式对 MISSING/TRIAL 判通过；交付模式必须 VALID。
 #
 # 全部通过退出码 0；有失败项退出码 1。可直接接监控/流水线。
 # ==============================================================================
@@ -19,7 +22,17 @@ if [[ -r /etc/default/camera-detection ]]; then
 fi
 
 PORT="${PORT:-8091}"
-BASE_URL="${1:-http://127.0.0.1:${PORT}}"
+
+# --- 参数解析：--delivery 可在 base_url 前后任意位置 -------------------------
+DELIVERY_MODE=false
+_POSITIONAL=()
+for _arg in "$@"; do
+  case "$_arg" in
+    --delivery) DELIVERY_MODE=true ;;
+    *) _POSITIONAL+=("$_arg") ;;
+  esac
+done
+BASE_URL="${_POSITIONAL[0]:-http://127.0.0.1:${PORT}}"
 
 # 管理员口令：默认取建库种子口令 123456。
 # 现场改过口令后，用环境变量传实际口令，例如：
@@ -109,10 +122,19 @@ echo "${C_HEAD}[2] 程序文件${C_OFF}"
   && check "参数配置" true "/etc/default/camera-detection" \
   || check "参数配置" false "缺失"
 
+# 与 build-release.sh 的 REQUIRED_SQL 清单一致：01→05 建库 + 06/07 幂等补丁。
+# 旧版只校验「≥4」，漏拷 05（相机类型，清理保护集的安全阀）也会显示通过。
+required_sql="01_init_schema_nodb.sql 02_final_schema_p0.sql 03_system_settings.sql 04_align_entity_columns.sql 05_camera_type_migration.sql 06_index_tuning.sql 07_daily_report.sql"
+missing_sql=""
+for _f in $required_sql; do
+  [[ -f "${INSTALL_DIR}/sql/${_f}" ]] || missing_sql="${missing_sql} ${_f}"
+done
 sql_count=$(find "${INSTALL_DIR}/sql" -name "*.sql" 2>/dev/null | wc -l | tr -d ' ')
-[[ "$sql_count" -ge 4 ]] \
-  && check "建库脚本" true "${sql_count} 个" \
-  || check "建库脚本" false "只找到 ${sql_count} 个（应为 4）"
+if [[ -z "$missing_sql" ]]; then
+  check "建库脚本" true "${sql_count} 个（01→05 + 06/07 齐全）"
+else
+  check "建库脚本" false "缺少:${missing_sql}（找到 ${sql_count} 个，应为 7）"
+fi
 
 # --- 3. 工作目录 -------------------------------------------------------------
 echo
@@ -592,6 +614,108 @@ if [[ -n "$TOKEN" ]]; then
     *)
       check "授权可用性" false "status=${LIC_STATUS} —— 到「服务器授权」页看 message，或查 ${WORK_DIR}/data/license/" ;;
   esac
+
+  # ---- LIC-10：交付模式专用断言（不影响常规 45 项口径） --------------------
+  # 常规模式容忍 MISSING/TRIAL；交付验收必须拿到正式授权且状态 VALID。
+  # 四项断言：① 状态 VALID ② 载荷关键字段齐全 ③ 机器码匹配 ④ 到期策略来源合规。
+  DELIVERY_ASSERTIONS=()
+  if [[ "$DELIVERY_MODE" == "true" ]]; then
+    echo
+    echo "  ${C_HEAD}授权交付自检（--delivery）：${C_OFF}"
+
+    # ① 状态必须为 VALID（EXPIRING 仍可用但需续期，交付时同样不接受）
+    if [[ "$LIC_STATUS" == "VALID" ]]; then
+      check "交付·授权状态" true "status=VALID"
+      DELIVERY_ASSERTIONS+=("status:true")
+    else
+      check "交付·授权状态" false "status=${LIC_STATUS:-无响应}（交付要求 VALID；MISSING/TRIAL/EXPIRING 均不接受）"
+      DELIVERY_ASSERTIONS+=("status:false")
+    fi
+
+    # ② 载荷关键字段齐全：licenseId / customer / expireAt / maxCameras / machineCode
+    LIC_ID=$(printf '%s' "$LIC_JSON" | grep -oE '"licenseId":"[^"]*"' | head -1 | cut -d'"' -f4)
+    LIC_CUSTOMER=$(printf '%s' "$LIC_JSON" | grep -oE '"customer":"[^"]*"' | head -1 | cut -d'"' -f4)
+    LIC_EXPIRE=$(printf '%s' "$LIC_JSON" | grep -oE '"expireAt":"[^"]*"' | head -1 | cut -d'"' -f4)
+    LIC_MAXCAM=$(printf '%s' "$LIC_JSON" | grep -oE '"maxCameras":[0-9-]+' | head -1 | cut -d: -f2)
+    if [[ -n "$LIC_ID" && -n "$LIC_CUSTOMER" && -n "$LIC_EXPIRE" && -n "$LIC_MAXCAM" && -n "$LIC_MC" ]]; then
+      check "交付·载荷字段" true "id=${LIC_ID} 客户=${LIC_CUSTOMER} 到期=${LIC_EXPIRE} 相机上限=${LIC_MAXCAM}"
+      DELIVERY_ASSERTIONS+=("payload:true")
+    else
+      check "交付·载荷字段" false "缺字段：id=${LIC_ID:-空} 客户=${LIC_CUSTOMER:-空} 到期=${LIC_EXPIRE:-空} 相机上限=${LIC_MAXCAM:-空} 机器码=${LIC_MC:-空}"
+      DELIVERY_ASSERTIONS+=("payload:false")
+    fi
+
+    # ③ 机器码与本机一致：/api/license 的 machineCode 是「本机当前码」，不能自比自；
+    #    真正的绑定码在 .lic 载荷里（base64url(json).base64url(hmac) 的单行文本）。
+    #    这里直接读授权文件解出 payload.machineCode，再与本机码比对。
+    #    "*" = 不绑定机器 —— 交付验收不接受（合同按机器码授权）。
+    LIC_LOCAL_MC=$(curl -s -m 10 -H "Authorization: Bearer ${TOKEN}" \
+      "${BASE_URL}/api/license/machine-code" 2>/dev/null \
+      | grep -oE '"machineCode":"[^"]*"' | head -1 | cut -d'"' -f4)
+    LIC_FILE=$(printf '%s' "$LIC_JSON" | grep -oE '"licenseFile":"[^"]*"' | head -1 | cut -d'"' -f4)
+    LIC_BOUND_MC=""
+    if [[ -n "$LIC_FILE" && -r "$LIC_FILE" ]]; then
+      _lic_b64=$(head -1 "$LIC_FILE" 2>/dev/null | cut -d'.' -f1 | tr '_-' '/+' | tr -d '\r\n')
+      case $(( ${#_lic_b64} % 4 )) in
+        2) _lic_b64="${_lic_b64}==" ;;
+        3) _lic_b64="${_lic_b64}=" ;;
+      esac
+      LIC_BOUND_MC=$(printf '%s' "$_lic_b64" | base64 -d 2>/dev/null \
+        | grep -oE '"machineCode":"[^"]*"' | head -1 | cut -d'"' -f4)
+    fi
+    if [[ -n "$LIC_LOCAL_MC" && -n "$LIC_BOUND_MC" && "$LIC_BOUND_MC" != "*" && "$LIC_BOUND_MC" == "$LIC_LOCAL_MC" ]]; then
+      check "交付·机器码匹配" true "授权绑定=${LIC_BOUND_MC} 本机=${LIC_LOCAL_MC}"
+      DELIVERY_ASSERTIONS+=("machine:true")
+    else
+      check "交付·机器码匹配" false "授权绑定=${LIC_BOUND_MC:-读不到} 本机=${LIC_LOCAL_MC:-读不到} —— 绑定了别的机器/不绑定/授权文件不可读"
+      DELIVERY_ASSERTIONS+=("machine:false")
+    fi
+
+    # ④ 到期策略来源：载荷 v2 的 expiredMode 优先于配置；交付需确认来源为 license，
+    #    否则客户改服务器配置即可绕过合同约定的过期策略。TRIAL 态直接判失败。
+    LIC_MODE_SRC=$(printf '%s' "$LIC_JSON" | grep -oE '"expiredModeSource":"[^"]*"' | head -1 | cut -d'"' -f4)
+    LIC_TRIAL=$(printf '%s' "$LIC_JSON" | grep -oE '"trial":(true|false)' | head -1 | cut -d: -f2)
+    if [[ "$LIC_TRIAL" == "false" && "$LIC_MODE_SRC" == "license" && -n "$LIC_MODE" ]]; then
+      check "交付·过期策略来源" true "mode=${LIC_MODE} 来源=${LIC_MODE_SRC}（载荷 v2，客户改不了）"
+      DELIVERY_ASSERTIONS+=("modeSource:true")
+    else
+      check "交付·过期策略来源" false "trial=${LIC_TRIAL:-?} mode=${LIC_MODE:-?} 来源=${LIC_MODE_SRC:-?} —— 非 v2 载荷或试用态不满足交付要求"
+      DELIVERY_ASSERTIONS+=("modeSource:false")
+    fi
+
+    # 输出机器可消费的自检结果（不含密钥、不含完整机器码）
+    LIC_SELFCHECK_DIR="${WORK_DIR}/data/license"
+    LIC_SELFCHECK_FILE="${LIC_SELFCHECK_DIR}/licenseSelfCheck.json"
+    mkdir -p "$LIC_SELFCHECK_DIR" 2>/dev/null || true
+    DELIVERY_ALL_PASS=true
+    for _a in "${DELIVERY_ASSERTIONS[@]}"; do
+      [[ "${_a##*:}" == "true" ]] || DELIVERY_ALL_PASS=false
+    done
+    {
+      printf '{\n'
+      printf '  "checkedAt": "%s",\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')"
+      printf '  "mode": "delivery",\n'
+      printf '  "status": "%s",\n' "${LIC_STATUS:-UNKNOWN}"
+      printf '  "licenseId": "%s",\n' "${LIC_ID:-}"
+      printf '  "customer": "%s",\n' "${LIC_CUSTOMER:-}"
+      printf '  "expireAt": "%s",\n' "${LIC_EXPIRE:-}"
+      printf '  "maxCameras": "%s",\n' "${LIC_MAXCAM:-}"
+      printf '  "expiredMode": "%s",\n' "${LIC_MODE:-}"
+      printf '  "expiredModeSource": "%s",\n' "${LIC_MODE_SRC:-}"
+      printf '  "boundMachineMatched": %s,\n' "$([[ "${DELIVERY_ASSERTIONS[*]:-}" == *machine:true* ]] && echo true || echo false)"
+      printf '  "assertions": {'
+      _first=true
+      for _a in "${DELIVERY_ASSERTIONS[@]}"; do
+        [[ "$_first" == "true" ]] || printf ', '
+        _first=false; _k="${_a%%:*}"; _v="${_a##*:}"
+        printf '"%s": %s' "$_k" "$_v"
+      done
+      printf '},\n'
+      printf '  "overall": "%s"\n' "$([[ "$DELIVERY_ALL_PASS" == "true" ]] && echo PASS || echo FAIL)"
+      printf '}\n'
+    } > "$LIC_SELFCHECK_FILE" 2>/dev/null || true
+    echo "  ${C_DIM}自检结果：${LIC_SELFCHECK_FILE}${C_OFF}"
+  fi
 else
   check "看板统计接口（带 token）" false "未取到 token，无法验证"
 fi

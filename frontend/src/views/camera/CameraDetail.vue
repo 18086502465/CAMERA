@@ -49,7 +49,7 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import * as echarts from 'echarts'
+import * as echarts from '@/utils/echarts-core'
 import { getCameraDetail } from '@/api/camera'
 
 const route = useRoute()

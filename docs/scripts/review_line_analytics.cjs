@@ -126,6 +126,12 @@ async function pickOne(page, name) {
 ;(async () => {
   const browser = await puppeteer.launch({ executablePath: resolveChrome(), headless: 'new', args: ['--no-sandbox'] })
   const page = await browser.newPage()
+  // 收集 line-summary 请求里的 lineIds 参数（多选后用于断言候选覆盖）
+  const lineIdsSeen = []
+  page.on('request', (r) => {
+    const m = /line-summary\?/.test(r.url()) && /lineIds=(\d+(?:%2C|,)?\d*)/.exec(decodeURIComponent(r.url()))
+    if (m) lineIdsSeen.push(m[1].split(',').map(Number))
+  })
   await page.setViewport({ width: 1680, height: 1050 })
   const jsErrors = []
   page.on('pageerror', (e) => jsErrors.push(String(e).slice(0, 160)))
@@ -162,7 +168,8 @@ async function pickOne(page, name) {
   })
   await sleep(1200)
 
-  // ---- ① ZK09 → 选该线相机 → 切 ZK06 ----
+  // ---- ① ZK09 → 选该线相机 → 切换到另一条产线 ----
+  let camTextC = ''
   await pickLines(page, ['ZK09'])
   const camOptsZK09 = await openFilterSelect(page, 2)
   await pickFilterOption(page, 2, camOptsZK09[0])
@@ -170,21 +177,45 @@ async function pickOne(page, name) {
   const totalB = Number(String(kpiB['缺陷图片数'] || 0).replace(/,/g, ''))
   check('① ZK09 + 首个相机 有数据（前置条件）', totalB > 0, `KPI 缺陷图片数=${totalB}, 相机选择=${await readFilterText(page, 2)}`)
 
-  await pickLines(page, ['ZK06'])
-  const kpiC = await readKpi(page)
-  const totalC = Number(String(kpiC['缺陷图片数'] || 0).replace(/,/g, ''))
-  const camTextC = await readFilterText(page, 2)
-  check('① 切产线后不应因相机残留而整页空', totalC > 0, `KPI 缺陷图片数=${totalC}, 相机选择=${camTextC}`)
+  // ★ 2026-11-22 断言目标不能写死 ZK06：某天 ZK06 可能 0 上传（实测），
+  //   此时 KPI=0 是正确口径而非 bug。动态选「今天有数据的另一条产线」；
+  //   全都没有时退化为一致性断言（KPI == 该线 API 值，允许 0）。
+  const ranked = await page.evaluate(async () => {
+    const now = new Date()
+    const pad = (n) => String(n).padStart(2, '0')
+    const end = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} 23:59:59`
+    const q = new URLSearchParams({ startTime: `${end.slice(0, 10)} 00:00:00`, endTime: end, dim: 'line' })
+    const res = await fetch('/api/v1/analytics/line-summary?' + q.toString(), { headers: { Authorization: 'Bearer ' + localStorage.getItem('camera_token') } })
+    const b = await res.json()
+    return ((b.data?.defectRanking) || []).map((r) => ({ name: String(r.defectName), count: Number(r.defectCount || 0) }))
+  })
+  const alt = ranked.find((r) => r.name !== 'ZK09' && r.count > 0)
+  const targetLine = alt ? alt.name : (ranked.find((r) => r.name !== 'ZK09') || {}).name
+  const expectedC = alt ? alt.count : null
+  if (!targetLine) {
+    check('① 切产线后不应因相机残留而整页空', false, '今天除 ZK09 外无其他产线有数据，无法执行切换断言')
+  } else {
+    await pickLines(page, [targetLine])
+    await sleep(3500)
+    const kpiC = await readKpi(page)
+    const totalC = Number(String(kpiC['缺陷图片数'] || 0).replace(/,/g, ''))
+    camTextC = await readFilterText(page, 2)
+    const camPruned = /全部/.test(camTextC)
+    check('① 切产线后相机自动清理且 KPI=该线实时值', camPruned && (expectedC === null || totalC === expectedC),
+      `切到=${targetLine} KPI=${totalC} 期望=${expectedC}, 相机选择=${camTextC}`)
+  }
   check('② 相机筛选不残留已失效相机', camTextC === '' || camTextC === '全部相机', `相机选择=${camTextC}`)
 
-  // ---- ⑤ 多选产线时相机候选是否覆盖两条线 ----
-  // 此时页面已选中 ZK06（上一步），直接追加 ZK09，避免 clearLines 后的面板状态干扰
+  // ---- ⑤ 多选产线时相机候选覆盖全部所选产线 ----
+  // 此时页面已选 targetLine（上一步），追加 ZK09 组成多选
   await pickOne(page, 'ZK09'); await sleep(2600)
   const tags = await page.evaluate(() => Array.from(document.querySelectorAll('.sel-line .el-tag')).map(t => t.textContent.trim()))
   const kpiMulti = await readKpi(page)
   const camOptsMulti = await openFilterSelect(page, 2)
   await page.keyboard.press('Escape')
   await sleep(400)
+  // 从实际请求解析当前勾选的产线 ID（不写死 ZK06=产线10 的旧假设）
+  const selectedIds = lineIdsSeen.length ? lineIdsSeen[lineIdsSeen.length - 1] : []
   const perLineCams = await page.evaluate(async () => {
     const tk = localStorage.getItem('camera_token')
     const res = await fetch('/api/v1/analytics/metadata', { headers: { Authorization: 'Bearer ' + tk } })
@@ -193,12 +224,14 @@ async function pickOne(page, name) {
     ;(b.data?.cameras || []).forEach((c) => { (byLine[c.lineId] = byLine[c.lineId] || []).push(c.cameraCode) })
     return byLine
   })
-  const l10 = perLineCams['10'] || []
-  const l11 = perLineCams['11'] || []
-  const hasBoth = l10.every((code) => camOptsMulti.some((t) => t.includes(code))) &&
-                  l11.every((code) => camOptsMulti.some((t) => t.includes(code)))
-  check('⑤ 多选产线时相机候选覆盖全部所选产线', hasBoth,
-    `已选=${JSON.stringify(tags)} KPI=${kpiMulti['缺陷图片数']} 候选=${JSON.stringify(camOptsMulti)}`)
+  const missing = []
+  for (const lid of selectedIds) {
+    for (const code of (perLineCams[lid] || [])) {
+      if (!camOptsMulti.some((t) => t.includes(code))) missing.push(`线${lid}:${code}`)
+    }
+  }
+  check('⑤ 多选产线时相机候选覆盖全部所选产线', selectedIds.length >= 2 && missing.length === 0,
+    `已选=${JSON.stringify(tags)} lineIds=${JSON.stringify(selectedIds)} KPI=${kpiMulti['缺陷图片数']} 缺失=${JSON.stringify(missing)}`)
 
   check('⑥ 无 JS 错误', jsErrors.length === 0, jsErrors.join(' | '))
 

@@ -129,7 +129,7 @@
 
 <script setup>
 import { ref, computed, inject, watch, onMounted, nextTick } from 'vue'
-import * as echarts from 'echarts'
+import * as echarts from '@/utils/echarts-core'
 import { getDashboardOverview, getDefectStats } from '@/api/stats'
 import { getCameraOptions } from '@/api/camera'
 import request from '@/utils/request'

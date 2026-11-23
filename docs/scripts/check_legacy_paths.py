@@ -45,7 +45,9 @@ LEGACY_PATTERNS = [
 ]
 
 SCAN_ROOTS = ["installer", "frontend/src", "docs/scripts"]
-SCAN_EXT = {".sh", ".service", ".timer", ".yml", ".yaml", ".js", ".vue", ".ts"}
+# 2026-11-22 补 .py：两个 chunk 工具曾硬编码 /opt/... 长期漏检，
+# 就是因为守卫只扫 shell/前端文件；本脚本自身在 WHITELIST 里，不会自命中。
+SCAN_EXT = {".sh", ".service", ".timer", ".yml", ".yaml", ".js", ".vue", ".ts", ".py"}
 
 WHITELIST = {
     "installer/linux/scripts/migrate-to-main-app.sh",

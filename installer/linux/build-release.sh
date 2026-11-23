@@ -45,7 +45,14 @@ fi
 find "$FRONTEND_DIR" -maxdepth 1 -type f -name 'vite.config.js.timestamp-*.mjs' -delete 2>/dev/null || true
 # 手工腾 dist 时产生的备份目录，有了「清空 dist/assets」机制后不再需要
 rm -rf "${FRONTEND_DIR}"/dist.bak-* "${FRONTEND_DIR}"/dist.old.* 2>/dev/null || true
-ok "残留已清（update 包保留 7 天内）"
+# build-release.sh 的静态资源暂存目录（第 138 行 mktemp -d "${OUT_DIR}/.static-tmp.XXXXXX"）：
+# 构建中断会遗留 ≈30MB/次，2026-11-22 实测 4 个共 108MB。保留最近 1 份便于排障，其余删除。
+find "${OUT_DIR}" -maxdepth 1 -type d -name '.static-tmp.*' -printf '%T@ %p\n' 2>/dev/null \
+  | sort -rn | tail -n +2 | cut -d' ' -f2- \
+  | while IFS= read -r _tmpdir; do
+      [[ -n "$_tmpdir" ]] && rm -rf "$_tmpdir"
+    done || true
+ok "残留已清（update 包保留 7 天内，static 暂存保留 1 份）"
 
 # 全量包：VERSION 固定时同名覆盖，天然只有 1 份；但用 VERSION=x.y.z 构建多个版本
 # 就会累积（每份 55MB）。只留最近 2 份 —— 与 deploy_jar.sh 的 JAR_BACKUP_KEEP=3
@@ -269,12 +276,27 @@ install -m 0644 "$JAR" "${STAGE_DIR}/app/"
 # 外部配置模板：装到服务器后按现场参数修改
 install -m 0644 "${ROOT_DIR}/installer/templates/application.yml" "${STAGE_DIR}/config/"
 
-# 建库脚本：4 段式，缺一不可
+# 建库脚本：01→05 是 init-database.sh 的顺序导入段；06/07 是幂等补丁
+# （06 索引调优、07 日报快照表，07 亦由 SchemaInitializer 启动补建）。
+# 历史上这里只校验「≥4」，而文档出现 4/5/7 三种口径，新增/漏拷 SQL 都发现不了。
+# 2026-11-22 改为按显式清单逐个校验，发布包必须 7 份齐全。
+REQUIRED_SQL=(
+  01_init_schema_nodb.sql
+  02_final_schema_p0.sql
+  03_system_settings.sql
+  04_align_entity_columns.sql
+  05_camera_type_migration.sql
+  06_index_tuning.sql
+  07_daily_report.sql
+)
 log "⑥ 复制建库脚本"
 install -m 0644 "${BACKEND_DIR}/src/main/resources/sql/deploy/"*.sql "${STAGE_DIR}/sql/"
+for _sql in "${REQUIRED_SQL[@]}"; do
+  [[ -f "${STAGE_DIR}/sql/${_sql}" ]] || die "建库脚本缺少 ${_sql}（应为 ${#REQUIRED_SQL[@]} 份，01→05 建库 + 06/07 幂等补丁）"
+done
 SQL_COUNT=$(find "${STAGE_DIR}/sql" -name "*.sql" | wc -l | tr -d ' ')
-[[ "$SQL_COUNT" -ge 4 ]] || die "建库脚本应为 4 个，实际 ${SQL_COUNT} 个"
-ok "建库脚本 ${SQL_COUNT} 个"
+[[ "$SQL_COUNT" -eq "${#REQUIRED_SQL[@]}" ]] || die "建库脚本应为 ${#REQUIRED_SQL[@]} 个，实际 ${SQL_COUNT} 个"
+ok "建库脚本 ${SQL_COUNT} 个（01→05 建库 + 06/07 补丁）"
 
 log "⑦ 复制 Linux 部署脚本与 systemd unit"
 install -m 0755 "${LINUX_DIR}/scripts/"*.sh "${STAGE_DIR}/scripts/"
