@@ -71,7 +71,7 @@ usage() {
 选项：
   --disk <设备>          指定数据盘（如 /dev/sdb）；未格式化会先确认再格式化
   --db-password <口令>   MySQL root 口令；省略则交互输入（不能含单引号/反斜杠）
-  --app-password <口令>  管理员口令，供 p8 验收登录使用（默认 123456）
+  --app-password <口令>  管理员口令，供 p8 验收登录使用（必填，或从 DEFAULT_CFG 的 ADMIN_PASSWORD 读取；不再用 123456 兜底）
   --from <p1..p8>        从指定阶段续跑（各阶段幂等）
   --check                只做只读预检（不装包、不挂盘、不改配置）
   --with-nginx           额外安装 Nginx
@@ -709,10 +709,10 @@ stage_p8() {
   if [[ -z "$APP_PASSWORD" && -f "$DEFAULT_CFG" ]]; then
     APP_PASSWORD="$(sed -n 's/^ADMIN_PASSWORD="\(.*\)"$/\1/p' "$DEFAULT_CFG" | head -1)"
   fi
-  # 有初始口令推断：全新库是 123456；现场老库是 admin123
+  # 2026-11-23 决策 #1：不再用弱口令 123456 兜底。
+  # 口令必须来自 --app-password 或 /etc/default/camera-detection 的 ADMIN_PASSWORD。
   if [[ -z "$APP_PASSWORD" ]]; then
-    APP_PASSWORD="123456"
-    warn "未指定 --app-password，按全新库初始口令 ${APP_PASSWORD} 验收（改过口令请补 --app-password）"
+    die "p8 验收缺少管理员口令：请传 --app-password，或在 ${DEFAULT_CFG} 配置 ADMIN_PASSWORD"
   fi
 
   local rc=0

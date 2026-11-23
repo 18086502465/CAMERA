@@ -53,8 +53,13 @@ else
 fi
 
 # 凭据泄漏扫描（只报命中文件名，不打印值）
+# ⚠️ 必须排除「定义扫描模式本身」的工具文件，否则 preflight.sh / sanitize_secrets.py / ci.yml
+#    因含有模式字面量而命中自己 —— 2026-11-23 首跑实测踩到。
 head_line "①b 凭据扫描"
-CRED_HITS="$(git grep -l -E 'CCshenda889|Pass@1234' 2>/dev/null || true)"
+CRED_HITS="$(git grep -l -E 'CCshenda889|Pass@1234' -- \
+  ':(exclude)docs/scripts/preflight.sh' \
+  ':(exclude)docs/scripts/sanitize_secrets.py' \
+  ':(exclude).github/workflows/ci.yml' 2>/dev/null || true)"
 if [[ -n "$CRED_HITS" ]]; then
   printf '%s\n' "$CRED_HITS" | sed 's/^/       /'
   bad "发现疑似真实凭据，推送前必须清除"

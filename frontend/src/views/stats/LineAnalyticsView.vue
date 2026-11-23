@@ -1171,7 +1171,23 @@ function chartOption(w){ const data=summaryFor(w), m=widgetMetric(w); if(m==='de
   if(!noYield) series.push({name:'良率',type:'line',smooth:true,yAxisIndex:1,data:rows.map(r=>Number(r.yieldRate||0))});
   return baseOption({tooltip:{trigger:'axis'},legend:{top:0,data:noYield?['检测总数','NG数']:['检测总数','NG数','良率']},xAxis:{type:'category',data:rows.map(r=>shortTime(r.timeBucket))},yAxis:noYield?[{type:'value'}]:[{type:'value'},{type:'value',axisLabel:{formatter:'{value}%'}}],series}) } if(m==='defectRanking') return rankingBarOption(data.defectRanking||[],'defectName','defectCount','缺陷数'); if(m==='stationRanking') return rankingBarOption(data.stationRanking||[],'workstationName','ngCount','NG数'); if(m==='cameraRanking') return rankingBarOption((data.cameraRanking||[]).map(r=>({...r,cameraName:r.cameraCode||r.cameraName||'未命名'})),'cameraName','ngCount','NG数'); if(m==='stackDefectBySeverity') return stackSeverityOption(data.defectRanking||[]); if(m==='defectHeatmap') return heatmapOption(data.hourlyHeatmap||[]); if(m==='shiftCompare') return shiftCompareOption(data.shiftCompare||[],data.shiftNames||{}); if(m==='defectTypeShare') return typeShareOption(data.defectRanking||[]); if(m==='defectCalendar') return calendarOption(data.dailyCalendar||[]); return {} }
 function baseOption(o){ return {grid:{left:40,right:42,top:42,bottom:34,containLabel:true},color:['#2563eb','#ef4444','#16a34a','#f59e0b'],...o} }
-function rankingBarOption(rows,nameKey,valueKey,seriesName){ const list=rows.slice(0,12).reverse(); return baseOption({tooltip:{trigger:'axis'},xAxis:{type:'value'},yAxis:{type:'category',data:list.map(r=>r[nameKey]||r.cameraCode||'未命名')},series:[{name:seriesName,type:'bar',barWidth:14,data:list.map(r=>Number(r[valueKey]||0))}]}) }
+// ★ 2026-11-23 决策 #9：后端排行放开（快聚合全量 / SQL 30），前端不再 slice(0,12) 硬截断。
+//   现场 37 种缺陷类型，12 条会隐藏 25 种。改为：全部数据都进图表，>15 条时用 y 轴
+//   dataZoom 滚动（初始窗口显示 Top15，滚轮平移看全部）；barWidth 随窗口条数自适应防重叠。
+function rankingBarOption(rows,nameKey,valueKey,seriesName){
+  const all=(rows||[]).slice().reverse()   // 升序 → ECharts 横向条形图最大的在最上
+  const n=all.length, showN=Math.min(n,15)
+  const startPct=n>showN?Math.max(0,Math.round((n-showN)/n*100)):0
+  return baseOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:40,right:42,top:42,bottom:34,containLabel:true},
+    dataZoom:n>showN?[{type:'slider',yAxisIndex:0,left:6,width:14,start:startPct,end:100,
+                       zoomLock:true,moveOnMouseWheel:true,zoomOnMouseWheel:false,showDataShadow:false}]:[],
+    xAxis:{type:'value'},
+    yAxis:{type:'category',data:all.map(r=>r[nameKey]||r.cameraCode||'未命名')},
+    series:[{name:seriesName,type:'bar',barWidth:showN>10?10:14,data:all.map(r=>Number(r[valueKey]||0))}]
+  })
+}
 /** ★ 2026-11-14 维度生效：趋势行带 seriesKey 时按序列拆多条线（Top6，其余并入「其他」省略） */
 function groupedTrendOption(rows){
   const list=rows||[]

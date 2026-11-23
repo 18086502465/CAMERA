@@ -108,7 +108,8 @@ sql/deploy/05_camera_type_migration.sql
 bash installer/linux/build-release.sh     # 组装 stage + tar.gz
 # 解包后执行
 sudo ./scripts/install.sh                 # 口令从环境变量 / /etc/default 读取
-sudo bash scripts/verify.sh               # 自检（统一布局 42 项，未迁移老布局 35 项）
+sudo -S env VERIFY_PASSWORD='<管理员口令>' MYSQL_PASSWORD='<库口令>' \
+  bash scripts/verify.sh                  # 自检（统一布局 45 项）；口令必须显式传，不再用 123456 兜底
 ```
 
 ## 文档索引

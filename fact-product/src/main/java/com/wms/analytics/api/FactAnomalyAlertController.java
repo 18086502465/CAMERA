@@ -68,7 +68,10 @@ public class FactAnomalyAlertController {
                     // 唯一索引 uk_defect_file_camera_file_name 是「上传幂等」的最后一道防线，
                     // 缺失时设备端重传会静默产生重复数据、缺陷框统计被放大。
                     // 原实现只记一条 WARN 就放弃 —— 不重试、无告警，运维不会注意到。
-                    "SCHEMA_INDEX_MISSING")));
+                    "SCHEMA_INDEX_MISSING",
+                    // 2026-11-23 决策 #7 / LIC-12：授权到期/无效。此前只打 WARN 日志，
+                    // 夜里过期早上才发现；现由 LicenseCheckTask 发事件 → LicenseAlertListener 落库。
+                    "LICENSE_EXPIRED")));
 
     /** 运维类告警最多返回条数（低频，20 条足够覆盖全部历史积压）。 */
     private static final int OPS_LIMIT = 20;

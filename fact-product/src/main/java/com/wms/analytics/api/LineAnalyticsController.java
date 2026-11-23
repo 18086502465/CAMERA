@@ -1275,6 +1275,14 @@ public class LineAnalyticsController {
 
     @DeleteMapping("/dashboards/{id}")
     public ResultVO<String> deleteDashboard(@PathVariable Long id) {
+        // 2026-11-23 决策 #10：删除端点此前对任意 id 都返回「成功」（UPDATE 影响 0 行也不报错），
+        // 且 is_default=1 的看板也能删——删掉后 /dashboards/default 会取不到。
+        // 补齐两处防御：① 不存在的看板 400；② 默认看板禁止删除（先改默认指向再删）。
+        Map<String, Object> existing = findDashboard(id);
+        if (existing == null) throw new IllegalArgumentException("看板不存在: id=" + id);
+        if (intVal(existing.get("isDefault"), 0) == 1) {
+            throw new IllegalArgumentException("默认看板不可删除，请先将其他看板设为默认: id=" + id);
+        }
         dashboardRepository.disableDashboard(id);
         return ResultVO.success("删除成功");
     }

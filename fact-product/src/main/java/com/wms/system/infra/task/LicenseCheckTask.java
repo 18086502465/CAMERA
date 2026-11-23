@@ -1,9 +1,11 @@
 package com.wms.system.infra.task;
 
+import com.wms.shared.common.event.LicenseAlertEvent;
 import com.wms.shared.license.LicenseState;
 import com.wms.system.app.LicenseService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -24,8 +26,15 @@ public class LicenseCheckTask {
     @Autowired
     private LicenseService licenseService;
 
-    /** 上次记录的状态，用于抑制重复日志。 */
+    /** 2026-11-23 LIC-12：状态变化时发事件，由 analytics 监听器落 fact_anomaly_alert。 */
+    @Autowired
+    private ApplicationEventPublisher eventPublisher;
+
+    /** 上次记录的状态，用于抑制重复日志与重复告警。 */
     private volatile String lastLogged;
+
+    /** 上次是否问题态——用于识别「恢复」并关闭告警（null=首次巡检）。 */
+    private volatile Boolean lastLoggedProblem;
 
     /** 每小时 05 分执行（错开 02:00 数据清理与 03:30 图片清理）。 */
     @Scheduled(cron = "0 5 * * * ?")
@@ -36,13 +45,23 @@ public class LicenseCheckTask {
             if (now.equals(lastLogged)) {
                 return;
             }
+            boolean wasProblem = Boolean.TRUE.equals(lastLoggedProblem);
+            boolean isProblem = s.getStatus().isProblem();
             lastLogged = now;
-            if (s.getStatus().isProblem()) {
+            lastLoggedProblem = isProblem;
+            if (isProblem) {
                 log.warn("授权巡检: status={}, message={}, daysLeft={}, writeBlocked={}",
                         s.getStatus(), s.getMessage(), s.getDaysLeft(), s.isWriteBlocked());
             } else {
                 log.info("授权巡检: status={}, message={}, daysLeft={}",
                         s.getStatus(), s.getMessage(), s.getDaysLeft());
+            }
+            // LIC-12：只在「首次进入问题态」或「从问题态恢复」时发事件。
+            // 问题态之间切换（INVALID→EXPIRED）也刷新一次告警内容。
+            if (isProblem || wasProblem) {
+                eventPublisher.publishEvent(new LicenseAlertEvent(
+                        s.getStatus().name(), s.getMessage(), s.getExpireAt(),
+                        s.getDaysLeft(), !isProblem));
             }
         } catch (Exception e) {
             // 巡检自身绝不能影响业务

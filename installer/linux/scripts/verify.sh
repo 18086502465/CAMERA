@@ -34,12 +34,17 @@ for _arg in "$@"; do
 done
 BASE_URL="${_POSITIONAL[0]:-http://127.0.0.1:${PORT}}"
 
-# 管理员口令：默认取建库种子口令 123456。
-# 现场改过口令后，用环境变量传实际口令，例如：
-#   VERIFY_PASSWORD='实际口令' sudo -E ./verify.sh
-# 也可以放在 /etc/default/camera-detection 的 ADMIN_PASSWORD 里（该文件默认 640，root 可读）。
+# 管理员口令：**必须显式提供**，不再用弱口令 123456 兜底（2026-11-23 决策 #1）。
+# 两种提供方式（优先级从高到低）：
+#   ① VERIFY_PASSWORD='实际口令' sudo -E ./verify.sh
+#   ② /etc/default/camera-detection 里配置 ADMIN_PASSWORD（该文件 640，脚本自动 source）
+# 没有以上任一来源时直接退出——避免现场改过口令后「用错口令却看似通过」。
 ADMIN_USER="${ADMIN_USER:-admin}"
-ADMIN_PASSWORD="${VERIFY_PASSWORD:-${ADMIN_PASSWORD:-123456}}"
+ADMIN_PASSWORD="${VERIFY_PASSWORD:-${ADMIN_PASSWORD:-}}"
+if [[ -z "$ADMIN_PASSWORD" ]]; then
+  printf '[verify] 错误：未提供管理员口令。请用 VERIFY_PASSWORD 环境变量，或在 /etc/default/camera-detection 配置 ADMIN_PASSWORD。\n' >&2
+  exit 2
+fi
 
 PASS=0
 FAIL=0
@@ -762,30 +767,54 @@ db_query() {
   [[ -z "$pw" ]] && return 1
   MYSQL_PWD="$pw" mysql -h127.0.0.1 -uroot -D "${VERIFY_DB_NAME:-wms-new}" -N -e "$1" 2>/dev/null
 }
-DEV_CAMERA_CODE="$(db_query "SELECT camera_code FROM dim_camera WHERE IFNULL(is_deleted,0)=0 ORDER BY camera_id LIMIT 1;")"
+# ★ 2026-11-23 决策 #5：自检写库不得污染真实相机。
+#   优先找 camera_type='TEST' 的相机（不参与统计、由每小时清理任务兜底）；
+#   没有 TEST 相机时**降级为只读探测**：只验证端点可达（4xx 也算端点存活），
+#   绝不拿真实相机做心跳/上报 —— 此前会用 REAL 相机改写其 last_heartbeat_at/计数/product_name。
+DEV_CAMERA_CODE="$(db_query "SELECT camera_code FROM dim_camera WHERE IFNULL(is_deleted,0)=0 AND UPPER(IFNULL(camera_type,''))='TEST' ORDER BY camera_id LIMIT 1;")"
 DEV_PRODUCT_NAME="$(db_query "SELECT product_name FROM dim_product WHERE IFNULL(is_enabled,1)=1 ORDER BY product_id LIMIT 1;")"
-[[ -z "$DEV_CAMERA_CODE" ]] && DEV_CAMERA_CODE="CAM-001"
+WRITE_PROBE=true
+if [[ -z "$DEV_CAMERA_CODE" ]]; then
+  WRITE_PROBE=false
+  # 只读探测仍需要一个 deviceId 让端点走到校验逻辑（不会写库）
+  DEV_CAMERA_CODE="ZZTEST-VERIFY-PROBE"
+  echo "  ${C_DIM}未找到 TEST 相机 → 上报链路降级为只读探测（不写库、不污染真实相机）${C_OFF}"
+fi
 [[ -z "$DEV_PRODUCT_NAME" ]] && DEV_PRODUCT_NAME="产品A"
-echo "  自检使用相机: ${DEV_CAMERA_CODE}  产品: ${DEV_PRODUCT_NAME}"
+echo "  自检使用相机: ${DEV_CAMERA_CODE}  产品: ${DEV_PRODUCT_NAME}  写库探测: ${WRITE_PROBE}"
 
-HB_CODE=$(http_code -X POST -H "Content-Type: application/json" \
-  -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "Authorization: Bearer dev-token" \
-  -d "{\"cameraName\":\"自检相机\",\"cameraCode\":\"${DEV_CAMERA_CODE}\",\"cameraStatus\":1}" \
-  "${BASE_URL}/api/v1/camera/status/heartbeat")
-check "心跳上报" "$([[ "$HB_CODE" == "200" ]] && echo true || echo false)" "HTTP ${HB_CODE}"
+if [[ "$WRITE_PROBE" == "true" ]]; then
+  HB_CODE=$(http_code -X POST -H "Content-Type: application/json" \
+    -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "Authorization: Bearer dev-token" \
+    -d "{\"cameraName\":\"自检相机\",\"cameraCode\":\"${DEV_CAMERA_CODE}\",\"cameraStatus\":1}" \
+    "${BASE_URL}/api/v1/camera/status/heartbeat")
+  check "心跳上报" "$([[ "$HB_CODE" == "200" ]] && echo true || echo false)" "HTTP ${HB_CODE}（TEST 相机）"
 
-BU_CODE=$(http_code -X POST -H "Content-Type: application/json" \
-  -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "X-Batch-Id: VERIFY-$(date +%s)" -H "Authorization: Bearer dev-token" \
-  -d "{\"schemaVersion\":\"2.0\",\"batchId\":\"VERIFY\",\"cameraCode\":\"${DEV_CAMERA_CODE}\",\"productName\":\"${DEV_PRODUCT_NAME}\",\"reportTime\":\"2026-01-01 00:00:00\",\"counterMode\":\"INCREMENTAL\",\"timeRange\":{\"startTime\":\"2026-01-01 00:00:00\",\"endTime\":\"2026-01-01 00:30:00\"},\"summary\":{\"totalCount\":1,\"okCount\":1,\"ngCount\":0},\"defects\":[]}" \
-  "${BASE_URL}/api/v1/camera/inspection/batch-upload")
-check "批量上报" "$([[ "$BU_CODE" == "200" ]] && echo true || echo false)" "HTTP ${BU_CODE}"
+  BU_CODE=$(http_code -X POST -H "Content-Type: application/json" \
+    -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "X-Batch-Id: VERIFY-$(date +%s)" -H "Authorization: Bearer dev-token" \
+    -d "{\"schemaVersion\":\"2.0\",\"batchId\":\"VERIFY\",\"cameraCode\":\"${DEV_CAMERA_CODE}\",\"productName\":\"${DEV_PRODUCT_NAME}\",\"reportTime\":\"2026-01-01 00:00:00\",\"counterMode\":\"INCREMENTAL\",\"timeRange\":{\"startTime\":\"2026-01-01 00:00:00\",\"endTime\":\"2026-01-01 00:30:00\"},\"summary\":{\"totalCount\":1,\"okCount\":1,\"ngCount\":0},\"defects\":[]}" \
+    "${BASE_URL}/api/v1/camera/inspection/batch-upload")
+  check "批量上报" "$([[ "$BU_CODE" == "200" ]] && echo true || echo false)" "HTTP ${BU_CODE}（TEST 相机）"
 
-# 未映射编码应返回 422 UNMAPPED
-UNMAPPED_CODE=$(http_code -X POST -H "Content-Type: application/json" \
-  -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "X-Batch-Id: VERIFY-UNMAPPED-$(date +%s)" -H "Authorization: Bearer dev-token" \
-  -d "{\"schemaVersion\":\"2.0\",\"batchId\":\"VERIFY-UNMAPPED\",\"cameraCode\":\"${DEV_CAMERA_CODE}\",\"productName\":\"${DEV_PRODUCT_NAME}\",\"reportTime\":\"2026-01-01 00:00:00\",\"counterMode\":\"INCREMENTAL\",\"timeRange\":{\"startTime\":\"2026-01-01 00:00:00\",\"endTime\":\"2026-01-01 00:30:00\"},\"summary\":{\"totalCount\":1,\"okCount\":0,\"ngCount\":1},\"defects\":[{\"sourceCode\":\"__NOT_MAPPED__\",\"count\":1}]}" \
-  "${BASE_URL}/api/v1/camera/inspection/batch-upload")
-check "未映射编码拒绝" "$([[ "$UNMAPPED_CODE" == "422" ]] && echo true || echo false)" "HTTP ${UNMAPPED_CODE}（期望 422）"
+  # 未映射编码应返回 422 UNMAPPED
+  UNMAPPED_CODE=$(http_code -X POST -H "Content-Type: application/json" \
+    -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "X-Batch-Id: VERIFY-UNMAPPED-$(date +%s)" -H "Authorization: Bearer dev-token" \
+    -d "{\"schemaVersion\":\"2.0\",\"batchId\":\"VERIFY-UNMAPPED\",\"cameraCode\":\"${DEV_CAMERA_CODE}\",\"productName\":\"${DEV_PRODUCT_NAME}\",\"reportTime\":\"2026-01-01 00:00:00\",\"counterMode\":\"INCREMENTAL\",\"timeRange\":{\"startTime\":\"2026-01-01 00:00:00\",\"endTime\":\"2026-01-01 00:30:00\"},\"summary\":{\"totalCount\":1,\"okCount\":0,\"ngCount\":1},\"defects\":[{\"sourceCode\":\"__NOT_MAPPED__\",\"count\":1}]}" \
+    "${BASE_URL}/api/v1/camera/inspection/batch-upload")
+  check "未映射编码拒绝" "$([[ "$UNMAPPED_CODE" == "422" ]] && echo true || echo false)" "HTTP ${UNMAPPED_CODE}（期望 422）"
+else
+  # 只读探测：故意用不存在的相机 code + 非法 body，端点若存活会返回 4xx（而非 000/404/500）。
+  PROBE_CODE=$(http_code -X POST -H "Content-Type: application/json" \
+    -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "Authorization: Bearer dev-token" \
+    -d '{"cameraStatus":1}' "${BASE_URL}/api/v1/camera/status/heartbeat")
+  check "心跳端点可达（只读探测）" "$([[ "$PROBE_CODE" =~ ^4[0-9][0-9]$ ]] && echo true || echo false)" \
+        "HTTP ${PROBE_CODE}（期望 4xx=端点存活且不写库）"
+  PROBE_BU=$(http_code -X POST -H "Content-Type: application/json" \
+    -H "X-Device-Id: ${DEV_CAMERA_CODE}" -H "Authorization: Bearer dev-token" \
+    -d '{}' "${BASE_URL}/api/v1/camera/inspection/batch-upload")
+  check "上报端点可达（只读探测）" "$([[ "$PROBE_BU" =~ ^4[0-9][0-9]$ ]] && echo true || echo false)" \
+        "HTTP ${PROBE_BU}（期望 4xx=端点存活且不写库）"
+fi
 
 # --- 8. 图片超量快速拒绝 -----------------------------------------------------
 OVER_CODE=$(http_code -X POST -H "X-Image-Count: 101" \
@@ -837,11 +866,14 @@ SQL
     "SELECT COUNT(*) FROM fact_inspection_mapping_exception WHERE batch_id LIKE 'VERIFY%'" 2>/dev/null || echo 0)
   AFTER_B=$(MYSQL_PWD="$MYSQL_PW" mysql -h127.0.0.1 -uroot -D "$DB_NAME" -N -e \
     "SELECT COUNT(*) FROM fact_inspection_batch WHERE batch_id LIKE 'VERIFY%'" 2>/dev/null || echo 0)
+  # 2026-11-23 决策 #5：第 3 张表此前删了却不校验残留，补上
+  AFTER_D=$(MYSQL_PWD="$MYSQL_PW" mysql -h127.0.0.1 -uroot -D "$DB_NAME" -N -e \
+    "SELECT COUNT(*) FROM fact_inspection_defect_count WHERE batch_id LIKE 'VERIFY%'" 2>/dev/null || echo 0)
 
-  if [[ "$AFTER_E" == "0" && "$AFTER_B" == "0" ]]; then
-    check "清理自检数据" true "已清理 异常 ${BEFORE_E} 条 / 批次 ${BEFORE_B} 条"
+  if [[ "$AFTER_E" == "0" && "$AFTER_B" == "0" && "$AFTER_D" == "0" ]]; then
+    check "清理自检数据" true "已清理 异常 ${BEFORE_E} / 批次 ${BEFORE_B} / 缺陷计数 ${AFTER_D} 条（写库探测=${WRITE_PROBE}，相机=${DEV_CAMERA_CODE}）"
   else
-    check "清理自检数据" false "清理不彻底：剩余 异常 ${AFTER_E} 条 / 批次 ${AFTER_B} 条"
+    check "清理自检数据" false "清理不彻底：剩余 异常 ${AFTER_E} / 批次 ${AFTER_B} / 缺陷计数 ${AFTER_D} 条"
   fi
 fi
 

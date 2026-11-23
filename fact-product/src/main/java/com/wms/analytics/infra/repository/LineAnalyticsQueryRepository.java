@@ -65,7 +65,7 @@ public class LineAnalyticsQueryRepository {
     public List<Map<String, Object>> queryDefectRanking(String defectTable, String defectWhere, List<Object> params) {
         return jdbcTemplate.queryForList(
                 "SELECT defect_type_id AS defectTypeId, defect_code AS defectCode, defect_name AS defectName, severity, SUM(defect_count) AS defectCount " +
-                        "FROM " + defectTable + " " + defectWhere + " GROUP BY defect_type_id, defect_code, defect_name, severity ORDER BY defectCount DESC LIMIT 20",
+                        "FROM " + defectTable + " " + defectWhere + " GROUP BY defect_type_id, defect_code, defect_name, severity ORDER BY defectCount DESC LIMIT 30",
                 params.toArray());
     }
 
@@ -76,7 +76,7 @@ public class LineAnalyticsQueryRepository {
                         "IF(SUM(q.total_count)>0, ROUND(SUM(q.ok_count)*100/SUM(q.total_count),2),0) AS yieldRate " +
                         "FROM " + qualityTable + " q LEFT JOIN dim_workstation w ON q.workstation_id = w.workstation_id " +
                         stationWhere +
-                        " GROUP BY q.workstation_id, w.station_name ORDER BY ngCount DESC, totalCount DESC LIMIT 20",
+                        " GROUP BY q.workstation_id, w.station_name ORDER BY ngCount DESC, totalCount DESC LIMIT 30",
                 params.toArray());
     }
 
@@ -87,7 +87,7 @@ public class LineAnalyticsQueryRepository {
                         "IF(SUM(q.total_count)>0, ROUND(SUM(q.ok_count)*100/SUM(q.total_count),2),0) AS yieldRate " +
                         "FROM " + qualityTable + " q LEFT JOIN dim_camera c ON q.camera_id = c.camera_id " +
                         cameraWhere +
-                        " GROUP BY q.camera_id, c.camera_name, c.camera_code ORDER BY ngCount DESC, totalCount DESC LIMIT 20",
+                        " GROUP BY q.camera_id, c.camera_name, c.camera_code ORDER BY ngCount DESC, totalCount DESC LIMIT 30",
                 params.toArray());
     }
 
@@ -155,7 +155,7 @@ public class LineAnalyticsQueryRepository {
                         "b.severity AS severity, COUNT(1) AS defectCount " +
                         "FROM defect_image_box b " +
                         " JOIN defect_image_file f ON f.image_id = b.image_id " + joinCam + where + sevWhere +
-                        " GROUP BY b.defect_type, b.severity ORDER BY defectCount DESC LIMIT 20",
+                        " GROUP BY b.defect_type, b.severity ORDER BY defectCount DESC LIMIT 30",
                 params.toArray());
     }
 
@@ -171,7 +171,7 @@ public class LineAnalyticsQueryRepository {
                         //   → MySQL 报 "Unknown column 'w.station_id' in 'on clause'"，
                         //   兜底路径（聚合表无数据时）必然 500。此处按真实列名修正。
                         " LEFT JOIN dim_workstation w ON w.workstation_id = c.workstation_id " + where +
-                        " GROUP BY c.workstation_id, w.station_name ORDER BY ngCount DESC, totalCount DESC LIMIT 20",
+                        " GROUP BY c.workstation_id, w.station_name ORDER BY ngCount DESC, totalCount DESC LIMIT 30",
                 params.toArray());
     }
 
@@ -182,7 +182,7 @@ public class LineAnalyticsQueryRepository {
                         "COUNT(1) AS totalCount, 0 AS okCount, COUNT(1) AS ngCount, " +
                         "COALESCE(SUM(f.defect_count),0) AS defectCount, 0 AS yieldRate " +
                         "FROM defect_image_file f " + joinCam + where +
-                        " GROUP BY c.camera_id, c.camera_name, c.camera_code ORDER BY ngCount DESC, totalCount DESC LIMIT 20",
+                        " GROUP BY c.camera_id, c.camera_name, c.camera_code ORDER BY ngCount DESC, totalCount DESC LIMIT 30",
                 params.toArray());
     }
 
@@ -286,7 +286,7 @@ public class LineAnalyticsQueryRepository {
                         "NULL AS severity, COUNT(1) AS defectCount " +
                         "FROM defect_image_box b " +
                         " JOIN defect_image_file f ON f.image_id = b.image_id " + joinCam + where + sevWhere +
-                        " GROUP BY defectName ORDER BY defectCount DESC LIMIT 20",
+                        " GROUP BY defectName ORDER BY defectCount DESC LIMIT 30",
                 params.toArray());
     }
 

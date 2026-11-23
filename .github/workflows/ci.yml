@@ -12,8 +12,10 @@ name: CI
 #   - 手动触发（workflow_dispatch）：可指定分支
 #
 # 说明：
-#   本仓库的发布产物（tar.gz / JAR）仍入库在 dist-release/，
-#   等 Release 工作流落地后再改为 Artifacts 分发。
+#   发布产物（tar.gz / JAR）不入库：.gitignore 已排除 dist-release/（2026-11-23 核实，
+#   git 历史中无大文件对象）。push_via_github_api.py 的 >40MB blob 复用是历史防御，
+#   对当前 HEAD 无实际载体。CI 现有 app-jar/frontend-dist/camera-detection-jar 三个
+#   Artifact；全量发布包如需分发，另立 Release 工作流，不在本 workflow 范围。
 # ============================================================
 
 on:

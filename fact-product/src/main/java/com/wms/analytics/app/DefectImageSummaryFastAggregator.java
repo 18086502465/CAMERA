@@ -514,7 +514,9 @@ public class DefectImageSummaryFastAggregator {
                 // 并列计数 tie-break（SQL 未定义顺序，这里取确定性字典序）
                 .thenComparing(r -> String.valueOf(r.get("defectName")))
                 .thenComparing(r -> String.valueOf(r.getOrDefault("severity", ""))));
-        return out.size() > 20 ? new ArrayList<>(out.subList(0, 20)) : out;
+        // 2026-11-23 决策 #9：现场实测 37 种缺陷类型，Top20 会截掉 17 种。
+        // 主路径数据仅几十行，全量返回无性能问题；前端自行处理高度/滚动。
+        return out;
     }
 
     // ==================== 工位 / 相机排行 ====================
@@ -547,10 +549,10 @@ public class DefectImageSummaryFastAggregator {
             row.put("yieldRate", 0L);
             out.add(row);
         }
-        // ORDER BY ngCount DESC, totalCount DESC LIMIT 20
+        // ORDER BY ngCount DESC, totalCount DESC（2026-11-23 取消 Top20 截断，见决策 #9）
         out.sort(Comparator.comparingLong((Map<String, Object> r) -> ((Number) r.get("ngCount")).longValue()).reversed()
                 .thenComparing(r -> ((Number) r.get("totalCount")).longValue(), Comparator.reverseOrder()));
-        return out.size() > 20 ? new ArrayList<>(out.subList(0, 20)) : out;
+        return out;
     }
 
     private List<Map<String, Object>> buildCameraRanking(List<Img> main) {
@@ -587,7 +589,8 @@ public class DefectImageSummaryFastAggregator {
         }
         out.sort(Comparator.comparingLong((Map<String, Object> r) -> ((Number) r.get("ngCount")).longValue()).reversed()
                 .thenComparing(r -> ((Number) r.get("totalCount")).longValue(), Comparator.reverseOrder()));
-        return out.size() > 20 ? new ArrayList<>(out.subList(0, 20)) : out;
+        // 2026-11-23 决策 #9：相机排行取消 Top20 截断（现场 36 台，18 台有数据）
+        return out;
     }
 
     // ==================== 透视 / 严重度分布 ====================
