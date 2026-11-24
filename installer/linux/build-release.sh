@@ -14,7 +14,13 @@
 #   ③ 后端打包        ④ 契约测试
 #   ⑤ 组装发布目录    ⑥ 复制建库脚本
 #   ⑦ 复制 Linux 部署脚本与 systemd unit
+#   ⑦b 合并离线依赖包（可选：installer/linux/offline/ 存在时并入，供 --offline 一键部署）
 #   ⑧ 打包 tar.gz
+#
+# 在线 / 离线两种产物，同一脚本按 offline/ 是否存在自动判定：
+#   - 无 offline/ → 普通全量包，deploy.sh 默认走 apt 在线装依赖；
+#   - 有 offline/ → 离线全量包，deploy.sh --offline 只用包内 deb，全程不联网。
+#   离线依赖由 fetch-offline-deps.sh 在联网 Ubuntu 22.04 上生成（不入库）。
 # ==============================================================================
 set -euo pipefail
 
@@ -280,6 +286,9 @@ install -m 0644 "$JAR" "${STAGE_DIR}/app/"
 
 # 外部配置模板：装到服务器后按现场参数修改
 install -m 0644 "${ROOT_DIR}/installer/templates/application.yml" "${STAGE_DIR}/config/"
+# 离线部署口令模板：交付人员复制为 offline.env 并填真实口令后，deploy.sh 会自动读取。
+# 只发 .example（占位符），真实口令文件 offline.env 被 .gitignore 排除且不进包。
+install -m 0644 "${ROOT_DIR}/installer/templates/offline.env.example" "${STAGE_DIR}/config/"
 
 # 建库脚本：01→05 是 init-database.sh 的顺序导入段；06/07 是幂等补丁
 # （06 索引调优、07 日报快照表，07 亦由 SchemaInitializer 启动补建）。
@@ -305,6 +314,11 @@ ok "建库脚本 ${SQL_COUNT} 个（01→05 建库 + 06/07 补丁）"
 
 log "⑦ 复制 Linux 部署脚本与 systemd unit"
 install -m 0755 "${LINUX_DIR}/scripts/"*.sh "${STAGE_DIR}/scripts/"
+# fetch-offline-deps.sh 在 installer/linux/ 根（非 scripts/），随包下发便于现场在
+# 有外网的机器上重新生成离线依赖；它是运维工具，不含签发密钥，不属于 LIC-08 排除范围。
+if [[ -f "${LINUX_DIR}/fetch-offline-deps.sh" ]]; then
+  install -m 0755 "${LINUX_DIR}/fetch-offline-deps.sh" "${STAGE_DIR}/scripts/"
+fi
 # *.py 也要进包：deploy_jar.sh 的 **增量模式**（*.zip）靠同目录的 jar_manifest.py
 # 合成 classes 段，只复制 *.sh 会让服务器上报「缺少合成工具」→ 增量部署直接不可用。
 if compgen -G "${LINUX_DIR}/scripts/*.py" > /dev/null; then
@@ -327,6 +341,29 @@ install -m 0644 "${LINUX_DIR}/systemd/"*.service "${STAGE_DIR}/systemd/"
 if compgen -G "${LINUX_DIR}/systemd/*.timer" > /dev/null; then
   install -m 0644 "${LINUX_DIR}/systemd/"*.timer "${STAGE_DIR}/systemd/"
 fi
+
+# --- ⑦b 合并离线依赖包（可选）------------------------------------------------
+# 若构建机上已生成 installer/linux/offline/debs/*.deb（fetch-offline-deps.sh 产出），
+# 则整个 offline/ 并入发布包，deploy.sh --offline 即可无外网一键部署。
+# 没有 offline/ 就产出普通在线包 —— 两种包同一构建脚本，靠目录存在与否区分。
+OFFLINE_PACKED=0
+if compgen -G "${LINUX_DIR}/offline/debs/*.deb" > /dev/null 2>&1; then
+  log "⑦b 合并离线依赖包"
+  # 自包含校验：清单、deb 都得在，且 sha256 能过（构建期就拦，别到客户机上才发现坏包）
+  [[ -f "${LINUX_DIR}/offline/manifest.sha256" ]] \
+    || die "offline/debs 存在但缺 manifest.sha256 —— 请重新跑 fetch-offline-deps.sh"
+  (cd "${LINUX_DIR}/offline/debs" && sha256sum -c ../manifest.sha256 >/dev/null 2>&1) \
+    || die "离线依赖 sha256 校验失败 —— 重新跑 fetch-offline-deps.sh"
+  mkdir -p "${STAGE_DIR}/offline/debs"
+  cp -r "${LINUX_DIR}/offline/debs/." "${STAGE_DIR}/offline/debs/"
+  cp "${LINUX_DIR}/offline/manifest.sha256" "${STAGE_DIR}/offline/"
+  [[ -f "${LINUX_DIR}/offline/README.txt" ]] && cp "${LINUX_DIR}/offline/README.txt" "${STAGE_DIR}/offline/"
+  OFFLINE_PACKED=1
+  ok "离线依赖已合并（$(find "${STAGE_DIR}/offline/debs" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ') 个 deb，sha256 通过）"
+else
+  log "⑦b 未发现 offline/debs —— 产出在线包（如需离线包，先在联网 Ubuntu 上跑 fetch-offline-deps.sh）"
+fi
+
 # 显式补执行位：部分文件系统（如 Windows 上的 Git Bash / NTFS）不保留 Unix 权限位，
 # 打包到 tar 后脚本会变成 644，服务器上直接 ./install.sh 会报 Permission denied。
 chmod 0755 "${STAGE_DIR}/scripts/"*.sh
@@ -431,7 +468,21 @@ fi
 if tar -tzf "$TARBALL" | grep -qE 'gen_license|issue_license'; then
   die "产物包含授权签发工具（gen_license/issue_license）—— 签发工具属厂商资产，绝不进客户交付包"
 fi
-ok "产物权限自检通过（install.sh 为 755，无反斜杠路径，无签发工具）"
+# 自检：口令模板必须在包里（交付人员据此生成 offline.env）；真实口令文件 offline.env 绝不能进包
+tar -tzf "$TARBALL" | grep -q 'config/offline.env.example' \
+  || die "产物缺 config/offline.env.example —— 交付人员无法生成离线口令文件"
+if tar -tzf "$TARBALL" | grep -qE 'config/offline\.env$'; then
+  die "产物包含真实口令文件 config/offline.env —— 请把填好的口令文件移出发布目录后再打包"
+fi
+# 离线包自检：声明离线就必须 deb + 清单齐全
+if [[ "$OFFLINE_PACKED" -eq 1 ]]; then
+  tar -tzf "$TARBALL" | grep -q 'offline/manifest.sha256' \
+    || die "离线包缺 offline/manifest.sha256"
+  local_deb_n=$(tar -tzf "$TARBALL" | grep -c 'offline/debs/.*\.deb$')
+  [[ "$local_deb_n" -gt 0 ]] || die "离线包内 offline/debs 无 deb"
+  ok "离线包自检通过（${local_deb_n} 个 deb + 校验清单）"
+fi
+ok "产物权限自检通过（install.sh 为 755，无反斜杠路径，无签发工具，无真实口令文件）"
 
 SIZE_MB=$(du -m "$TARBALL" | cut -f1)
 ok "产物：${TARBALL}（约 ${SIZE_MB} MB）"
@@ -446,4 +497,15 @@ log "部署到服务器："
 echo "    scp ${TARBALL} user@server:/tmp/"
 echo "    ssh user@server"
 echo "    sudo tar -xzf /tmp/camera-detection-system-${VERSION}.tar.gz -C /tmp"
-echo "    cd /tmp/camera-detection-system && sudo ./scripts/install.sh"
+echo "    cd /tmp/camera-detection-system"
+if [[ "$OFFLINE_PACKED" -eq 1 ]]; then
+  echo
+  echo "  ★ 这是【离线全量包】，可无外网一键部署："
+  echo "    cp config/offline.env.example config/offline.env   # 填入 MYSQL_PASSWORD / ADMIN_PASSWORD"
+  echo "    chmod 600 config/offline.env"
+  echo "    sudo bash scripts/deploy.sh --offline --disk /dev/sdX --yes"
+  echo "    （deploy 已串起装依赖→挂盘→建库→落管理员口令→验收，无需单独跑 install.sh）"
+else
+  echo "    sudo ./scripts/install.sh     # 在线包：或 deploy.sh --disk /dev/sdX 一键部署"
+  echo "    （如需无外网部署：先在联网 Ubuntu 22.04 跑 fetch-offline-deps.sh，再重建本包）"
+fi

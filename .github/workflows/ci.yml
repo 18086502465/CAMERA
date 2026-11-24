@@ -133,6 +133,10 @@ jobs:
           # ★ 用 git grep 而不是 for/grep 循环：git grep 单进程扫全部被跟踪文件，
           #   本机 662 个文件 0.3 秒；循环版要 fork 662 次 grep，本机 48 秒。
           #   排除规则用 pathspec 的 :(exclude)，比 case 分支更难写漏。
+          #
+          # ★ preflight.sh 与 sanitize_secrets.py 同理：它是凭据扫描工具本身，
+          #   第 59 行必须写口令字面量才能拼出扫描规则。它内部已排除自身，
+          #   这里也必须排除，否则 CI 静态检查恒红（2026-11-24 修）。
           PAT=$(printf 'CCsh%s889|Pass@%s' 'enda' '1234')
           echo "::group::扫描全仓明文口令"
           # 二进制/归档不含可读口令，跳过以省时间；
@@ -142,7 +146,8 @@ jobs:
             ':(exclude)*.png'  ':(exclude)*.jpg'  ':(exclude)*.jpeg' ':(exclude)*.gif' \
             ':(exclude)*.ico'  ':(exclude)*.jar'  ':(exclude)*.tar.gz' ':(exclude)*.zip' \
             ':(exclude)*.woff' ':(exclude)*.woff2' ':(exclude)*.ttf' \
-            ':(exclude)docs/scripts/sanitize_secrets.py' 2>/dev/null || true)
+            ':(exclude)docs/scripts/sanitize_secrets.py' \
+            ':(exclude)docs/scripts/preflight.sh' 2>/dev/null || true)
           echo "::endgroup::"
           if [ -n "$HITS" ]; then
             echo "$HITS" | sed 's/^/❌ 含明文口令: /'
@@ -201,6 +206,13 @@ jobs:
             exit 1
           fi
           echo "✅ 未发现 Java 9+ API"
+
+      - name: 依赖清单双路径对账
+        run: |
+          # deploy.sh（在线 apt）与 fetch-offline-deps.sh（离线 deb）各写一份包清单，
+          # 文档要求同改但没有机器守卫。改一处漏一处 → 离线机/在线机缺包，
+          # 且只在新机部署时才暴露（平时 CI/升级包都发现不了）。
+          python3 installer/linux/scripts/check_offline_parity.py
 
       - name: 实体与建库脚本列对账
         run: |

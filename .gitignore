@@ -53,6 +53,13 @@ frontend/dist.old.*
 # ---- 轻量更新包产物（时间戳命名，每次构建生成，不入库）----
 dist-release/linux/update/
 
+# ---- 离线依赖缓存（fetch-offline-deps.sh 在联网 Ubuntu 构建机生成，体积大且不入库）----
+# 只在做离线全量包时临时生成，随后由 build-release.sh 打进 tar.gz。
+# manifest.sha256 / README.txt 是生成物的一部分，同样不入库。
+installer/linux/offline/debs/
+installer/linux/offline/manifest.sha256
+installer/linux/offline/README.txt
+
 # ---- WorkBuddy 工作区数据（非项目产物）----
 .workbuddy/
 
@@ -88,6 +95,9 @@ application-local.yml
 # 已签发授权的参数摘要另记入 docs/templates/10-客户密钥台账模板.md 的实例（只指纹）。
 installer/license-tool/secrets/
 installer/license-tool/ledger.csv
+# 离线部署口令：交付时填写真实口令，绝不入库（模板 offline.env.example 是唯一跟踪的副本）
+offline.env
+installer/templates/offline.env
 
 # ---- 临时脚本 ----
 *.timestamp-*.mjs

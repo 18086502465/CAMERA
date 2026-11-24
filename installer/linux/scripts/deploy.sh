@@ -12,9 +12,18 @@
 #   sudo bash scripts/deploy.sh --check                    # 只做只读预检，不改系统
 #   sudo bash scripts/deploy.sh --from p6                  # 中途失败后从某阶段续跑
 #
+# 无外网 / 一键部署（离线全量包）：
+#   sudo bash scripts/deploy.sh --offline --disk /dev/sdb --yes
+#   口令走包内 config/offline.env（离线口令，交付时填好）：
+#     MYSQL_PASSWORD='xxx' / ADMIN_PASSWORD='xxx'
+#   也可用 --password-file 指定其他路径；命令行口令优先级最高。
+#   离线模式 p1 只从包内 offline/debs/ 本地安装，不访问 apt 源。
+#   --skip-apt 跳过 p1（依赖已由运维预装时用）。
+#
 # 阶段（可用 --from 指定起点，均幂等）：
 #   p1 依赖安装      p2 数据盘挂载    p3 时区同步    p4 MySQL 初始化与调优
 #   p5 应用安装      p6 建库          p7 JVM/MySQL 调优并重启    p8 验收
+#   p6 完成后调用 reset-password.sh 把管理员口令真正落库（不再只用于验收）。
 #
 # 日志与状态：
 #   全过程输出同时写入 /var/log/camera-detection-deploy.log（排障只看这一个文件）；
@@ -37,6 +46,9 @@ FROM_STAGE="p1"
 WITH_NGINX=0
 ASSUME_YES=0
 CHECK_ONLY=0
+OFFLINE=0
+SKIP_APT=0
+PASSWORD_FILE=""
 
 APP_DIR="/main/app/dist"
 DEFAULT_CFG="/etc/default/camera-detection"
@@ -55,6 +67,8 @@ DEPLOY_LOG="/var/log/camera-detection-deploy.log"
 STATE_FILE="/var/lib/camera-detection/.deploy-state"
 CURRENT_STAGE="p0"
 SELF_PATH="$(readlink -f "$0")"
+SRC_ROOT=""
+OFFLINE_DEBS_DIR=""
 
 log()  { printf '\033[1;36m[deploy]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m  ✓\033[0m %s\n' "$*"; }
@@ -71,12 +85,17 @@ usage() {
 选项：
   --disk <设备>          指定数据盘（如 /dev/sdb）；未格式化会先确认再格式化
   --db-password <口令>   MySQL root 口令；省略则交互输入（不能含单引号/反斜杠）
-  --app-password <口令>  管理员口令，供 p8 验收登录使用（必填，或从 DEFAULT_CFG 的 ADMIN_PASSWORD 读取；不再用 123456 兜底）
+  --app-password <口令>  管理员口令，落库并供 p8 验收（必填，或从 PASSWORD_FILE / DEFAULT_CFG 读取；不再用 123456 兜底）
+  --offline              离线模式：p1 只从包内 offline/debs/ 本地安装，不访问 apt 源
+  --skip-apt             跳过 p1 依赖安装（依赖已预装时用）
+  --password-file <路径> 离线口令文件（默认 <包>/config/offline.env），含 MYSQL_PASSWORD / ADMIN_PASSWORD
   --from <p1..p8>        从指定阶段续跑（各阶段幂等）
   --check                只做只读预检（不装包、不挂盘、不改配置）
   --with-nginx           额外安装 Nginx
   -y, --yes              全部确认类提示自动通过
   -h, --help             显示本帮助
+
+口令优先级：命令行 > 环境变量 > --password-file > 包内 config/offline.env > /etc/default > 交互输入
 
 阶段：
   p1 依赖安装    p2 数据盘    p3 时区    p4 MySQL 初始化与调优
@@ -93,6 +112,9 @@ while [[ $# -gt 0 ]]; do
     --disk)         DISK="$2"; shift 2 ;;
     --db-password)  DB_PASSWORD="$2"; shift 2 ;;
     --app-password) APP_PASSWORD="$2"; shift 2 ;;
+    --password-file) PASSWORD_FILE="$2"; shift 2 ;;
+    --offline)      OFFLINE=1; shift ;;
+    --skip-apt)     SKIP_APT=1; shift ;;
     --from)         FROM_STAGE="$2"; shift 2 ;;
     --with-nginx)   WITH_NGINX=1; shift ;;
     --check)        CHECK_ONLY=1; shift ;;
@@ -182,6 +204,7 @@ stage_p0() {
   # 安装包完整性：上传中断/解压失败时缺文件，直到 p5 才暴露，代价太大
   local src
   if src="$(resolve_src)"; then
+    SRC_ROOT="$src"
     local missing=() f
     for f in app/time-bucket-demo.jar config/application.yml sql/01_init_schema_nodb.sql \
              scripts/install.sh scripts/init-database.sh scripts/verify.sh scripts/run.sh \
@@ -192,6 +215,39 @@ stage_p0() {
       die "安装包不完整，缺少 ${#missing[@]} 个文件：${missing[*]}（上传/解压可能中断，请重新解包）"
     fi
     ok "安装包完整：${src}"
+
+    # 离线模式前置校验：依赖 deb 必须在包内且非空，否则 p1 无法本地安装。
+    if [[ "$OFFLINE" -eq 1 ]]; then
+      OFFLINE_DEBS_DIR="${src}/offline/debs"
+      local deb_n
+      deb_n="$(find "$OFFLINE_DEBS_DIR" -maxdepth 1 -name '*.deb' 2>/dev/null | wc -l | tr -d ' ')"
+      [[ "${deb_n:-0}" -gt 0 ]] \
+        || die "--offline 但包内无依赖：${OFFLINE_DEBS_DIR} 下没有 *.deb。请用完整的离线全量包（含 offline/ 目录），或在构建机跑 fetch-offline-deps.sh 后重新打包"
+      # 有清单时验一遍，防止传输位翻转导致 dpkg 装上坏包
+      if [[ -f "${src}/offline/manifest.sha256" ]]; then
+        (cd "$OFFLINE_DEBS_DIR" && sha256sum -c ../manifest.sha256 >/dev/null 2>&1) \
+          || die "离线依赖校验失败（sha256 不匹配）：${src}/offline/manifest.sha256 —— 重新上传发布包"
+      fi
+      ok "离线依赖就绪：${deb_n} 个 deb（sha256 校验通过）"
+    fi
+
+    # 离线口令：口令未在命令行/环境变量给出时，从口令文件读取。
+    # 只填尚未赋值的变量 —— 命令行与环境变量优先级更高。
+    local pwfile="${PASSWORD_FILE:-${src}/config/offline.env}"
+    if [[ -f "$pwfile" ]]; then
+      # 安全读取：只取 KEY='..' / KEY=".." / KEY=.. 三种形态，忽略注释与占位符
+      if [[ -z "$DB_PASSWORD" ]]; then
+        DB_PASSWORD="$(sed -n 's/^MYSQL_PASSWORD=[\"'\'']\{0,1\}\([^\"'\'']*\)[\"'\'']\{0,1\}[[:space:]]*$/\1/p' "$pwfile" | head -1)"
+        [[ "$DB_PASSWORD" =~ ^\$\{.*\}$ || "$DB_PASSWORD" == "<"* ]] && DB_PASSWORD=""
+      fi
+      if [[ -z "$APP_PASSWORD" ]]; then
+        APP_PASSWORD="$(sed -n 's/^ADMIN_PASSWORD=[\"'\'']\{0,1\}\([^\"'\'']*\)[\"'\'']\{0,1\}[[:space:]]*$/\1/p' "$pwfile" | head -1)"
+        [[ "$APP_PASSWORD" =~ ^\$\{.*\}$ || "$APP_PASSWORD" == "<"* ]] && APP_PASSWORD=""
+      fi
+      if [[ -n "$DB_PASSWORD" || -n "$APP_PASSWORD" ]]; then
+        ok "已从口令文件读取口令：${pwfile}（DB:$([[ -n "$DB_PASSWORD" ]] && echo 有 || echo 无) 管理员:$([[ -n "$APP_PASSWORD" ]] && echo 有 || echo 无)）"
+      fi
+    fi
   else
     die "找不到 install.sh —— 请在解压后的 camera-detection-system 目录内执行：sudo bash scripts/deploy.sh"
   fi
@@ -241,10 +297,13 @@ stage_p0() {
 
 # ==============================================================================
 # p1 依赖安装
-#   JDK 8 有两个来源：
-#     Ubuntu 22.04 → openjdk-8-jdk（官方源）
-#     Ubuntu 24.04+ → 官方源已移除 openjdk-8，走 Adoptium Temurin 8
-#   服务器无法出网时两者都装不上 —— 必须离线装好后用 --skip-apt 续跑。
+#   两条路径：
+#     --offline → 只从包内 offline/debs/ 用 dpkg 本地安装，不碰外网/apt 源。
+#                 依赖清单在构建机由 fetch-offline-deps.sh 预下载（含 JDK8）。
+#     默认     → apt-get 在线安装；JDK8 按发行版选源（22.04 官方 / 24.04 Adoptium）。
+#   --skip-apt → 完全跳过本阶段（依赖已由运维预装）。
+#   ★ 无论哪条路径，末尾都用 assert_deps_ready() 校验关键命令真的可用 ——
+#     避免"apt 返回 0 但命令缺失"的静默失败。
 # ==============================================================================
 find_java8_home() {
   # 必须是 Java 8（应用按 8 编译；17+ 下 MyBatis-Plus 反射会炸）。
@@ -283,21 +342,60 @@ install_jdk8() {
   apt-get install -y -qq temurin-8-jdk
 }
 
+# 关键命令断言：dpkg 装完不代表命令可用（依赖缺包、PATH 异常都可能漏）。
+# 这里覆盖 deploy.sh 后续阶段真正会调用的命令，缺一个就停，避免到 p4/p8 才炸。
+assert_deps_ready() {
+  # 只断言后续阶段真正会直接调用的命令：
+  #   mysql/mysqldump/mysqlbinlog（p4/p6/备份）、rsync（p4 datadir 迁移/备份）、
+  #   zstd（备份压缩）、curl（p7 健康检查）。chrony 只经 systemctl 启用，不直接调命令，不纳入。
+  local missing=() cmd
+  for cmd in mysql mysqldump mysqlbinlog rsync zstd curl; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+  done
+  # htpasswd 由 apache2-utils 提供；reset-password.sh 有 python3 crypt 兜底，
+  # 但 Ubuntu 24.04 的 python3 可能无 crypt，所以缺失只告警不中断。
+  if ! command -v htpasswd >/dev/null 2>&1; then
+    warn "未找到 htpasswd（apache2-utils）—— 改用 reset-password.sh 的 python3 crypt 兜底生成 BCrypt"
+  fi
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    die "依赖安装后仍缺命令：${missing[*]}。离线模式请确认 offline/debs 完整；在线模式检查软件源"
+  fi
+  local java_home
+  java_home="$(find_java8_home)" || die "未找到 JDK 8 —— 应用按 Java 8 编译，17+ 下会启动失败"
+  ok "Java：$("$java_home/bin/java" -version 2>&1 | head -1)"
+  ok "MySQL：$(mysql --version | head -1)"
+  ok "关键命令就绪：mysql/mysqldump/mysqlbinlog/rsync/zstd/curl"
+}
+
 stage_p1() {
+  if [[ "$SKIP_APT" -eq 1 ]]; then
+    warn "--skip-apt：跳过依赖安装（假定已预装），仅做就绪校验"
+    assert_deps_ready
+    return 0
+  fi
+
   log "p1 安装系统依赖"
-  local pkgs=(mysql-server chrony curl)
+  local pkgs=(mysql-server chrony curl rsync zstd apache2-utils)
   [[ "$WITH_NGINX" -eq 1 ]] && pkgs+=(nginx)
 
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq || die "apt update 失败：服务器可能无法访问外网软件源，请配置内网源或离线安装上述包"
-  apt-get install -y -qq "${pkgs[@]}" || die "依赖安装失败：${pkgs[*]}"
+  if [[ "$OFFLINE" -eq 1 ]]; then
+    # 离线安装：dpkg 一次性装入包内 deb（dpkg 会按依赖顺序解包+配置，
+    # 依赖已由 fetch-offline-deps.sh 用 apt --download-only 完整下载）。
+    log "离线模式：从 ${OFFLINE_DEBS_DIR} 本地安装（不访问 apt 源）"
+    local deb_total
+    deb_total="$(find "$OFFLINE_DEBS_DIR" -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ')"
+    # shellcheck disable=SC2046
+    dpkg -i $(find "$OFFLINE_DEBS_DIR" -maxdepth 1 -name '*.deb' | sort) \
+      || die "离线依赖安装失败（dpkg 返回非零），完整输出见上方与 ${DEPLOY_LOG}"
+    ok "已本地安装 ${deb_total} 个 deb"
+  else
+    apt-get update -qq || die "apt update 失败：服务器可能无法访问外网软件源。无外网请用离线全量包：deploy.sh --offline --disk ..."
+    apt-get install -y -qq "${pkgs[@]}" || die "依赖安装失败：${pkgs[*]}"
+    install_jdk8 || die "JDK 8 安装失败（需外网；离线环境请用 --offline 全量包，或手工装好 JDK8 后用 --skip-apt 续跑）"
+  fi
 
-  install_jdk8 || die "JDK 8 安装失败（需外网；离线环境请手工装好 JDK8 后重跑）"
-
-  local java_home
-  java_home="$(find_java8_home)" || die "未找到 JDK 8 安装目录"
-  ok "Java：$("$java_home/bin/java" -version 2>&1 | head -1)"
-  ok "MySQL：$(mysql --version | head -1)"
+  assert_deps_ready
   systemctl enable --now mysql >/dev/null 2>&1 || true
   ok "依赖就绪"
 }
@@ -604,10 +702,37 @@ stage_p6() {
 }
 
 # ==============================================================================
+# 管理员口令真正落库（2026-11-24 修复：原来 --app-password 只喂给 verify.sh 验收，
+# 库里仍是种子 admin/123456 —— 传了自定义口令却登不上，不传则弱口令留在生产库）。
+# 调用点：p7 开头（建库/续跑之后、重启之前），无论 p6 是否跳过建库都会执行。
+# 幂等：重复执行只是把同一口令重新 BCrypt 写一次，结果等价。
+# ==============================================================================
+apply_admin_password() {
+  local rp="${APP_DIR}/scripts/reset-password.sh"
+  [[ -f "$rp" ]] || die "缺少 ${rp} —— 无法把管理员口令落库，p8 验收会失败"
+
+  if [[ -z "$APP_PASSWORD" ]]; then
+    warn "未提供管理员口令（--app-password / 口令文件 / 环境变量），库内保持种子口令 123456"
+    warn "请在 p8 验收前设置：--app-password 'xxx' 或填 config/offline.env 的 ADMIN_PASSWORD 后重跑 --from p7"
+    return 0
+  fi
+  if [[ -z "$DB_PASSWORD" ]]; then
+    die "落库管理员口令需要数据库口令（--db-password / MYSQL_PASSWORD / 口令文件）"
+  fi
+
+  log "把管理员口令落库（admin → 新口令，BCrypt）"
+  MYSQL_HOST=127.0.0.1 MYSQL_PORT=3306 MYSQL_USER=root MYSQL_PASSWORD="$DB_PASSWORD" DATABASE="$DB_NAME" \
+    bash "$rp" --password "$APP_PASSWORD" --user admin \
+    || die "管理员口令落库失败（reset-password.sh 返回非零）"
+  ok "管理员口令已落库并记入 ${DEFAULT_CFG}（ADMIN_PASSWORD）"
+}
+
+# ==============================================================================
 # p7 内存调优（8 GB 机器默认 -Xmx1024m 偏小）
 # ==============================================================================
 stage_p7() {
   log "p7 JVM 调优并重启"
+  apply_admin_password
 
   # --from p7 续跑时 p5 可能没跑过：缺件就明确指出来，别让 systemd 报一句
   # "status=203/EXEC" 让人猜
@@ -705,14 +830,14 @@ stage_p7() {
 # ==============================================================================
 stage_p8() {
   log "p8 验收"
-  # verify.sh 要用真实管理员口令登录；优先命令行，其次 /etc/default 里记录的口令
+  # verify.sh 要用真实管理员口令登录；优先级与 p0 一致：
+  # 命令行 > 环境变量 > --password-file/包内口令文件（p0 已载入）> /etc/default。
   if [[ -z "$APP_PASSWORD" && -f "$DEFAULT_CFG" ]]; then
     APP_PASSWORD="$(sed -n 's/^ADMIN_PASSWORD="\(.*\)"$/\1/p' "$DEFAULT_CFG" | head -1)"
   fi
   # 2026-11-23 决策 #1：不再用弱口令 123456 兜底。
-  # 口令必须来自 --app-password 或 /etc/default/camera-detection 的 ADMIN_PASSWORD。
   if [[ -z "$APP_PASSWORD" ]]; then
-    die "p8 验收缺少管理员口令：请传 --app-password，或在 ${DEFAULT_CFG} 配置 ADMIN_PASSWORD"
+    die "p8 验收缺少管理员口令：请传 --app-password、填 config/offline.env 的 ADMIN_PASSWORD，或在 ${DEFAULT_CFG} 配置 ADMIN_PASSWORD"
   fi
 
   local rc=0
@@ -731,7 +856,8 @@ stage_p8() {
     echo "  业务日志：/main/app/logs/camera-detection-system.log"
     echo "  备份未到时间属正常：定时器每日 01:00 首跑（systemctl list-timers camera-detection-backup）"
   fi
-  return 0
+  # 验收未过必须让部署退出码非零 —— 否则"部署完成"与"验收未通过"会同时出现。
+  return "$rc"
 }
 
 # ==============================================================================
@@ -767,14 +893,18 @@ done
 echo
 ok "部署流程结束（${FROM_STAGE} → p8）"
 echo "  应用地址： http://<本机IP>:${PORT}   （本机访问 http://127.0.0.1:${PORT}）"
-echo "  登录账号： admin / 初始口令 123456（已改则用新口令）"
+echo "  登录账号： admin / 口令为本次落库值（--app-password 或口令文件 ADMIN_PASSWORD）"
 echo "  部署日志： ${DEPLOY_LOG}"
 echo "  服务管理： systemctl status|restart camera-detection"
 echo "  验收复查： sudo VERIFY_PASSWORD='<应用口令>' MYSQL_PASSWORD='<库口令>' bash ${APP_DIR}/scripts/verify.sh"
 echo
+if [[ -n "$APP_PASSWORD" ]]; then
+  echo "  ★ 口令已写入 /etc/default/camera-detection（权限 640）。离线口令文件 config/offline.env"
+  echo "    含明文口令，交付后可删除或移出发布目录，避免随包流传。"
+fi
+echo
 echo "  还需人工完成（脚本不代做）："
-echo "    1) 浏览器登录后立即修改 admin 口令（123456 不可留）"
-echo "    2) history -c && rm -f ~/.bash_history   —— 清掉命令行里的明文口令"
-echo "    3) 录入相机档案时 dim_camera.camera_type 必须为 'REAL'，"
+echo "    1) 录入相机档案时 dim_camera.camera_type 必须为 'REAL'，"
 echo "       否则每小时 :15 的清理任务会把它当 TEST 相机、连图片一起删掉"
-echo "    4) 备份定时器每日 01:00 首跑；次日复查 systemctl list-timers camera-detection-backup"
+echo "    2) 备份定时器每日 01:00 首跑；次日复查 systemctl list-timers camera-detection-backup"
+echo "    3) 若用过命令行明文口令：history -c && rm -f ~/.bash_history"

@@ -93,6 +93,17 @@ else
   bad "缺少 check_config_parity.py"
 fi
 
+# 离线/在线依赖清单对账（2026-11-24）：两处双写，漏一处则离线机或在线机缺包
+if [[ -f "${LINUX_DIR}/scripts/check_offline_parity.py" ]]; then
+  if python3 "${LINUX_DIR}/scripts/check_offline_parity.py" >/dev/null 2>&1; then
+    ok "在线/离线依赖安装清单一致"
+  else
+    bad "deploy.sh pkgs 与 fetch-offline-deps.sh DEP_PKGS 不一致——离线机会缺包，请同步两处"
+  fi
+else
+  info "缺少 check_offline_parity.py（离线对账守卫未部署）"
+fi
+
 for d in "${BACKEND_DIR}/src" "${FRONTEND_DIR}/src" "${LINUX_DIR}/scripts"; do
   [[ -d "$d" ]] && ok "源码目录存在：${d#${ROOT_DIR}/}" || bad "源码目录缺失：$d"
 done
@@ -152,9 +163,12 @@ head_line "⑤ 发版门禁序列（按此顺序，勿跳步）"
 line "  1. cd fact-product && mvn -B test"
 line "  2. cd frontend && npm ci && npm test && npm run lint && npm run build"
 line "  3. python docs/scripts/check_doc_links.py && check_legacy_paths.py"
-line "  4. bash installer/linux/build-release.sh [--update-only]"
-line "  5. upload_jar_b64.py → deploy_jar.sh（口令走环境变量/600 临时文件）"
-line "  6. sudo verify.sh [--delivery] → 浏览器回归 → 清 ZZTEST* 数据"
+line "     + check_offline_parity.py（依赖包变更时必跑）"
+line "  4a. 常规包：bash installer/linux/build-release.sh [--update-only]"
+line "  4b. 离线包（新机/无外网）：先 fetch-offline-deps.sh 生成 deb，再 build-release.sh"
+line "  5. 升级：upload_jar_b64.py → deploy_jar.sh（口令走环境变量/600 临时文件）"
+line "     新机：deploy.sh --disk /dev/sdb [--offline]（口令走 offline.env，p7 真正落库）"
+line "  6. sudo verify.sh [--delivery 授权交付时] → 浏览器回归 → 清 ZZTEST* 数据"
 line "  7. 客户签字验收 → 一次性文档入 archive/ → 获授权后推送"
 
 head_line "预检结果"
