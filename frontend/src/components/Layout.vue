@@ -41,7 +41,10 @@
           </span>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+              <!-- ★ 2026-11-25 深度评审：Profile 页面有路由 (/profile) 却无入口，
+                   用户只能靠手输 URL 才能看到个人信息。补进用户下拉菜单。 -->
+              <el-dropdown-item command="profile">个人中心</el-dropdown-item>
+              <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -195,7 +198,9 @@ provide('filterLabels', computed(() => ({
 })))
 
 const handleUserCmd = (cmd) => {
-  if (cmd === 'logout') {
+  if (cmd === 'profile') {
+    router.push('/profile')
+  } else if (cmd === 'logout') {
     userStore.logout()
     router.push('/login')
   }

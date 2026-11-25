@@ -29,32 +29,22 @@
         </el-card>
       </el-col>
 
-      <!-- 修改密码 -->
+      <!-- 修改密码：后端无自助改密端点（原 /api/auth/password 实测 405）。
+           ★ 2026-11-25 深度评审：原页面摆出一个必然失败的表单，用户填完三项才收到
+           「暂不支持」——给了可用外观却不可用，与项目「诚实降级」真源冲突。
+           改为 upfront 说明 + 管理员可用的服务器改密命令，不再诱导填写。 -->
       <el-col :xs="24" :md="16">
         <el-card shadow="never">
           <template #header>
             <span style="font-weight:600;font-size:15px">🔒 修改密码</span>
           </template>
-          <el-form
-            ref="pwdFormRef"
-            :model="pwdForm"
-            :rules="pwdRules"
-            label-width="100px"
-            style="max-width: 460px"
-          >
-            <el-form-item label="旧密码" prop="oldPassword">
-              <el-input v-model="pwdForm.oldPassword" type="password" show-password />
-            </el-form-item>
-            <el-form-item label="新密码" prop="newPassword">
-              <el-input v-model="pwdForm.newPassword" type="password" show-password />
-            </el-form-item>
-            <el-form-item label="确认新密码" prop="confirmPassword">
-              <el-input v-model="pwdForm.confirmPassword" type="password" show-password />
-            </el-form-item>
-            <el-form-item>
-              <el-button type="primary" :loading="pwdLoading" @click="handleChangePassword">确认修改</el-button>
-            </el-form-item>
-          </el-form>
+          <el-alert
+            type="info"
+            :closable="false"
+            show-icon
+            title="系统暂不支持页面自助改密"
+            description="请由管理员在服务器上执行重置脚本（口令不会显示在页面或日志中）：sudo /main/app/dist/scripts/reset-password.sh --password '新口令'"
+          />
         </el-card>
       </el-col>
     </el-row>
@@ -62,41 +52,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useUserStore } from '../../stores/user'
-import { getProfile, updatePassword } from '../../api/auth'
-import { ElMessage } from '@/utils/message.js'
+import { getProfile } from '../../api/auth'
 
 const userStore = useUserStore()
 const profile = ref(null)
-const pwdLoading = ref(false)
-const pwdFormRef = ref(null)
-
-const pwdForm = reactive({
-  oldPassword: '',
-  newPassword: '',
-  confirmPassword: ''
-})
-
-const validatePass2 = (rule, value, callback) => {
-  if (value !== pwdForm.newPassword) {
-    callback(new Error('两次输入的密码不一致'))
-  } else {
-    callback()
-  }
-}
-
-const pwdRules = {
-  oldPassword: [{ required: true, message: '请输入旧密码', trigger: 'blur' }],
-  newPassword: [
-    { required: true, message: '请输入新密码', trigger: 'blur' },
-    { min: 6, max: 20, message: '密码长度为6-20字符', trigger: 'blur' }
-  ],
-  confirmPassword: [
-    { required: true, message: '请再次输入新密码', trigger: 'blur' },
-    { validator: validatePass2, trigger: 'blur' }
-  ]
-}
 
 const loadProfile = async () => {
   try {
@@ -106,29 +67,6 @@ const loadProfile = async () => {
     userStore.user = res.data.data
   } catch (e) {
     console.error('加载个人信息失败', e)
-  }
-}
-
-const handleChangePassword = async () => {
-  const valid = await pwdFormRef.value.validate().catch(() => false)
-  if (!valid) return
-  pwdLoading.value = true
-  try {
-    await updatePassword({
-      oldPassword: pwdForm.oldPassword,
-      newPassword: pwdForm.newPassword
-    })
-    ElMessage.success('密码修改成功，请重新登录')
-    pwdForm.oldPassword = ''
-    pwdForm.newPassword = ''
-    pwdForm.confirmPassword = ''
-    // 3秒后退出登录
-    setTimeout(() => userStore.logout() || (window.location.href = '/login'), 2000)
-  } catch (e) {
-    const msg = e.response?.data?.message || '密码修改失败'
-    ElMessage.error(msg)
-  } finally {
-    pwdLoading.value = false
   }
 }
 

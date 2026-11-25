@@ -27,7 +27,24 @@
             :value="l.lineId"
           />
         </el-select>
+        <el-tooltip
+          v-if="activeTab === 'realtime'"
+          content="实时数据固定查询今天 00:00 至当前时间；需要查历史请切到「历史数据」"
+          placement="top"
+        >
+          <span>
+            <el-date-picker
+              v-model="timeRange"
+              type="daterange"
+              start-placeholder="开始日期"
+              end-placeholder="结束日期"
+              style="width: 260px"
+              disabled
+            />
+          </span>
+        </el-tooltip>
         <el-date-picker
+          v-else
           v-model="timeRange"
           type="daterange"
           start-placeholder="开始日期"
@@ -115,6 +132,7 @@
 import { computed, ref, onMounted } from 'vue'
 import { ElMessage } from '@/utils/message.js'
 import { getDefectImageHistory } from '../../api/camera'
+import { getCascadeAll } from '@/api/cascade'
 
 const activeTab = ref('realtime')
 const cameraName = ref('')
@@ -123,6 +141,7 @@ const timeRange = ref(null)
 
 /** 历史查询提示：范围早于 31 天时后端会走月度归档表（2026-11-05） */
 const historyQueryHint = computed(() => {
+  if (activeTab.value !== 'history') return false
   const range = timeRange.value
   if (!range || range.length !== 2) return false
   const start = new Date(String(range[0]).replace(/-/g, '/')).getTime()
@@ -143,6 +162,24 @@ const formatTime = (d) => {
     + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+// ★ 2026-11-25 深度评审：产线筛选下拉原来只声明不加载 → 现场永远是空的。
+//   与图库页（GalleryView）保持同一数据源 /api/cascade/all。
+const loadLineOptions = async () => {
+  try {
+    const res = await getCascadeAll()
+    const d = (res && res.data && (res.data.data || res.data)) || {}
+    const tree = d.factories || []
+    const fromTree = tree.flatMap(f => (f.lines || []).map(l => ({ ...l, factoryId: f.factoryId })))
+    const lines = fromTree.length ? fromTree : (d.lines || d.flattenedLines || [])
+    lineOptions.value = lines.map(l => ({
+      lineId: l.lineId,
+      lineName: l.lineName || l.name || `产线${l.lineId}`
+    }))
+  } catch (e) {
+    console.warn('检测记录页产线选项加载失败:', e)
+  }
+}
+
 const loadData = async () => {
   loading.value = true
   try {
@@ -155,7 +192,14 @@ const loadData = async () => {
     const params = { page: currentPage.value, size: pageSize.value }
     if (cameraName.value) params.cameraName = cameraName.value
     if (filterLine.value) params.lineId = filterLine.value
-    if (timeRange.value && timeRange.value.length === 2) {
+    // ★ 2026-11-25 深度评审：Tab 原来是死变量（两个值都发同一个查询）→ 点了没反应。
+    //   「实时数据」= 今天 00:00 至当前分钟；「历史数据」= 用户选的时间范围。
+    if (activeTab.value === 'realtime') {
+      const now = new Date()
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      params.startTime = formatTime(todayStart)
+      params.endTime = formatTime(now)
+    } else if (timeRange.value && timeRange.value.length === 2) {
       params.startTime = formatTime(timeRange.value[0])
       params.endTime = formatTime(timeRange.value[1])
     }
@@ -224,7 +268,10 @@ const handlePageChange = (page) => {
 // 实现导出后再回来加回 handleExport 与 window.open。
 
 
-onMounted(() => loadData())
+onMounted(() => {
+  loadLineOptions()
+  loadData()
+})
 </script>
 
 <style scoped>

@@ -4,6 +4,17 @@
       <h2>📈 良率分析</h2>
       <span class="filter-hint" v-if="filterInfo">{{ filterInfo }}</span>
     </div>
+    <!-- ★ 2026-11-25 深度评审：本页走 Phase2 冻结通道（fact_inspection_*/agg_*），
+         现场设备走 defect-images/upload 写 defect_image_*，两表不相交 → 本页恒空/恒 0。
+         与项目「无数据≠0」真源一致，明确告知用户改用「产线统计」页，避免把 0% 当真实良率。 -->
+    <el-alert
+      type="warning"
+      :closable="false"
+      show-icon
+      title="本页基于已冻结的批量上报通道，现场无该通道数据，显示的 0% 不代表真实良率"
+      description="请改用顶部导航「产线统计」查看基于缺陷图片事实表的实时统计。"
+      style="margin-bottom: 16px"
+    />
     <div class="kpi-row">
       <div class="kpi-card"><span class="kpi-label">综合良率</span><span class="kpi-value" style="color:#22c55e">{{ kpiData.overall }}%</span></div>
       <div class="kpi-card"><span class="kpi-label">白班良率</span><span class="kpi-value" style="color:#3b82f6">{{ formatKpiPercent(kpiData.day) }}</span></div>

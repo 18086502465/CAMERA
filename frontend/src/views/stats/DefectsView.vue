@@ -4,6 +4,17 @@
       <h2>⚠ 缺陷统计</h2>
       <span class="filter-hint" v-if="filterInfo">{{ filterInfo }}</span>
     </div>
+    <!-- ★ 2026-11-25 深度评审：本页走 Phase2 冻结通道（product_detection_history/agg_*），
+         现场设备走 defect-images/upload 写 defect_image_*，两表不相交 → 本页恒 0。
+         明确告知用户改用「产线统计」，避免把 0 当真实缺陷数。 -->
+    <el-alert
+      type="warning"
+      :closable="false"
+      show-icon
+      title="本页基于已冻结的批量上报通道，现场无该通道数据，显示的 0 不代表真实缺陷数"
+      description="请改用顶部导航「产线统计」查看基于缺陷图片事实表的实时统计。"
+      style="margin-bottom: 16px"
+    />
     <div class="kpi-row">
       <div class="kpi-card"><span class="kpi-label">总缺陷数</span><span class="kpi-value" style="color:#ef4444">{{ kpiData.total }}</span></div>
       <div class="kpi-card"><span class="kpi-label">高危</span><span class="kpi-value" style="color:#dc2626">{{ kpiData.severe }}</span></div>

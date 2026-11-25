@@ -115,8 +115,20 @@ def parse_ddl():
                 if cm:
                     cols.add(cm.group(1))
         # ---- ALTER TABLE `x` ADD COLUMN `y` ----
-        for m in re.finditer(r'ALTER\s+TABLE\s+`?(\w+)`?\s+ADD\s+(?:COLUMN\s+)?`?(\w+)`?', src, re.I):
+        # 2026-11-25 深度评审：原正则把 `ALTER TABLE ... ADD CONSTRAINT fk_xxx`
+        # 误当成新增列 `CONSTRAINT`（02 脚本里有大量 ADD CONSTRAINT 删/建外键），
+        # 凭空给表多出一个假列 → 对账结果不可信。用负向 lookahead 排除
+        # CONSTRAINT/INDEX/PRIMARY/KEY/FOREIGN/UNIQUE/CHECK 等非列 DDL。
+        for m in re.finditer(
+                r'ALTER\s+TABLE\s+`?(\w+)`?\s+ADD\s+(?:COLUMN\s+)?'
+                r'(?!(?:CONSTRAINT|INDEX|PRIMARY|KEY|FOREIGN|UNIQUE|CHECK|PARTITION)\b)'
+                r'`?(\w+)`?', src, re.I):
             tables.setdefault(m.group(1), set()).add(m.group(2))
+    # 自检：非列 DDL 关键字绝不能被当成列名（否则凭空「覆盖」实体列，假绿）
+    artifacts = {c for cols in tables.values() for c in cols
+                 if c.upper() in {'CONSTRAINT', 'INDEX', 'PRIMARY', 'KEY', 'FOREIGN', 'UNIQUE', 'CHECK', 'PARTITION'}}
+    if artifacts:
+        raise RuntimeError(f'DDL 解析误把非列 DDL 当列名: {sorted(artifacts)}')
     return tables
 
 

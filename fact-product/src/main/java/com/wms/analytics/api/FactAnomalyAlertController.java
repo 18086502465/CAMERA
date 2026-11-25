@@ -5,6 +5,7 @@ import com.wms.analytics.domain.model.FactAnomalyAlert;
 import com.wms.analytics.app.IFactAnomalyAlertService;
 import com.wms.shared.common.ResultVO;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
@@ -151,6 +152,15 @@ public class FactAnomalyAlertController {
         return m;
     }
 
+    /**
+     * 标记告警已解决（写操作）。
+     *
+     * <p><b>2026-11-25 深度评审 H5 修复</b>：原实现只有登录校验（SecurityConfig 的
+     * {@code /api/alerts/**.authenticated()}），任意登录用户（含只读角色）都能把告警标记解决，
+     * 等于可以抹掉运维故障证据。与项目其它写端点一致，补 {@code hasRole('ADMIN')} 双保险。
+     * 安全基线：无/无效 token→401，角色不足→403。
+     */
+    @PreAuthorize("hasRole('ADMIN')")
     @PostMapping("/{id}/resolve")
     public ResultVO<String> resolveAlert(@PathVariable Long id) {
         FactAnomalyAlert alert = alertService.getById(id);
