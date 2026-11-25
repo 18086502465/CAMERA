@@ -2,6 +2,7 @@ package com.wms.analytics.infra.repository;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Date;
 import java.sql.Timestamp;
@@ -198,7 +199,16 @@ public class AnalyticsAggregationRepository {
         addColumnQuiet("analytics_aggregation_job", "retry_from_job_id", "ALTER TABLE analytics_aggregation_job ADD COLUMN retry_from_job_id BIGINT NULL AFTER trigger_source");
     }
 
-    /** 创建聚合任务，返回任务 ID */
+    /**
+     * 创建聚合任务，返回任务 ID。
+     *
+     * <p>★ H2（2026-11-24 深度评审）：INSERT 与 {@code SELECT LAST_INSERT_ID()} 是两次
+     * 独立的 JdbcTemplate 调用 —— MySQL 的 LAST_INSERT_ID() 是<b>连接级</b>状态，
+     * 无事务时每次调用各自借还连接，并发下取到别的连接的自增值 → 任务状态写到
+     * 错误的 jobId（永久 RUNNING / 误标 SUCCESS）。加 {@code @Transactional} 后
+     * Spring 将两次调用绑定到同一连接，取值才可靠。
+     */
+    @Transactional
     public Long createAggregationJob(LocalDate startDate, LocalDate endDate, Long factoryId, Long lineId,
                                      String triggerSource, Long retryFromJobId) {
         jdbcTemplate.update(

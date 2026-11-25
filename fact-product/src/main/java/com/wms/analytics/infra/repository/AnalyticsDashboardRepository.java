@@ -2,6 +2,7 @@ package com.wms.analytics.infra.repository;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
@@ -12,10 +13,14 @@ import java.util.Map;
  * <p>承接 {@code LineAnalyticsController} 中 {@code cfg_analytics_dashboard} 与
  * {@code cfg_analytics_widget} 两张表的读写 SQL，以及旧版默认看板的升级检测。
  *
- * <p>SQL 均自原 Controller <b>原样搬入</b>，行为不变。
- * 注意：{@code LAST_INSERT_ID()} 必须在同连接的 INSERT 之后调用 ——
- * 本类的方法内部连续执行 INSERT 与取 ID，保证同一连接（Spring 的
- * {@code JdbcTemplate} 在无事务时每次取连接，用 DataSourceUtils 绑定保证同连接）。
+ * <p>SQL 均自原 Controller <b>原样搬入</b>，行为不变（取自增 ID 的方法另见 H2 说明）。
+ *
+ * <p>★ H2（2026-11-24 深度评审）：{@code LAST_INSERT_ID()} 是<b>连接级</b>状态，
+ * 而原注释宣称「DataSourceUtils 绑定保证同连接」只在<b>事务内</b>成立 ——
+ * 无事务时每次 JdbcTemplate 调用各自借还连接，并发下新建看板/组件会取到
+ * 其他连接的自增值（组件挂错 dashboardId、看板 ID 串号）。
+ * 修复：所有「INSERT 后取 LAST_INSERT_ID」的方法加 {@code @Transactional}，
+ * Spring 将同一事务内的 JdbcTemplate 调用绑定到同一连接。
  */
 @Repository
 public class AnalyticsDashboardRepository {
@@ -28,7 +33,8 @@ public class AnalyticsDashboardRepository {
 
     // ==================== 看板 ====================
 
-    /** 新建看板并返回自增 ID */
+    /** 新建看板并返回自增 ID（H2：事务内同连接，LAST_INSERT_ID 可靠） */
+    @Transactional
     public Long insertDashboard(String name, Long factoryId, Long ownerUserId, String scopeType,
                                 int isDefault, String layoutJson) {
         jdbcTemplate.update(
@@ -38,7 +44,12 @@ public class AnalyticsDashboardRepository {
         return lastInsertId();
     }
 
-    /** 复制看板（含组件），返回新看板 ID */
+    /**
+     * 复制看板（含组件），返回新看板 ID。
+     * H2：两条 INSERT + LAST_INSERT_ID 必须同连接；同时复制到一半失败时
+     * 整体回滚，避免出现「有看板没组件」的半拷贝。
+     */
+    @Transactional
     public Long copyDashboard(Long sourceId, String name, Long factoryId, Long ownerUserId,
                               String scopeType, int isDefault) {
         jdbcTemplate.update(
@@ -70,7 +81,8 @@ public class AnalyticsDashboardRepository {
 
     // ==================== 组件 ====================
 
-    /** 新建组件并返回自增 ID */
+    /** 新建组件并返回自增 ID（H2：事务内同连接，LAST_INSERT_ID 可靠） */
+    @Transactional
     public Long insertWidget(Long dashboardId, String widgetName, String widgetType,
                              String metricJson, String dimensionJson, String filterJson,
                              String optionJson, String layoutJson,
@@ -110,7 +122,8 @@ public class AnalyticsDashboardRepository {
 
     // ==================== 默认看板 ====================
 
-    /** 创建「工厂质量看板（厂长视角）」并返回 ID */
+    /** 创建「工厂质量看板（厂长视角）」并返回 ID（H2：事务内同连接） */
+    @Transactional
     public Long insertDefaultDashboard(Long factoryId) {
         jdbcTemplate.update(
                 "INSERT INTO cfg_analytics_dashboard (dashboard_name, factory_id, scope_type, is_default, layout_json, is_enabled) " +

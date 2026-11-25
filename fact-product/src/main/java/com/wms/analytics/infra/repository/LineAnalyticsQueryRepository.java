@@ -85,7 +85,7 @@ public class LineAnalyticsQueryRepository {
         return jdbcTemplate.queryForList(
                 "SELECT q.camera_id AS cameraId, c.camera_name AS cameraName, c.camera_code AS cameraCode, SUM(q.total_count) AS totalCount, SUM(q.ok_count) AS okCount, SUM(q.ng_count) AS ngCount, " +
                         "IF(SUM(q.total_count)>0, ROUND(SUM(q.ok_count)*100/SUM(q.total_count),2),0) AS yieldRate " +
-                        "FROM " + qualityTable + " q LEFT JOIN dim_camera c ON q.camera_id = c.camera_id " +
+                        "FROM " + qualityTable + " q LEFT JOIN dim_camera c ON q.camera_id = c.camera_id AND IFNULL(c.is_deleted, 0) = 0 " +
                         cameraWhere +
                         " GROUP BY q.camera_id, c.camera_name, c.camera_code ORDER BY ngCount DESC, totalCount DESC LIMIT 30",
                 params.toArray());
@@ -433,7 +433,7 @@ public class LineAnalyticsQueryRepository {
         }
     }
 
-    /** 单遍取数 DTO：{@code dim_camera} 全量维度行（SQL 路径的 JOIN 不带 is_deleted 条件，此处同样不过滤）。 */
+    /** 单遍取数 DTO：{@code dim_camera} 维度行（H3：SQL 路径 JOIN 已加 is_deleted 条件，此处同样过滤软删相机）。 */
     public static final class CameraDimRow {
         public final Long cameraId;
         public final String cameraCode;
@@ -509,11 +509,16 @@ public class LineAnalyticsQueryRepository {
                 start, end);
     }
 
-    /** 单遍取数：{@code dim_camera} 全量维度行（按 camera_code 索引；SQL 路径 JOIN 无 is_deleted 条件，此处保持一致）。 */
+    /**
+     * 单遍取数：{@code dim_camera} 维度行（按 camera_code 索引）。
+     * ★ H3（2026-11-24 深度评审）：加 IFNULL(is_deleted,0)=0 过滤 —— 与 SQL 路径
+     * joinCam 的 ON 条件同步。软删相机的 code 不进 map → 聚合器 cams.get() 返回
+     * null → 归 null 维度桶，与 SQL 路径 LEFT JOIN ON 条件后的语义逐字对齐。
+     */
     public Map<String, CameraDimRow> fetchCameraDims() {
         Map<String, CameraDimRow> map = new LinkedHashMap<>();
         jdbcTemplate.query(
-                "SELECT camera_code, camera_id, camera_name, factory_id, line_id, workstation_id FROM dim_camera",
+                "SELECT camera_code, camera_id, camera_name, factory_id, line_id, workstation_id FROM dim_camera WHERE IFNULL(is_deleted, 0) = 0",
                 rs -> {
                     String code = rs.getString(1);
                     if (code != null && map.putIfAbsent(code, new CameraDimRow(

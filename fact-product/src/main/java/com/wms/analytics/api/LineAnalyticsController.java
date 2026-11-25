@@ -789,7 +789,13 @@ public class LineAnalyticsController {
         Map<String, Object> data = new LinkedHashMap<>();
 
         // 图片表的 camera_id 存的是相机编号（camera_code），需经 dim_camera 关联出维度
-        String joinCam = " LEFT JOIN dim_camera c ON c.camera_code = f.camera_id ";
+        // ★ H3（2026-11-24 深度评审）：补 IFNULL(c.is_deleted,0)=0 —— 软删相机不再提供
+        //   维度（对齐 DailyReportRepository.REAL_CAMERA_JOIN 与图片列表路径
+        //   cameraStatusJoinSql 的 cs.is_active=1 同一语义）。
+        //   放 ON 子句保持 LEFT JOIN 语义：软删相机行 c.* 为 null → 归"未知"维度，
+        //   与 fast 路径 fetchCameraDims 过滤后 get() 不到归 null 的行为一致；
+        //   未建档相机的图片仍以 null 维度计入（与旧口径一致，避免总数跳变）。
+        String joinCam = " LEFT JOIN dim_camera c ON c.camera_code = f.camera_id AND IFNULL(c.is_deleted, 0) = 0 ";
 
         // ★ 2026-11-21 评审 P1-4：若前端传了 defectTypeId，先经映射表解析为现场上报名称，
         //   再叠加到 defectType 筛选。映射不存在时 names 为空 → 保持原 ignoredFilter 上报，
@@ -1679,9 +1685,14 @@ public class LineAnalyticsController {
                     }
                     return;
                 }
-                int qualityRows = rebuildQualityDaily(startDate, endDate, factoryId, lineId);
-                int defectRows = rebuildDefectDaily(startDate, endDate, factoryId, lineId);
-                updateAggregationJob(jobId, "SUCCESS", qualityRows, defectRows, "日聚合完成", null);
+                // ★ H2（2026-11-24 深度评审）：原实现连续调用 rebuildQualityDaily +
+                //   rebuildDefectDaily —— 两条独立的「DELETE + INSERT」自动提交语句，
+                //   绕过了已有的 rebuildDailyAtomically 原子封装。中间窗口并发查询
+                //   会读到「今天数据已删未插」的 0 值；中途失败则留下两表不一致且无法回滚。
+                //   统一改走 rebuildDailyAtomically（单短事务，MVCC 下并发查询无空窗）。
+                int rows = rebuildDailyAtomically(startDate, endDate, factoryId, lineId);
+                int qualityRows = rows; // 原子封装返回两表合计，任务记录沿用该值
+                updateAggregationJob(jobId, "SUCCESS", qualityRows, 0, "日聚合完成", null);
                 // NEW-01：只有【定时任务】且【真正成功】才把「今天跑过了」写进调度表。
                 // 写在提交之后（改造前的做法）会把失败也记成已完成，导致当天不再重试。
                 if ("SCHEDULE".equals(triggerSource)) {
