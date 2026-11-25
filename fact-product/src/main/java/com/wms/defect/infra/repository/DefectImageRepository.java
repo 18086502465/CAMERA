@@ -966,6 +966,26 @@ public class DefectImageRepository {
         return ids.isEmpty() ? null : ids.get(0);
     }
 
+    /**
+     * 按主键取已入库图片的 image_url（设备重传幂等跳过时用）。
+     *
+     * <p>背景（2026-11-25 现场诊断 O-1）：DAN 相机重传风暴下，每张重复图
+     * 原本还要「解码 + 落盘 + 删除刚保存的副本」只为拿到一个 imageUrl，
+     * 白白消耗 JVM/磁盘 I/O；而且返回的 URL 指向**已删除**的副本。
+     * 这里走主键查一次真实 image_url，重复图不再落盘，响应 URL 也正确。
+     *
+     * @return image_url；imageId 为空或记录不存在时返回 null
+     */
+    public String findImageUrlById(Long imageId) {
+        if (imageId == null) {
+            return null;
+        }
+        List<String> urls = jdbcTemplate.query(
+                "SELECT image_url FROM defect_image_file WHERE image_id = ?",
+                (rs, i) -> rs.getString(1), imageId);
+        return urls.isEmpty() ? null : urls.get(0);
+    }
+
     public Long insertImageFile(Long batchId, String cameraId, String cameraName,
                                 String fileName, String originalFileName, String absolutePath, String imageUrl,
                                 LocalDateTime captureTime, LocalDateTime uploadTime,

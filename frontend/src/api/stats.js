@@ -93,12 +93,9 @@ export function getDefectStats(params) {
 }
 
 // 级联数据全量（Phase 1 新增）
-export function getCascadeAll() {
-  return request({
-    url: '/cascade/all',
-    method: 'get'
-  })
-}
+// ★ 2026-11-25 O-3：统一走 cascade.js 的跨模块 in-flight 去重实现，
+//   避免 Layout 与页面各自请求同一份级联树（日报页实测 2 次）。
+export { getCascadeAll } from './cascade'
 
 // 单产线看板数据
 export function getLineDashboard(params) {

@@ -111,6 +111,17 @@ public class LineAnalyticsController {
     private static final int DAILY_AGGREGATION_THRESHOLD_DAYS = 3;
     /** 近期窗口自动刷新天数：必须覆盖「日聚合阈值」，否则 3 天窗查询会落到未物化的日期上 */
     private static final int RECENT_REFRESH_WINDOW_DAYS = DAILY_AGGREGATION_THRESHOLD_DAYS;
+    /**
+     * 默认视图预热间隔（2026-11-25 诊断 O-2）。
+     *
+     * <p>原 45s + 缓存键按分钟归一化 → 分钟切换后最长 45s 冷查（现场实测 1.6s×2）。
+     * 现在 25s 一轮，且在每分钟第 45 秒起额外预热「下一分钟键」，
+     * 让分钟切换瞬间就有热缓存；预热的数据截止时刻永远是「当前真实时间」，
+     * 不查未来数据，最大数据延迟仍由 TTL 60s 约束（与既有承诺一致）。
+     */
+    private static final long SUMMARY_WARMUP_INTERVAL_MS = 25_000L;
+    /** 每分钟第 45 秒起开始预热下一分钟的缓存键 */
+    private static final int SUMMARY_WARMUP_NEXT_MINUTE_AFTER_SECOND = 45;
     /** 近期窗口刷新间隔（与 @Scheduled 的 fixedDelay 保持一致，仅用于日志/说明） */
     private static final long RECENT_REFRESH_INTERVAL_MS = 5 * 60 * 1000L;
     /** 查询侧发现聚合落后时，触发后台补齐的最小间隔（防止高频轮询把重建打成风暴） */
@@ -345,30 +356,69 @@ public class LineAnalyticsController {
     }
 
     /**
-     * 默认视图缓存预热（页面打开效率优化 2026-11-22）。
+     * 默认视图缓存预热（页面打开效率优化 2026-11-22；2026-11-25 诊断 O-2 增强）。
      *
      * <p>缓存键的 end 归一化到「分钟」+ TTL 60s：每分钟第一个打开统计页的用户
-     * 必然 miss，独自承担整次重算（快速聚合冷查 ~0.5-1.1s）。本预热每 45s 用与
-     * 前端默认落地视图<b>完全相同的参数</b>（今天 00:00 → 当前分钟、无任何筛选、
+     * 会 miss，独自承担整次重算（快速聚合冷查 ~0.5-1.1s）。本预热用与前端默认
+     * 落地视图<b>完全相同的参数</b>（今天 00:00 → 当前时刻、无任何筛选、
      * dim=null 与 dim=line 两条——内置看板「产线缺陷排行 / 缺陷量趋势(按产线)」
      * 走 dim=line 独立请求）重算并写缓存，用户打开页面即命中热缓存。
      *
-     * <p>口径说明：SQL 仍用预热时刻的 end（分钟整），与用户秒级 end 的差异
-     * &lt;45s，与既有「分钟归一化 + 60s TTL」的数据延迟承诺一致。
+     * <p><b>O-2 关键改动</b>：25s 一轮，且每分钟第 45 秒起额外把结果写到
+     * 「下一分钟」的缓存键。这样分钟切换后的首批请求直接命中，不必自己冷查。
+     *
+     * <p>口径说明：SQL 的 end 始终是<b>预热当时的真实时间</b>（绝不查未来数据），
+     * 只是把结果提前挂到下一分钟的键上；按既有「分钟归一化 + 60s TTL」约定，
+     * 数据最大延迟仍是 60s，超时后缓存自然失效触发重算。
      * 任何异常只记 WARN —— 预热是增强，绝不能影响主流程。
      */
-    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 45_000L, initialDelay = 20_000L)
+    @org.springframework.scheduling.annotation.Scheduled(
+            fixedDelay = SUMMARY_WARMUP_INTERVAL_MS, initialDelay = 10_000L)
     public void warmUpDefaultSummaryCache() {
+        long begin = System.currentTimeMillis();
+        int warmed = 0;
         try {
-            LocalDateTime end = LocalDateTime.now().withSecond(0).withNano(0);
-            LocalDateTime start = end.toLocalDate().atStartOfDay();
-            buildSummaryCached(start, end, null, null, null, null, null, null,
-                    null, null, null, null, null, null);
-            buildSummaryCached(start, end, null, null, null, null, null, null,
-                    null, null, null, null, null, "line");
+            LocalDateTime now = LocalDateTime.now();
+            LocalDateTime todayStart = now.toLocalDate().atStartOfDay();
+            // ① 当前分钟键（用户此刻打开页面命中）
+            warmed += warmUpWindow(todayStart, now, now);
+            // ② 分钟切换前的过渡键：数据仍截止 now，但挂到下一分钟的键上
+            // 23:59 的下一分钟是次日 00:00，start 会变成明天而 sqlEnd 是今天
+            // → buildSummary 抛「结束早于开始」。这 15s 窗口直接跳过，无业务影响。
+            if (now.getSecond() >= SUMMARY_WARMUP_NEXT_MINUTE_AFTER_SECOND
+                    && !(now.getHour() == 23 && now.getMinute() == 59)) {
+                LocalDateTime nextMinute = now.withSecond(0).withNano(0).plusMinutes(1);
+                warmed += warmUpWindow(nextMinute.toLocalDate().atStartOfDay(), now, nextMinute);
+            }
         } catch (Exception ex) {
             log.warn("默认视图统计缓存预热失败（不影响线上服务）：{}", ex.getMessage());
+        } finally {
+            log.debug("默认视图统计缓存预热完成: windows={} cost={}ms cacheSize={}",
+                    warmed, System.currentTimeMillis() - begin, summaryCache.size());
         }
+    }
+
+    /**
+     * 预热一个时间窗的两条默认视图（dim=null / dim=line）。
+     *
+     * @param sqlEnd SQL 查询的真实截止时刻（不查未来数据）
+     * @param keyEnd 缓存键使用的分钟（允许是下一分钟，用于消掉分钟切换冷查）
+     */
+    private int warmUpWindow(LocalDateTime start, LocalDateTime sqlEnd, LocalDateTime keyEnd) {
+        buildSummaryCachedForWarmup(start, sqlEnd, keyEnd, null);
+        buildSummaryCachedForWarmup(start, sqlEnd, keyEnd, "line");
+        return 2;
+    }
+
+    private void buildSummaryCachedForWarmup(LocalDateTime start, LocalDateTime sqlEnd,
+                                             LocalDateTime keyEnd, String dim) {
+        String key = summaryCacheKey(start, keyEnd, null, null, null, null, null, null,
+                null, null, null, null, null, dim);
+        // 强制重算覆盖：缓存键是分钟，同键旧值可能还有 60s TTL，
+        // 不覆盖则后续 30s 轮询一直用旧数据，违背「数据延迟 <60s」承诺。
+        Map<String, Object> built = buildSummary(start, sqlEnd, null, null, null, null, null, null,
+                null, null, null, null, null, dim);
+        summaryCache.put(key, built);
     }
 
     private String summaryCacheKey(LocalDateTime start, LocalDateTime end,

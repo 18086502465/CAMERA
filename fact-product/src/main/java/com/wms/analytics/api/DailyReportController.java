@@ -457,6 +457,34 @@ public class DailyReportController {
         return result;
     }
 
+    /**
+     * 当前月份月历缓存预热（2026-11-25 现场诊断 O-5）。
+     *
+     * <p>月历接口 30s TtlCache，但首访必 miss —— 浏览器实测冷查 1,066ms，
+     * 而日报页首屏只有 ~2s。这里在启动后 15s 起每 25s 用默认参数
+     * （当月 + 全厂，与页面首次进入完全一致）强制重算并覆盖缓存，
+     * 用户打开日报页即命中热缓存；月度切换后自动跟到新月份。
+     *
+     * <p>口径不变：调用的就是正常 calendar 接口，只是由后台定时触发；
+     * 异常只 WARN —— 预热是增强，绝不影响主流程。
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 25_000L, initialDelay = 15_000L)
+    public void warmUpCurrentMonthCalendar() {
+        long begin = System.currentTimeMillis();
+        try {
+            LocalDate monthStart = LocalDate.now().withDayOfMonth(1);
+            String cacheKey = "calendar|" + monthStart + "|0";
+            // 必须先失效：否则 30s TTL 未过期时 calendar() 直接返回旧值，预热失去意义
+            dailyCache.invalidate(cacheKey);
+            calendar(null, null);
+        } catch (Exception ex) {
+            log.warn("当前月月历缓存预热失败（不影响线上服务）：{}", ex.getMessage());
+        } finally {
+            log.debug("当前月月历缓存预热完成: cost={}ms cacheSize={}",
+                    System.currentTimeMillis() - begin, dailyCache.size());
+        }
+    }
+
     // ==================== 单日维度明细（月历下方的四宫格） ====================
 
     /**

@@ -44,7 +44,8 @@ import static org.mockito.Mockito.when;
  * <ol>
  *   <li>首次上传 → 正常入库</li>
  *   <li>设备重传同一张图 → 幂等跳过，<b>不重复写库</b>，返回原有 imageId</li>
- *   <li>幂等跳过时<b>删掉刚保存的磁盘副本</b>（不占盘）</li>
+ *   <li>幂等跳过时<b>完全不落盘</b>（2026-11-25 O-1：原「先存后删」白耗解码/磁盘 I/O，
+ *       且返回的是已删除副本的 URL；现在按主键读真实 image_url）</li>
  *   <li>不同文件名的图不受影响（连拍合法数据不被误杀）</li>
  * </ol>
  */
@@ -185,6 +186,8 @@ class DefectImageUploadIdempotentTest {
     void retransmitShouldSkipInsert() {
         // 模拟已存在
         when(defectImageRepository.findImageIdByCameraAndFileName(CAMERA, FILE_NAME)).thenReturn(555L);
+        String realUrl = "/api/v1/defect-images/file/2026-11-19/DA9299030/real.jpg";
+        when(defectImageRepository.findImageUrlById(555L)).thenReturn(realUrl);
 
         DefectImageUploadResultDTO result = service.upload(new MultipartFile[]{file()}, metadataJson(), "Bearer test-token", CAMERA);
 
@@ -198,6 +201,14 @@ class DefectImageUploadIdempotentTest {
         assertTrue(Boolean.TRUE.equals(fr.getSuccess()), "重传应视为成功（设备端不应再重试）");
         assertEquals(Boolean.TRUE, fr.getDuplicate(), "应标记 duplicate=true");
         assertEquals(Long.valueOf(555L), fr.getImageId(), "应返回已存在的 imageId");
+        assertEquals(realUrl, fr.getImageUrl(), "重传应返回库里真实图片的 URL（不是已删除副本）");
+
+        // ★ 2026-11-25 O-1：重复图不再「先解码落盘再删除」
+        try (java.util.stream.Stream<java.nio.file.Path> paths = java.nio.file.Files.list(tempDir)) {
+            assertEquals(0L, paths.count(), "幂等跳过路径不应在磁盘留下任何文件（含临时副本）");
+        } catch (java.io.IOException e) {
+            throw new AssertionError("读取临时目录失败", e);
+        }
     }
 
     @Test
